@@ -5,18 +5,20 @@ spring:
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:openpay_payment}
     username: ${DB_USERNAME:openpay}
     password: ${DB_PASSWORD:openpay}
-  data:
-    redis:
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6379}
   jpa:
     open-in-view: false
     hibernate:
       ddl-auto: validate
   flyway:
     enabled: true
-  kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+openpay:
+  security:
+    auth-base-url: ${AUTH_SERVICE_BASE_URL:http://localhost:8081}
+    # Every payment path requires a valid merchant API key. Merchant identity comes from the
+    # validated key, never from a client-supplied header.
+    api-key-paths:
+      - /api/v1/payments
 
 server:
   port: 8083

@@ -1,14 +1,13 @@
 package com.openpay.payment.application;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openpay.payment.api.CreatePaymentRequest;
-import com.openpay.payment.api.PaymentResponse;
 import com.openpay.payment.domain.Payment;
 import com.openpay.payment.domain.PaymentEvent;
 import com.openpay.payment.domain.PaymentEventRepository;
@@ -28,6 +27,8 @@ import org.springframework.dao.DataIntegrityViolationException;
 @ExtendWith(MockitoExtension.class)
 class PaymentServiceTest {
 
+    private static final String IDEMPOTENCY_KEY = "key-123";
+
     @Mock
     private PaymentRepository paymentRepository;
 
@@ -39,67 +40,122 @@ class PaymentServiceTest {
     @BeforeEach
     void setUp() {
         ObjectMapper objectMapper = new ObjectMapper();
-        objectMapper.findAndRegisterModules(); // Ensure OffsetDateTime works
+        objectMapper.findAndRegisterModules();
         paymentService = new PaymentService(paymentRepository, paymentEventRepository, objectMapper);
     }
 
     @Test
-    void createPayment_SavesPaymentAndEvent() {
+    void createsPaymentAndRecordsEvent() {
         UUID merchantId = UUID.randomUUID();
-        String idempotencyKey = "key-123";
-        CreatePaymentRequest request = new CreatePaymentRequest(new BigDecimal("100.00"), "USD");
-
-        when(paymentRepository.findByMerchantIdAndIdempotencyKey(merchantId, idempotencyKey))
+        when(paymentRepository.findByMerchantIdAndIdempotencyKey(merchantId, IDEMPOTENCY_KEY))
                 .thenReturn(Optional.empty());
-
         when(paymentRepository.saveAndFlush(any(Payment.class))).thenAnswer(i -> i.getArguments()[0]);
 
-        PaymentResponse response = paymentService.createPayment(merchantId, idempotencyKey, request);
+        PaymentResult result = paymentService.createPayment(merchantId, IDEMPOTENCY_KEY, request("100.00", "USD"));
 
-        assertNotNull(response.id());
-        assertEquals(PaymentStatus.CREATED, response.status());
-        assertEquals(new BigDecimal("100.00"), response.amount());
+        assertThat(result.created()).isTrue();
+        assertThat(result.payment().status()).isEqualTo(PaymentStatus.CREATED);
+        assertThat(result.payment().amount()).isEqualByComparingTo("100.00");
 
         ArgumentCaptor<PaymentEvent> eventCaptor = ArgumentCaptor.forClass(PaymentEvent.class);
         verify(paymentEventRepository).save(eventCaptor.capture());
-        
-        PaymentEvent event = eventCaptor.getValue();
-        assertEquals("PAYMENT_CREATED", event.getType());
-        assertEquals(response.id(), event.getPaymentId());
+        assertThat(eventCaptor.getValue().getType()).isEqualTo("PAYMENT_CREATED");
+        assertThat(eventCaptor.getValue().getPaymentId()).isEqualTo(result.payment().id());
     }
 
     @Test
-    void createPayment_ReturnsExistingOnDuplicate() {
+    void replayWithSameBodyReturnsOriginalAndReportsNotCreated() {
         UUID merchantId = UUID.randomUUID();
-        String idempotencyKey = "key-123";
-        CreatePaymentRequest request = new CreatePaymentRequest(new BigDecimal("100.00"), "USD");
+        Payment existing = existingPayment(merchantId, "100.00", "USD");
+        when(paymentRepository.findByMerchantIdAndIdempotencyKey(merchantId, IDEMPOTENCY_KEY))
+                .thenReturn(Optional.of(existing));
 
-        Payment existingPayment = new Payment(UUID.randomUUID(), merchantId, idempotencyKey, new BigDecimal("100.00"), "USD");
+        PaymentResult result = paymentService.createPayment(merchantId, IDEMPOTENCY_KEY, request("100.00", "USD"));
 
-        when(paymentRepository.findByMerchantIdAndIdempotencyKey(merchantId, idempotencyKey))
-                .thenReturn(Optional.of(existingPayment));
-
-        PaymentResponse response = paymentService.createPayment(merchantId, idempotencyKey, request);
-
-        assertEquals(existingPayment.getId(), response.id());
+        assertThat(result.created()).isFalse();
+        assertThat(result.payment().id()).isEqualTo(existing.getId());
     }
 
     @Test
-    void createPayment_HandlesConcurrentDuplicate() {
+    void replayIgnoresInsignificantTrailingZeros() {
         UUID merchantId = UUID.randomUUID();
-        String idempotencyKey = "key-123";
-        CreatePaymentRequest request = new CreatePaymentRequest(new BigDecimal("100.00"), "USD");
+        Payment existing = existingPayment(merchantId, "100.00", "USD");
+        when(paymentRepository.findByMerchantIdAndIdempotencyKey(merchantId, IDEMPOTENCY_KEY))
+                .thenReturn(Optional.of(existing));
 
-        Payment existingPayment = new Payment(UUID.randomUUID(), merchantId, idempotencyKey, new BigDecimal("100.00"), "USD");
+        // 100 and 100.00 are the same amount and must not look like a changed request.
+        PaymentResult result = paymentService.createPayment(merchantId, IDEMPOTENCY_KEY, request("100", "USD"));
 
-        when(paymentRepository.findByMerchantIdAndIdempotencyKey(merchantId, idempotencyKey))
-                .thenReturn(Optional.empty()) // First check empty
-                .thenReturn(Optional.of(existingPayment)); // Second check after exception
+        assertThat(result.payment().id()).isEqualTo(existing.getId());
+    }
 
-        when(paymentRepository.saveAndFlush(any(Payment.class))).thenThrow(new DataIntegrityViolationException("Constraint violation"));
+    @Test
+    void replayWithDifferentAmountIsRejected() {
+        UUID merchantId = UUID.randomUUID();
+        when(paymentRepository.findByMerchantIdAndIdempotencyKey(merchantId, IDEMPOTENCY_KEY))
+                .thenReturn(Optional.of(existingPayment(merchantId, "100.00", "USD")));
 
-        PaymentResponse response = paymentService.createPayment(merchantId, idempotencyKey, request);
+        assertThatThrownBy(() ->
+                paymentService.createPayment(merchantId, IDEMPOTENCY_KEY, request("999999.00", "USD")))
+                .isInstanceOf(IdempotencyKeyConflictException.class);
+    }
 
-        assertEquals(existingPayment.getId(), response.id());
+    @Test
+    void replayWithDifferentCurrencyIsRejected() {
+        UUID merchantId = UUID.randomUUID();
+        when(paymentRepository.findByMerchantIdAndIdempotencyKey(merchantId, IDEMPOTENCY_KEY))
+                .thenReturn(Optional.of(existingPayment(merchantId, "100.00", "USD")));
+
+        assertThatThrownBy(() ->
+                paymentService.createPayment(merchantId, IDEMPOTENCY_KEY, request("100.00", "EUR")))
+                .isInstanceOf(IdempotencyKeyConflictException.class);
+    }
+
+    @Test
+    void concurrentDuplicateReturnsTheWinningPayment() {
+        UUID merchantId = UUID.randomUUID();
+        Payment winner = existingPayment(merchantId, "100.00", "USD");
+        when(paymentRepository.findByMerchantIdAndIdempotencyKey(merchantId, IDEMPOTENCY_KEY))
+                .thenReturn(Optional.empty())
+                .thenReturn(Optional.of(winner));
+        when(paymentRepository.saveAndFlush(any(Payment.class)))
+                .thenThrow(new DataIntegrityViolationException("unique violation"));
+
+        PaymentResult result = paymentService.createPayment(merchantId, IDEMPOTENCY_KEY, request("100.00", "USD"));
+
+        assertThat(result.created()).isFalse();
+        assertThat(result.payment().id()).isEqualTo(winner.getId());
+    }
+
+    @Test
+    void getPaymentIsScopedToTheOwningMerchant() {
+        UUID merchantId = UUID.randomUUID();
+        UUID paymentId = UUID.randomUUID();
+        when(paymentRepository.findByIdAndMerchantId(paymentId, merchantId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> paymentService.getPayment(merchantId, paymentId))
+                .isInstanceOf(PaymentNotFoundException.class);
+    }
+
+    private CreatePaymentRequest request(String amount, String currency) {
+        return new CreatePaymentRequest(new BigDecimal(amount), currency);
+    }
+
+    /** Builds a stored payment carrying the fingerprint the service would have written. */
+    private Payment existingPayment(UUID merchantId, String amount, String currency) {
+        PaymentService fingerprintSource = paymentService;
+        Payment payment = new Payment(
+                UUID.randomUUID(), merchantId, IDEMPOTENCY_KEY, null, new BigDecimal(amount), currency);
+        try {
+            var method = PaymentService.class.getDeclaredMethod("fingerprint", CreatePaymentRequest.class);
+            method.setAccessible(true);
+            String fingerprint = (String) method.invoke(fingerprintSource, request(amount, currency));
+            var field = Payment.class.getDeclaredField("requestFingerprint");
+            field.setAccessible(true);
+            field.set(payment, fingerprint);
+        } catch (ReflectiveOperationException exception) {
+            throw new IllegalStateException(exception);
+        }
+        return payment;
     }
 }

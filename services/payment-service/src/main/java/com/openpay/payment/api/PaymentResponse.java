@@ -10,5 +10,6 @@ public record PaymentResponse(
         PaymentStatus status,
         BigDecimal amount,
         String currency,
-        OffsetDateTime createdAt) {
+        OffsetDateTime createdAt,
+        OffsetDateTime updatedAt) {
 }

@@ -24,6 +24,14 @@ public class Payment {
     @Column(name = "idempotency_key", nullable = false)
     private String idempotencyKey;
 
+    /**
+     * Hash of the request body this key was first used with. Replaying the same idempotency key with
+     * a different body is a client bug, not a retry, and must be rejected rather than silently
+     * answered with the original payment.
+     */
+    @Column(name = "request_fingerprint", length = 64)
+    private String requestFingerprint;
+
     @Column(nullable = false, precision = 19, scale = 4)
     private BigDecimal amount;
 
@@ -48,10 +56,17 @@ public class Payment {
         // JPA only
     }
 
-    public Payment(UUID id, UUID merchantId, String idempotencyKey, BigDecimal amount, String currency) {
+    public Payment(
+            UUID id,
+            UUID merchantId,
+            String idempotencyKey,
+            String requestFingerprint,
+            BigDecimal amount,
+            String currency) {
         this.id = id;
         this.merchantId = merchantId;
         this.idempotencyKey = idempotencyKey;
+        this.requestFingerprint = requestFingerprint;
         this.amount = amount;
         this.currency = currency;
         this.status = PaymentStatus.CREATED;
@@ -69,6 +84,10 @@ public class Payment {
 
     public String getIdempotencyKey() {
         return idempotencyKey;
+    }
+
+    public String getRequestFingerprint() {
+        return requestFingerprint;
     }
 
     public BigDecimal getAmount() {
@@ -95,7 +114,15 @@ public class Payment {
         return updatedAt;
     }
 
-    public void updateStatus(PaymentStatus newStatus) {
+    /**
+     * Moves the payment to {@code newStatus}, refusing transitions the state machine does not allow.
+     *
+     * @throws InvalidPaymentTransitionException if the move is not legal from the current status
+     */
+    public void transitionTo(PaymentStatus newStatus) {
+        if (!status.canTransitionTo(newStatus)) {
+            throw new InvalidPaymentTransitionException(status, newStatus);
+        }
         this.status = newStatus;
         this.updatedAt = OffsetDateTime.now();
     }

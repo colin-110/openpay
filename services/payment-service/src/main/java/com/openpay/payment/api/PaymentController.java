@@ -1,20 +1,35 @@
 package com.openpay.payment.api;
 
+import com.openpay.payment.application.PaymentResult;
 import com.openpay.payment.application.PaymentService;
+import com.openpay.security.ApiKeyAuthenticationFilter;
+import com.openpay.security.ApiKeyPrincipal;
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
 import java.net.URI;
 import java.util.UUID;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.ResponseEntity;
+import org.springframework.validation.annotation.Validated;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
 @RestController
-@RequestMapping("/api/v1")
+@RequestMapping("/api/v1/payments")
+@Validated
 public class PaymentController {
+
+    private static final int MAX_PAGE_SIZE = 100;
 
     private final PaymentService paymentService;
 
@@ -22,20 +37,47 @@ public class PaymentController {
         this.paymentService = paymentService;
     }
 
-    @PostMapping("/payments")
+    @PostMapping
     public ResponseEntity<PaymentResponse> createPayment(
-            @RequestHeader("X-Merchant-Id") UUID merchantId,
-            @RequestHeader("Idempotency-Key") String idempotencyKey,
+            @RequestAttribute(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE) ApiKeyPrincipal principal,
+            @RequestHeader("Idempotency-Key") @NotBlank @Size(max = 255) String idempotencyKey,
             @Valid @RequestBody CreatePaymentRequest request) {
 
-        PaymentResponse response = paymentService.createPayment(merchantId, idempotencyKey, request);
+        PaymentResult result = paymentService.createPayment(principal.merchantId(), idempotencyKey, request);
+
+        if (!result.created()) {
+            // An idempotent replay did not create anything, so 201 would be a lie.
+            return ResponseEntity.ok(result.payment());
+        }
 
         URI location = ServletUriComponentsBuilder.fromCurrentRequest()
                 .path("/{id}")
-                .buildAndExpand(response.id())
+                .buildAndExpand(result.payment().id())
                 .toUri();
+        return ResponseEntity.created(location).body(result.payment());
+    }
 
-        // Standard HTTP behavior: return 201 Created. (Idempotent retries ideally return 200 OK, but 201 is acceptable for simplicity).
-        return ResponseEntity.created(location).body(response);
+    @GetMapping("/{paymentId}")
+    public PaymentResponse getPayment(
+            @RequestAttribute(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE) ApiKeyPrincipal principal,
+            @PathVariable("paymentId") UUID paymentId) {
+        return paymentService.getPayment(principal.merchantId(), paymentId);
+    }
+
+    @GetMapping
+    public PagedResponse<PaymentResponse> listPayments(
+            @RequestAttribute(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE) ApiKeyPrincipal principal,
+            @RequestParam(name = "page", defaultValue = "0") int page,
+            @RequestParam(name = "size", defaultValue = "20") int size) {
+        Pageable pageable = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), MAX_PAGE_SIZE));
+        return paymentService.listPayments(principal.merchantId(), pageable);
+    }
+
+    @PostMapping("/{paymentId}/status")
+    public PaymentResponse updateStatus(
+            @RequestAttribute(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE) ApiKeyPrincipal principal,
+            @PathVariable("paymentId") UUID paymentId,
+            @Valid @RequestBody UpdatePaymentStatusRequest request) {
+        return paymentService.transition(principal.merchantId(), paymentId, request.status());
     }
 }
