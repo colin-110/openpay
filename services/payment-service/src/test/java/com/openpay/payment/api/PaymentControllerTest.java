@@ -14,11 +14,9 @@ import com.openpay.payment.application.IdempotencyKeyConflictException;
 import com.openpay.payment.application.PaymentNotFoundException;
 import com.openpay.payment.application.PaymentResult;
 import com.openpay.payment.application.PaymentService;
-import com.openpay.payment.domain.InvalidPaymentTransitionException;
 import com.openpay.payment.domain.PaymentStatus;
 import com.openpay.security.ApiKeyAuthenticationFilter;
 import com.openpay.security.ApiKeyPrincipal;
-import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -59,7 +57,7 @@ class PaymentControllerTest {
                         .header("Idempotency-Key", "key-123")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(
-                                new CreatePaymentRequest(new BigDecimal("100.00"), "USD"))))
+                                new CreatePaymentRequest(10_000L, "USD"))))
                 .andExpect(status().isCreated())
                 .andExpect(header().string("Location", "http://localhost/api/v1/payments/" + paymentId))
                 .andExpect(jsonPath("$.status").value("CREATED"));
@@ -75,7 +73,7 @@ class PaymentControllerTest {
                         .header("Idempotency-Key", "key-123")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(
-                                new CreatePaymentRequest(new BigDecimal("100.00"), "USD"))))
+                                new CreatePaymentRequest(10_000L, "USD"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(paymentId.toString()));
     }
@@ -89,7 +87,7 @@ class PaymentControllerTest {
                         .header("Idempotency-Key", "key-123")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(
-                                new CreatePaymentRequest(new BigDecimal("999.00"), "USD"))))
+                                new CreatePaymentRequest(99_900L, "USD"))))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("idempotency_key_reused"));
     }
@@ -99,7 +97,7 @@ class PaymentControllerTest {
         mockMvc.perform(authenticated(post("/api/v1/payments"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(
-                                new CreatePaymentRequest(new BigDecimal("100.00"), "USD"))))
+                                new CreatePaymentRequest(10_000L, "USD"))))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("missing_header"));
     }
@@ -109,19 +107,33 @@ class PaymentControllerTest {
         mockMvc.perform(authenticated(post("/api/v1/payments"))
                         .header("Idempotency-Key", "key-123")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"amount\":10.00,\"currency\":\"###\"}"))
+                        .content("{\"amount\":1000,\"currency\":\"###\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("validation_error"));
     }
 
     @Test
-    void rejectsAmountWithMorePrecisionThanTheColumnHolds() throws Exception {
+    void rejectsFractionalAmountRatherThanTruncatingIt() throws Exception {
+        // Amounts are minor units, so 10.99 is not a valid input. Jackson's default behaviour is
+        // to truncate it to 10, which would silently charge the wrong amount.
         mockMvc.perform(authenticated(post("/api/v1/payments"))
                         .header("Idempotency-Key", "key-123")
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"amount\":10.1234567,\"currency\":\"USD\"}"))
+                        .content("{\"amount\":10.99,\"currency\":\"USD\"}"))
                 .andExpect(status().isBadRequest())
-                .andExpect(jsonPath("$.code").value("validation_error"));
+                .andExpect(jsonPath("$.code").value("malformed_request"));
+    }
+
+    @Test
+    void rejectsZeroAndNegativeAmounts() throws Exception {
+        for (String amount : new String[] {"0", "-500"}) {
+            mockMvc.perform(authenticated(post("/api/v1/payments"))
+                            .header("Idempotency-Key", "key-" + amount)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"amount\":" + amount + ",\"currency\":\"USD\"}"))
+                    .andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.code").value("validation_error"));
+        }
     }
 
     @Test
@@ -136,16 +148,13 @@ class PaymentControllerTest {
     }
 
     @Test
-    void illegalStatusTransitionReturns409() throws Exception {
-        UUID paymentId = UUID.randomUUID();
-        when(paymentService.transition(eq(MERCHANT_ID), eq(paymentId), eq(PaymentStatus.CAPTURED)))
-                .thenThrow(new InvalidPaymentTransitionException(PaymentStatus.CREATED, PaymentStatus.CAPTURED));
-
-        mockMvc.perform(authenticated(post("/api/v1/payments/{id}/status", paymentId))
+    void merchantsCannotMoveTheirOwnPaymentsForward() throws Exception {
+        // Lifecycle is driven by provider callbacks, not by the merchant. If this route ever comes
+        // back, a merchant could mark their own payment CAPTURED without a provider involved.
+        mockMvc.perform(authenticated(post("/api/v1/payments/{id}/status", UUID.randomUUID()))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"status\":\"CAPTURED\"}"))
-                .andExpect(status().isConflict())
-                .andExpect(jsonPath("$.code").value("invalid_state_transition"));
+                .andExpect(status().isNotFound());
     }
 
     private MockHttpServletRequestBuilder authenticated(MockHttpServletRequestBuilder builder) {
@@ -158,7 +167,7 @@ class PaymentControllerTest {
         return new PaymentResponse(
                 paymentId,
                 PaymentStatus.CREATED,
-                new BigDecimal("100.00"),
+                10_000L,
                 "USD",
                 OffsetDateTime.now(),
                 OffsetDateTime.now());

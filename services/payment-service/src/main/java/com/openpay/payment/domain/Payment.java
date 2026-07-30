@@ -7,7 +7,6 @@ import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import jakarta.persistence.Version;
-import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.util.UUID;
 
@@ -32,8 +31,9 @@ public class Payment {
     @Column(name = "request_fingerprint", length = 64)
     private String requestFingerprint;
 
-    @Column(nullable = false, precision = 19, scale = 4)
-    private BigDecimal amount;
+    /** Amount in the currency's smallest unit, e.g. cents for USD, paise for INR. */
+    @Column(nullable = false)
+    private Long amount;
 
     @Column(nullable = false, length = 3)
     private String currency;
@@ -61,7 +61,7 @@ public class Payment {
             UUID merchantId,
             String idempotencyKey,
             String requestFingerprint,
-            BigDecimal amount,
+            Long amount,
             String currency) {
         this.id = id;
         this.merchantId = merchantId;
@@ -90,7 +90,7 @@ public class Payment {
         return requestFingerprint;
     }
 
-    public BigDecimal getAmount() {
+    public Long getAmount() {
         return amount;
     }
 

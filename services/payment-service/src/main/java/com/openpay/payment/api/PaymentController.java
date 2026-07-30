@@ -72,12 +72,4 @@ public class PaymentController {
         Pageable pageable = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), MAX_PAGE_SIZE));
         return paymentService.listPayments(principal.merchantId(), pageable);
     }
-
-    @PostMapping("/{paymentId}/status")
-    public PaymentResponse updateStatus(
-            @RequestAttribute(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE) ApiKeyPrincipal principal,
-            @PathVariable("paymentId") UUID paymentId,
-            @Valid @RequestBody UpdatePaymentStatusRequest request) {
-        return paymentService.transition(principal.merchantId(), paymentId, request.status());
-    }
 }

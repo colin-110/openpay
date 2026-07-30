@@ -1,20 +1,20 @@
 package com.openpay.payment.api;
 
-import jakarta.validation.constraints.DecimalMax;
-import jakarta.validation.constraints.DecimalMin;
-import jakarta.validation.constraints.Digits;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Pattern;
-import java.math.BigDecimal;
 
 public record CreatePaymentRequest(
+        /**
+         * Amount in the currency's smallest unit: 10000 means USD 100.00, and JPY 100 means 100 yen
+         * because the yen has no minor unit. Integers remove any question of rounding or scale.
+         */
         @NotNull
-        @DecimalMin(value = "0.01", inclusive = true)
-        @DecimalMax(value = "999999999999999.9999", inclusive = true)
-        // Matches NUMERIC(19,4): without this the DB would silently round a 5-decimal amount.
-        @Digits(integer = 15, fraction = 4)
-        BigDecimal amount,
+        @Min(value = 1, message = "must be at least 1 minor unit")
+        @Max(value = 99_999_999_999_999L, message = "exceeds the maximum supported amount")
+        Long amount,
 
         @NotBlank
         @Pattern(regexp = "^[A-Z]{3}$", message = "must be a 3-letter uppercase ISO 4217 code")

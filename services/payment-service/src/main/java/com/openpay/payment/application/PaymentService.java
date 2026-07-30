@@ -2,6 +2,9 @@ package com.openpay.payment.application;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.openpay.events.OpenPayTopics;
+import com.openpay.events.payload.PaymentCreated;
+import com.openpay.events.payload.PaymentStatusUpdated;
 import com.openpay.payment.api.CreatePaymentRequest;
 import com.openpay.payment.api.PagedResponse;
 import com.openpay.payment.api.PaymentResponse;
@@ -10,7 +13,7 @@ import com.openpay.payment.domain.PaymentEvent;
 import com.openpay.payment.domain.PaymentEventRepository;
 import com.openpay.payment.domain.PaymentRepository;
 import com.openpay.payment.domain.PaymentStatus;
-import java.math.BigDecimal;
+import com.openpay.payment.outbox.OutboxWriter;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -33,14 +36,17 @@ public class PaymentService {
 
     private final PaymentRepository paymentRepository;
     private final PaymentEventRepository paymentEventRepository;
+    private final OutboxWriter outboxWriter;
     private final ObjectMapper objectMapper;
 
     public PaymentService(
             PaymentRepository paymentRepository,
             PaymentEventRepository paymentEventRepository,
+            OutboxWriter outboxWriter,
             ObjectMapper objectMapper) {
         this.paymentRepository = paymentRepository;
         this.paymentEventRepository = paymentEventRepository;
+        this.outboxWriter = outboxWriter;
         this.objectMapper = objectMapper;
     }
 
@@ -64,6 +70,11 @@ public class PaymentService {
                     request.currency()));
 
             recordEvent(payment, "PAYMENT_CREATED");
+
+            // Same transaction as the payment row: the event cannot escape without the payment,
+            // and the payment cannot commit without the event.
+            outboxWriter.append(OpenPayTopics.PAYMENT_CREATED, payment.getId(), new PaymentCreated(
+                    payment.getId(), payment.getMerchantId(), payment.getAmount(), payment.getCurrency()));
 
             log.info("Created payment id={} merchantId={}", payment.getId(), merchantId);
             return new PaymentResult(toResponse(payment), true);
@@ -94,19 +105,47 @@ public class PaymentService {
     }
 
     /**
-     * Applies a state-machine transition. The entity refuses illegal moves; the {@code @Version}
-     * column makes a concurrent transition on the same payment fail rather than silently interleave.
+     * Applies a lifecycle transition driven by an inbound event.
+     *
+     * <p>Deliberately tolerant rather than strict. Kafka delivery is at-least-once and acquirers
+     * re-send callbacks, so the same outcome arrives more than once. A redelivery asking for the
+     * state we are already in is success, not an error, and an out-of-order redelivery is dropped
+     * rather than thrown: throwing would put the consumer in a redelivery loop over a message that
+     * can never succeed.
+     *
+     * @return true if the payment actually moved
      */
     @Transactional
-    public PaymentResponse transition(UUID merchantId, UUID paymentId, PaymentStatus target) {
-        Payment payment = paymentRepository.findByIdAndMerchantId(paymentId, merchantId)
-                .orElseThrow(() -> new PaymentNotFoundException(paymentId));
+    public boolean applyTransition(UUID paymentId, PaymentStatus target, String reason) {
+        Payment payment = paymentRepository.findById(paymentId).orElse(null);
+        if (payment == null) {
+            log.warn("Ignoring transition to {} for unknown payment {}", target, paymentId);
+            return false;
+        }
+
+        PaymentStatus current = payment.getStatus();
+        if (current == target) {
+            log.info("Payment {} is already {}, treating as a duplicate delivery", paymentId, target);
+            return false;
+        }
+        if (!current.canTransitionTo(target)) {
+            log.warn("Dropping illegal transition {} -> {} for payment {} ({})",
+                    current, target, paymentId, reason);
+            return false;
+        }
 
         payment.transitionTo(target);
         recordEvent(payment, "PAYMENT_" + target.name());
+        outboxWriter.append(OpenPayTopics.PAYMENT_STATUS_UPDATED, payment.getId(), new PaymentStatusUpdated(
+                payment.getId(),
+                payment.getMerchantId(),
+                current.name(),
+                target.name(),
+                payment.getAmount(),
+                payment.getCurrency()));
 
-        log.info("Payment id={} transitioned to {}", paymentId, target);
-        return toResponse(payment);
+        log.info("Payment {} moved {} -> {} ({})", paymentId, current, target, reason);
+        return true;
     }
 
     private PaymentResponse replay(Payment stored, String idempotencyKey, String fingerprint) {
@@ -131,13 +170,9 @@ public class PaymentService {
                         payment.getUpdatedAt()))));
     }
 
-    /**
-     * Canonical hash of the fields that define the payment. {@code stripTrailingZeros} keeps
-     * {@code 100} and {@code 100.00} from looking like different requests.
-     */
+    /** Canonical hash of the fields that define the payment. */
     private String fingerprint(CreatePaymentRequest request) {
-        String canonical = request.amount().stripTrailingZeros().toPlainString()
-                + "|" + request.currency().toUpperCase();
+        String canonical = request.amount() + "|" + request.currency().toUpperCase();
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             return HexFormat.of().formatHex(digest.digest(canonical.getBytes(StandardCharsets.UTF_8)));
@@ -169,7 +204,7 @@ public class PaymentService {
             UUID paymentId,
             UUID merchantId,
             PaymentStatus status,
-            BigDecimal amount,
+            Long amount,
             String currency,
             OffsetDateTime occurredAt) {
     }

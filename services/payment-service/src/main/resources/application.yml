@@ -11,8 +11,30 @@ spring:
       ddl-auto: validate
   flyway:
     enabled: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      # Wait for all in-sync replicas: an outbox row is only marked published once the broker
+      # has durably accepted it.
+      acks: all
+    consumer:
+      group-id: payment-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+  jackson:
+    deserialization:
+      # Amounts are integer minor units. Jackson would otherwise quietly truncate a fractional
+      # amount, so "10.99" would be accepted and charged as 10. Reject it as a client error instead.
+      accept-float-as-int: false
 
 openpay:
+  outbox:
+    enabled: true
+    poll-interval-ms: 500
+    batch-size: 100
   security:
     auth-base-url: ${AUTH_SERVICE_BASE_URL:http://localhost:8081}
     # Every payment path requires a valid merchant API key. Merchant identity comes from the

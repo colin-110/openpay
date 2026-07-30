@@ -5,17 +5,18 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.openpay.events.OpenPayTopics;
 import com.openpay.payment.api.CreatePaymentRequest;
 import com.openpay.payment.api.PaymentResponse;
 import com.openpay.payment.application.IdempotencyKeyConflictException;
 import com.openpay.payment.application.PaymentResult;
 import com.openpay.payment.application.PaymentService;
-import com.openpay.payment.domain.InvalidPaymentTransitionException;
 import com.openpay.payment.domain.PaymentEvent;
 import com.openpay.payment.domain.PaymentEventRepository;
 import com.openpay.payment.domain.PaymentRepository;
 import com.openpay.payment.domain.PaymentStatus;
-import java.math.BigDecimal;
+import com.openpay.payment.outbox.OutboxEvent;
+import com.openpay.payment.outbox.OutboxRepository;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.UUID;
@@ -37,7 +38,12 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  * Booting the real schema also makes Hibernate's {@code ddl-auto: validate} a genuine check that
  * entities match the Flyway migrations.
  */
-@SpringBootTest
+// No broker in this test: the outbox row is asserted directly, and the relay and
+// listeners are switched off so they do not poll a Kafka that is not running.
+@SpringBootTest(properties = {
+        "openpay.outbox.enabled=false",
+        "spring.kafka.listener.auto-startup=false"
+})
 @Testcontainers
 class PaymentPersistenceIT {
 
@@ -54,12 +60,15 @@ class PaymentPersistenceIT {
     @Autowired
     private PaymentEventRepository paymentEventRepository;
 
+    @Autowired
+    private OutboxRepository outboxRepository;
+
     @Test
     void persistsAPaymentAndItsJsonbEvent() throws Exception {
         UUID merchantId = UUID.randomUUID();
 
         PaymentResult result = paymentService.createPayment(
-                merchantId, "it-key-1", new CreatePaymentRequest(new BigDecimal("100.00"), "USD"));
+                merchantId, "it-key-1", new CreatePaymentRequest(10_000L, "USD"));
 
         assertThat(result.created()).isTrue();
         assertThat(paymentRepository.findById(result.payment().id())).isPresent();
@@ -79,14 +88,16 @@ class PaymentPersistenceIT {
     }
 
     @Test
-    void roundTripsTheAmountWithoutLosingScale() {
+    void roundTripsLargeAmountsExactly() {
         UUID merchantId = UUID.randomUUID();
+        // Well beyond a 32-bit int, to prove the column and the mapping are both 64-bit.
+        long largeAmount = 99_999_999_999_999L;
 
         PaymentResult result = paymentService.createPayment(
-                merchantId, "it-key-scale", new CreatePaymentRequest(new BigDecimal("12.3456"), "USD"));
+                merchantId, "it-key-large", new CreatePaymentRequest(largeAmount, "USD"));
 
         assertThat(paymentRepository.findById(result.payment().id()).orElseThrow().getAmount())
-                .isEqualByComparingTo("12.3456");
+                .isEqualTo(largeAmount);
     }
 
     @Test
@@ -95,7 +106,7 @@ class PaymentPersistenceIT {
         OffsetDateTime before = OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(1);
 
         PaymentResult result = paymentService.createPayment(
-                merchantId, "it-key-tz", new CreatePaymentRequest(new BigDecimal("5.00"), "EUR"));
+                merchantId, "it-key-tz", new CreatePaymentRequest(500L, "EUR"));
 
         // Would drift if the column were `timestamp without time zone`, as V2 originally created it.
         OffsetDateTime stored = paymentRepository.findById(result.payment().id()).orElseThrow().getCreatedAt();
@@ -106,7 +117,7 @@ class PaymentPersistenceIT {
     @Test
     void replayingAKeyWithTheSameBodyReturnsTheOriginal() {
         UUID merchantId = UUID.randomUUID();
-        CreatePaymentRequest request = new CreatePaymentRequest(new BigDecimal("42.00"), "USD");
+        CreatePaymentRequest request = new CreatePaymentRequest(4_200L, "USD");
 
         PaymentResult first = paymentService.createPayment(merchantId, "it-key-2", request);
         PaymentResult second = paymentService.createPayment(merchantId, "it-key-2", request);
@@ -121,10 +132,10 @@ class PaymentPersistenceIT {
     void replayingAKeyWithADifferentBodyIsRejected() {
         UUID merchantId = UUID.randomUUID();
         paymentService.createPayment(
-                merchantId, "it-key-3", new CreatePaymentRequest(new BigDecimal("10.00"), "USD"));
+                merchantId, "it-key-3", new CreatePaymentRequest(1_000L, "USD"));
 
         assertThatThrownBy(() -> paymentService.createPayment(
-                merchantId, "it-key-3", new CreatePaymentRequest(new BigDecimal("9999.00"), "USD")))
+                merchantId, "it-key-3", new CreatePaymentRequest(999_900L, "USD")))
                 .isInstanceOf(IdempotencyKeyConflictException.class);
     }
 
@@ -133,7 +144,7 @@ class PaymentPersistenceIT {
         UUID owner = UUID.randomUUID();
         UUID stranger = UUID.randomUUID();
         PaymentResult result = paymentService.createPayment(
-                owner, "it-key-4", new CreatePaymentRequest(new BigDecimal("7.00"), "USD"));
+                owner, "it-key-4", new CreatePaymentRequest(700L, "USD"));
 
         assertThatThrownBy(() -> paymentService.getPayment(stranger, result.payment().id()))
                 .isInstanceOf(RuntimeException.class);
@@ -142,42 +153,75 @@ class PaymentPersistenceIT {
     }
 
     @Test
-    void transitionsAreAppliedAndIllegalOnesRejected() {
+    void walksTheProviderDrivenLifecycle() {
         UUID merchantId = UUID.randomUUID();
-        PaymentResult created = paymentService.createPayment(
-                merchantId, "it-key-5", new CreatePaymentRequest(new BigDecimal("15.00"), "USD"));
-        UUID paymentId = created.payment().id();
+        UUID paymentId = paymentService.createPayment(
+                merchantId, "it-key-5", new CreatePaymentRequest(1_500L, "USD")).payment().id();
 
-        assertThatThrownBy(() -> paymentService.transition(merchantId, paymentId, PaymentStatus.CAPTURED))
-                .isInstanceOf(InvalidPaymentTransitionException.class);
+        // Nothing may skip the provider: a payment cannot be captured straight from CREATED.
+        assertThat(paymentService.applyTransition(paymentId, PaymentStatus.CAPTURED, "test")).isFalse();
+        assertThat(paymentService.getPayment(merchantId, paymentId).status()).isEqualTo(PaymentStatus.CREATED);
 
-        PaymentResponse authorized = paymentService.transition(merchantId, paymentId, PaymentStatus.AUTHORIZED);
-        assertThat(authorized.status()).isEqualTo(PaymentStatus.AUTHORIZED);
-        assertThat(authorized.updatedAt()).isAfterOrEqualTo(authorized.createdAt());
+        assertThat(paymentService.applyTransition(paymentId, PaymentStatus.PENDING_PROVIDER, "routed")).isTrue();
+        assertThat(paymentService.applyTransition(paymentId, PaymentStatus.AUTHORIZED, "callback")).isTrue();
+        assertThat(paymentService.applyTransition(paymentId, PaymentStatus.CAPTURED, "callback")).isTrue();
 
-        PaymentResponse captured = paymentService.transition(merchantId, paymentId, PaymentStatus.CAPTURED);
-        assertThat(captured.status()).isEqualTo(PaymentStatus.CAPTURED);
-
+        assertThat(paymentService.getPayment(merchantId, paymentId).status()).isEqualTo(PaymentStatus.CAPTURED);
         assertThat(paymentEventRepository.findAll())
                 .filteredOn(event -> event.getPaymentId().equals(paymentId))
-                .extracting(event -> event.getType())
-                .contains("PAYMENT_CREATED", "PAYMENT_AUTHORIZED", "PAYMENT_CAPTURED");
+                .extracting(PaymentEvent::getType)
+                .contains("PAYMENT_CREATED", "PAYMENT_PENDING_PROVIDER", "PAYMENT_AUTHORIZED", "PAYMENT_CAPTURED");
+    }
+
+    @Test
+    void redeliveredCallbacksAreAbsorbedRatherThanFailing() {
+        UUID merchantId = UUID.randomUUID();
+        UUID paymentId = paymentService.createPayment(
+                merchantId, "it-key-dup", new CreatePaymentRequest(2_500L, "USD")).payment().id();
+        paymentService.applyTransition(paymentId, PaymentStatus.PENDING_PROVIDER, "routed");
+        paymentService.applyTransition(paymentId, PaymentStatus.CAPTURED, "callback");
+
+        // Acquirers re-send callbacks and Kafka delivers at least once. A repeat of an outcome we
+        // already applied must be a quiet no-op, not an exception that puts the consumer in a
+        // redelivery loop.
+        assertThat(paymentService.applyTransition(paymentId, PaymentStatus.CAPTURED, "redelivery")).isFalse();
+        assertThat(paymentService.applyTransition(paymentId, PaymentStatus.AUTHORIZED, "late redelivery")).isFalse();
+        assertThat(paymentService.getPayment(merchantId, paymentId).status()).isEqualTo(PaymentStatus.CAPTURED);
+    }
+
+    @Test
+    void everyPaymentWritesAnOutboxRowInTheSameTransaction() {
+        UUID merchantId = UUID.randomUUID();
+        long before = outboxRepository.count();
+
+        UUID paymentId = paymentService.createPayment(
+                merchantId, "it-key-outbox", new CreatePaymentRequest(3_300L, "USD")).payment().id();
+
+        assertThat(outboxRepository.count()).isEqualTo(before + 1);
+        OutboxEvent event = outboxRepository.findAll().stream()
+                .filter(candidate -> candidate.getAggregateId().equals(paymentId.toString()))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("no outbox row for the new payment"));
+
+        assertThat(event.getTopic()).isEqualTo(OpenPayTopics.PAYMENT_CREATED);
+        assertThat(event.getPublishedAt()).isNull();
+        assertThat(event.getPayload()).contains(paymentId.toString());
     }
 
     @Test
     void listingIsScopedToTheMerchantAndNewestFirst() {
         UUID merchantId = UUID.randomUUID();
         paymentService.createPayment(
-                merchantId, "it-list-1", new CreatePaymentRequest(new BigDecimal("1.00"), "USD"));
+                merchantId, "it-list-1", new CreatePaymentRequest(100L, "USD"));
         paymentService.createPayment(
-                merchantId, "it-list-2", new CreatePaymentRequest(new BigDecimal("2.00"), "USD"));
+                merchantId, "it-list-2", new CreatePaymentRequest(200L, "USD"));
         paymentService.createPayment(
-                UUID.randomUUID(), "it-list-3", new CreatePaymentRequest(new BigDecimal("3.00"), "USD"));
+                UUID.randomUUID(), "it-list-3", new CreatePaymentRequest(300L, "USD"));
 
         var page = paymentService.listPayments(merchantId, PageRequest.of(0, 10));
 
         assertThat(page.totalItems()).isEqualTo(2);
         assertThat(page.items()).extracting(PaymentResponse::amount)
-                .allSatisfy(amount -> assertThat(amount).isLessThan(new BigDecimal("3.00")));
+                .allSatisfy(amount -> assertThat(amount).isLessThan(300L));
     }
 }

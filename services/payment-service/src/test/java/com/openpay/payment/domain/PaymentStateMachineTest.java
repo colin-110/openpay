@@ -3,11 +3,11 @@ package com.openpay.payment.domain;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import java.math.BigDecimal;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.EnumSource;
 
 class PaymentStateMachineTest {
 
@@ -18,10 +18,15 @@ class PaymentStateMachineTest {
 
     @ParameterizedTest
     @CsvSource({
-            "CREATED,AUTHORIZED",
+            "CREATED,PENDING_PROVIDER",
             "CREATED,FAILED",
+            "CREATED,CANCELLED",
+            "PENDING_PROVIDER,AUTHORIZED",
+            "PENDING_PROVIDER,CAPTURED",
+            "PENDING_PROVIDER,FAILED",
             "AUTHORIZED,CAPTURED",
             "AUTHORIZED,FAILED",
+            "AUTHORIZED,CANCELLED",
     })
     void allowsLegalTransitions(PaymentStatus from, PaymentStatus to) {
         assertThat(from.canTransitionTo(to)).isTrue();
@@ -29,23 +34,34 @@ class PaymentStateMachineTest {
 
     @ParameterizedTest
     @CsvSource({
+            // A payment must go through a provider; it cannot be captured on the merchant's say-so.
+            "CREATED,AUTHORIZED",
             "CREATED,CAPTURED",
             "CREATED,CREATED",
-            "AUTHORIZED,CREATED",
+            "PENDING_PROVIDER,CREATED",
+            "PENDING_PROVIDER,CANCELLED",
+            "AUTHORIZED,PENDING_PROVIDER",
             "CAPTURED,FAILED",
             "CAPTURED,AUTHORIZED",
             "FAILED,AUTHORIZED",
-            "FAILED,CAPTURED",
+            "CANCELLED,CAPTURED",
     })
     void rejectsIllegalTransitions(PaymentStatus from, PaymentStatus to) {
         assertThat(from.canTransitionTo(to)).isFalse();
     }
 
-    @Test
-    void capturedAndFailedAreTerminal() {
-        assertThat(PaymentStatus.CAPTURED.isTerminal()).isTrue();
-        assertThat(PaymentStatus.FAILED.isTerminal()).isTrue();
-        assertThat(PaymentStatus.CREATED.isTerminal()).isFalse();
+    @ParameterizedTest
+    @EnumSource(value = PaymentStatus.class, names = {"CAPTURED", "FAILED", "CANCELLED"})
+    void terminalStatesAcceptNothing(PaymentStatus terminal) {
+        assertThat(terminal.isTerminal()).isTrue();
+        assertThat(terminal.allowedTransitions()).isEmpty();
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = PaymentStatus.class, names = {"CREATED", "PENDING_PROVIDER", "AUTHORIZED"})
+    void nonTerminalStatesCanStillMove(PaymentStatus status) {
+        assertThat(status.isTerminal()).isFalse();
+        assertThat(status.allowedTransitions()).isNotEmpty();
     }
 
     @Test
@@ -63,6 +79,7 @@ class PaymentStateMachineTest {
         var createdUpdatedAt = payment.getUpdatedAt();
         Thread.sleep(2);
 
+        payment.transitionTo(PaymentStatus.PENDING_PROVIDER);
         payment.transitionTo(PaymentStatus.AUTHORIZED);
         payment.transitionTo(PaymentStatus.CAPTURED);
 
@@ -81,6 +98,6 @@ class PaymentStateMachineTest {
 
     private Payment payment() {
         return new Payment(
-                UUID.randomUUID(), UUID.randomUUID(), "key-1", "fingerprint", new BigDecimal("10.00"), "USD");
+                UUID.randomUUID(), UUID.randomUUID(), "key-1", "fingerprint", 1_000L, "USD");
     }
 }
