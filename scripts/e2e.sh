@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+#
+# End-to-end acceptance run against a live OpenPay stack.
+#
+# This exercises the behaviour that unit tests cannot: real HTTP, real filters, real routing,
+# real database, all four services talking to each other. It caught a bug the unit suite missed.
+#
+# Prerequisites:
+#   docker compose -f platform/docker/docker-compose.yml up -d
+#   OPENPAY_ADMIN_TOKEN set, and all four services running
+#
+# Usage:
+#   OPENPAY_ADMIN_TOKEN=dev-admin-token ./scripts/e2e.sh
+#
+# Override any base URL via environment, e.g. GATEWAY_URL=https://staging.example.test
+#
+# Exits non-zero if any check fails.
+
+set -u
+
+GATEWAY_URL="${GATEWAY_URL:-http://localhost:8080}"
+AUTH_URL="${AUTH_URL:-http://localhost:8081}"
+MERCHANT_URL="${MERCHANT_URL:-http://localhost:8082}"
+PAYMENT_URL="${PAYMENT_URL:-http://localhost:8083}"
+ADMIN_TOKEN="${OPENPAY_ADMIN_TOKEN:-}"
+
+if [ -z "$ADMIN_TOKEN" ]; then
+  echo "OPENPAY_ADMIN_TOKEN is not set. Admin endpoints fail closed without it, so this run" >&2
+  echo "would report false failures. Export it and try again." >&2
+  exit 2
+fi
+
+# Probe each candidate rather than trusting `command -v`: on Windows, `python3` is often a
+# Microsoft Store alias stub that resolves on PATH but is not a working interpreter.
+PY=""
+for candidate in python3 python py; do
+  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c "import json,sys" >/dev/null 2>&1; then
+    PY="$candidate"
+    break
+  fi
+done
+if [ -z "$PY" ]; then
+  echo "A working python3 (or python) is required to read JSON responses." >&2
+  exit 2
+fi
+
+pass=0
+fail=0
+
+# check <name> <expected> <actual>
+check() {
+  if [ "$2" = "$3" ]; then
+    printf "  PASS  %-58s %s\n" "$1" "$3"
+    pass=$((pass + 1))
+  else
+    printf "  FAIL  %-58s expected %s, got %s\n" "$1" "$2" "$3"
+    fail=$((fail + 1))
+  fi
+}
+
+code() { curl -s -o /dev/null -w "%{http_code}" "$@"; }
+body() { curl -s "$@"; }
+jget() { "$PY" -c "import sys,json;print(json.load(sys.stdin).get('$1',''))"; }
+
+JSON='Content-Type: application/json'
+ADMIN_HEADER="X-Admin-Token: $ADMIN_TOKEN"
+
+echo "Gateway  $GATEWAY_URL"
+echo "Auth     $AUTH_URL"
+echo "Merchant $MERCHANT_URL"
+echo "Payment  $PAYMENT_URL"
+echo
+
+echo "== Admin gating =="
+check "onboard merchant without admin token" 401 \
+  "$(code -X POST "$MERCHANT_URL/api/v1/merchants" -H "$JSON" \
+     -d '{"merchantCode":"nope","legalName":"N","webhookUrl":null,"defaultCurrency":"USD"}')"
+check "onboard merchant with wrong admin token" 401 \
+  "$(code -X POST "$MERCHANT_URL/api/v1/merchants" -H 'X-Admin-Token: wrong' -H "$JSON" \
+     -d '{"merchantCode":"nope2","legalName":"N","webhookUrl":null,"defaultCurrency":"USD"}')"
+check "issue api key without admin token" 401 \
+  "$(code -X POST "$AUTH_URL/api/v1/api-keys" -H "$JSON" \
+     -d '{"merchantId":"11111111-1111-1111-1111-111111111111","name":"x","scope":"s","expiresAt":null}')"
+check "issue api key for a merchant that does not exist" 422 \
+  "$(code -X POST "$AUTH_URL/api/v1/api-keys" -H "$ADMIN_HEADER" -H "$JSON" \
+     -d '{"merchantId":"deadbeef-0000-0000-0000-000000000000","name":"attacker","scope":"admin","expiresAt":null}')"
+
+SUFFIX="e2e-$(date +%s)-$$"
+MID=$(body -X POST "$MERCHANT_URL/api/v1/merchants" -H "$ADMIN_HEADER" -H "$JSON" \
+  -d "{\"merchantCode\":\"$SUFFIX\",\"legalName\":\"E2E Shop\",\"webhookUrl\":null,\"defaultCurrency\":\"USD\"}" | jget id)
+check "onboard merchant with admin token" 201 \
+  "$(code -X POST "$MERCHANT_URL/api/v1/merchants" -H "$ADMIN_HEADER" -H "$JSON" \
+     -d "{\"merchantCode\":\"$SUFFIX-b\",\"legalName\":\"E2E Shop B\",\"webhookUrl\":null,\"defaultCurrency\":\"USD\"}")"
+check "duplicate merchant code rejected" 409 \
+  "$(code -X POST "$MERCHANT_URL/api/v1/merchants" -H "$ADMIN_HEADER" -H "$JSON" \
+     -d "{\"merchantCode\":\"$SUFFIX\",\"legalName\":\"Dup\",\"webhookUrl\":null,\"defaultCurrency\":\"USD\"}")"
+
+KEY=$(body -X POST "$AUTH_URL/api/v1/api-keys" -H "$ADMIN_HEADER" -H "$JSON" \
+  -d "{\"merchantId\":\"$MID\",\"name\":\"primary\",\"scope\":\"payments:write\",\"expiresAt\":null}" | jget apiKey)
+if [ -n "$KEY" ]; then
+  printf "  PASS  %-58s %s\n" "issue api key for a real merchant" "${KEY:0:18}..."
+  pass=$((pass + 1))
+else
+  printf "  FAIL  %-58s no key returned\n" "issue api key for a real merchant"
+  fail=$((fail + 1))
+fi
+KEY_HEADER="X-Api-Key: $KEY"
+
+echo "== Payment authentication =="
+check "payment via gateway, no key" 401 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H 'Idempotency-Key: k1' -H "$JSON" \
+     -d '{"amount":100.00,"currency":"USD"}')"
+check "payment via gateway, bogus key" 401 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H 'X-Api-Key: opk_bogus.nope' -H 'Idempotency-Key: k1' -H "$JSON" \
+     -d '{"amount":100.00,"currency":"USD"}')"
+# Merchant identity must come from the validated key, never from a client-supplied header.
+check "direct to payment-service, spoofed X-Merchant-Id" 401 \
+  "$(code -X POST "$PAYMENT_URL/api/v1/payments" -H 'X-Merchant-Id: 11111111-1111-1111-1111-111111111111' \
+     -H 'Idempotency-Key: spoof' -H "$JSON" -d '{"amount":50.00,"currency":"USD"}')"
+
+echo "== Payment creation and idempotency =="
+IK="order-$SUFFIX"
+PID=$(body -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H "Idempotency-Key: $IK" -H "$JSON" \
+  -d '{"amount":100.00,"currency":"USD"}' | jget id)
+check "create payment through the gateway" 201 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H "Idempotency-Key: $IK-2" -H "$JSON" \
+     -d '{"amount":100.00,"currency":"USD"}')"
+check "replay, same key and body -> 200" 200 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H "Idempotency-Key: $IK" -H "$JSON" \
+     -d '{"amount":100.00,"currency":"USD"}')"
+check "replay, insignificant trailing zeros -> 200" 200 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H "Idempotency-Key: $IK" -H "$JSON" \
+     -d '{"amount":100,"currency":"USD"}')"
+check "replay, different amount -> 409" 409 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H "Idempotency-Key: $IK" -H "$JSON" \
+     -d '{"amount":999999.00,"currency":"USD"}')"
+check "replay, different currency -> 409" 409 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H "Idempotency-Key: $IK" -H "$JSON" \
+     -d '{"amount":100.00,"currency":"EUR"}')"
+REPLAY_ID=$(body -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H "Idempotency-Key: $IK" -H "$JSON" \
+  -d '{"amount":100.00,"currency":"USD"}' | jget id)
+check "replay returns the original payment id" "$PID" "$REPLAY_ID"
+
+echo "== Request validation =="
+check "missing Idempotency-Key" 400 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H "$JSON" -d '{"amount":10.00,"currency":"USD"}')"
+check "non-ISO currency ###" 400 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H 'Idempotency-Key: v1' -H "$JSON" \
+     -d '{"amount":10.00,"currency":"###"}')"
+check "lowercase currency" 400 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H 'Idempotency-Key: v2' -H "$JSON" \
+     -d '{"amount":10.00,"currency":"usd"}')"
+# NUMERIC(19,4) would silently round this; it must be refused instead.
+check "amount with more precision than the column" 400 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H 'Idempotency-Key: v3' -H "$JSON" \
+     -d '{"amount":10.1234567,"currency":"USD"}')"
+check "negative amount" 400 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H 'Idempotency-Key: v4' -H "$JSON" \
+     -d '{"amount":-50.00,"currency":"USD"}')"
+check "zero amount" 400 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H 'Idempotency-Key: v5' -H "$JSON" \
+     -d '{"amount":0,"currency":"USD"}')"
+check "malformed json" 400 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H 'Idempotency-Key: v6' -H "$JSON" -d '{not json')"
+
+echo "== Reads and the payment state machine =="
+check "get payment by id" 200 "$(code "$GATEWAY_URL/api/v1/payments/$PID" -H "$KEY_HEADER")"
+check "get unknown payment" 404 \
+  "$(code "$GATEWAY_URL/api/v1/payments/00000000-0000-0000-0000-000000000000" -H "$KEY_HEADER")"
+check "list payments" 200 "$(code "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER")"
+check "illegal CREATED -> CAPTURED" 409 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments/$PID/status" -H "$KEY_HEADER" -H "$JSON" -d '{"status":"CAPTURED"}')"
+check "legal CREATED -> AUTHORIZED" 200 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments/$PID/status" -H "$KEY_HEADER" -H "$JSON" -d '{"status":"AUTHORIZED"}')"
+check "legal AUTHORIZED -> CAPTURED" 200 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments/$PID/status" -H "$KEY_HEADER" -H "$JSON" -d '{"status":"CAPTURED"}')"
+check "CAPTURED is terminal" 409 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments/$PID/status" -H "$KEY_HEADER" -H "$JSON" -d '{"status":"FAILED"}')"
+check "unknown status value rejected" 400 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments/$PID/status" -H "$KEY_HEADER" -H "$JSON" -d '{"status":"BANANA"}')"
+
+echo "== Tenant isolation =="
+OTHER_MID=$(body -X POST "$MERCHANT_URL/api/v1/merchants" -H "$ADMIN_HEADER" -H "$JSON" \
+  -d "{\"merchantCode\":\"$SUFFIX-other\",\"legalName\":\"Other\",\"webhookUrl\":null,\"defaultCurrency\":\"EUR\"}" | jget id)
+OTHER_KEY=$(body -X POST "$AUTH_URL/api/v1/api-keys" -H "$ADMIN_HEADER" -H "$JSON" \
+  -d "{\"merchantId\":\"$OTHER_MID\",\"name\":\"other\",\"scope\":\"payments:write\",\"expiresAt\":null}" | jget apiKey)
+check "another merchant cannot read the payment" 404 \
+  "$(code "$GATEWAY_URL/api/v1/payments/$PID" -H "X-Api-Key: $OTHER_KEY")"
+check "another merchant sees an empty list" 0 \
+  "$(body "$GATEWAY_URL/api/v1/payments" -H "X-Api-Key: $OTHER_KEY" | jget totalItems)"
+
+echo "== Gateway routing =="
+# A catch-all exception handler must not turn Spring's own 404 into a fabricated 500.
+check "unrouted path is 404, not 500" 404 "$(code "$GATEWAY_URL/api/v1/nothing-here" -H "$KEY_HEADER")"
+check "open ping stays reachable" 200 "$(code "$GATEWAY_URL/api/v1/ping")"
+check "merchant route proxied through gateway" 200 "$(code "$GATEWAY_URL/api/v1/merchants/$MID" -H "$ADMIN_HEADER")"
+check "merchant route via gateway without token" 401 "$(code "$GATEWAY_URL/api/v1/merchants/$MID")"
+
+echo
+echo "PASS=$pass FAIL=$fail"
+[ "$fail" -eq 0 ] || exit 1

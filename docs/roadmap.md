@@ -2,6 +2,18 @@
 
 Each phase is sized for approximately 2 to 5 days and must leave the repository in a working state.
 
+## Delivered So Far
+
+Phases 1 to 3 are implemented, with these gaps still open inside them:
+
+- Phase 2: `users` and `audit_logs` tables, `POST /api/v1/auth/login`, and the
+  `merchant.created.v1` / `apikey.created.v1` topics are not built. API key auth is complete.
+- Phase 3: `POST /api/v1/refunds` and the `payment.*` topics are not built. Payment creation,
+  fingerprinted idempotency, optimistic locking, and the state machine are complete.
+
+Kafka is running in Compose but no service produces or consumes yet; that is Phase 7. The
+`payment_events` table is written on every state change and is the outbox those topics will relay.
+
 ## Phase 1 - Project Initialization
 
 ### Goal
