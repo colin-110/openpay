@@ -20,6 +20,9 @@
         <module>services/auth-service</module>
         <module>services/merchant-service</module>
         <module>services/payment-service</module>
+        <module>services/provider-router-service</module>
+        <module>services/webhook-service</module>
+        <module>services/mock-bank-service</module>
     </modules>
 
     <properties>

@@ -1,0 +1,59 @@
+spring:
+  application:
+    name: provider-router-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:openpay_router}
+    username: ${DB_USERNAME:openpay}
+    password: ${DB_PASSWORD:openpay}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+    consumer:
+      group-id: provider-router-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+
+openpay:
+  router:
+    failure-threshold: 3
+    breaker-open-duration: 30s
+    connect-timeout: 2s
+    # Shorter than a bank's simulated hang, so a stuck acquirer becomes a failover.
+    read-timeout: 3s
+    providers:
+      - name: mock-bank-a
+        base-url: ${MOCK_BANK_A_URL:http://localhost:9001}
+        priority: 10
+        enabled: true
+      - name: mock-bank-b
+        base-url: ${MOCK_BANK_B_URL:http://localhost:9002}
+        priority: 20
+        enabled: true
+
+server:
+  port: 8085
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] [%X{correlationId}] %logger{36} - %msg%n"

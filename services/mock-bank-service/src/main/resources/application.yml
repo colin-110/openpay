@@ -1,0 +1,35 @@
+spring:
+  application:
+    name: mock-bank-service
+
+openpay:
+  bank:
+    name: ${BANK_NAME:mock-bank-a}
+    callback-url: ${WEBHOOK_BASE_URL:http://localhost:8084/internal/provider/webhooks}
+    # Must match the secret webhook-service verifies with. Empty by default: an acquirer secret
+    # baked into source would be no secret at all.
+    signing-secret: ${BANK_SIGNING_SECRET:}
+    decline-rate: ${BANK_DECLINE_RATE:0.0}
+    timeout-rate: ${BANK_TIMEOUT_RATE:0.0}
+    unavailable: ${BANK_UNAVAILABLE:false}
+    latency: ${BANK_LATENCY:50ms}
+    callback-delay: ${BANK_CALLBACK_DELAY:300ms}
+    hang-duration: ${BANK_HANG_DURATION:8s}
+
+server:
+  port: ${BANK_PORT:9001}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] [%X{correlationId}] %logger{36} - %msg%n"
