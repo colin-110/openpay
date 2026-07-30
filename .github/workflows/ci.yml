@@ -1,4 +1,4 @@
-name: CI
+name: CI Pipeline
 
 on:
   push:
@@ -7,8 +7,10 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build-and-test:
+  build-and-verify:
+    name: Build & Verify
     runs-on: ubuntu-latest
+    
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -18,7 +20,15 @@ jobs:
         with:
           java-version: '21'
           distribution: 'temurin'
-          cache: maven
+          cache: 'maven'
 
-      - name: Build and test with Maven
-        run: ./mvnw -B test
+      - name: Build and verify with Maven
+        run: ./mvnw -B clean verify
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: '**/target/surefire-reports/'
+          retention-days: 7
