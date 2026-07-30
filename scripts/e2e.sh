@@ -22,6 +22,9 @@ GATEWAY_URL="${GATEWAY_URL:-http://localhost:8080}"
 AUTH_URL="${AUTH_URL:-http://localhost:8081}"
 MERCHANT_URL="${MERCHANT_URL:-http://localhost:8082}"
 PAYMENT_URL="${PAYMENT_URL:-http://localhost:8083}"
+# Set to empty to skip the asynchronous provider-flow checks.
+ROUTER_URL="${ROUTER_URL-http://localhost:8085}"
+WEBHOOK_URL="${WEBHOOK_URL-http://localhost:8084}"
 ADMIN_TOKEN="${OPENPAY_ADMIN_TOKEN:-}"
 
 if [ -z "$ADMIN_TOKEN" ]; then
@@ -69,6 +72,8 @@ echo "Gateway  $GATEWAY_URL"
 echo "Auth     $AUTH_URL"
 echo "Merchant $MERCHANT_URL"
 echo "Payment  $PAYMENT_URL"
+echo "Router   ${ROUTER_URL:-<skipped>}"
+echo "Webhook  ${WEBHOOK_URL:-<skipped>}"
 echo
 
 echo "== Admin gating =="
@@ -109,54 +114,51 @@ KEY_HEADER="X-Api-Key: $KEY"
 echo "== Payment authentication =="
 check "payment via gateway, no key" 401 \
   "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H 'Idempotency-Key: k1' -H "$JSON" \
-     -d '{"amount":100.00,"currency":"USD"}')"
+     -d '{"amount":10000,"currency":"USD"}')"
 check "payment via gateway, bogus key" 401 \
   "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H 'X-Api-Key: opk_bogus.nope' -H 'Idempotency-Key: k1' -H "$JSON" \
-     -d '{"amount":100.00,"currency":"USD"}')"
+     -d '{"amount":10000,"currency":"USD"}')"
 # Merchant identity must come from the validated key, never from a client-supplied header.
 check "direct to payment-service, spoofed X-Merchant-Id" 401 \
   "$(code -X POST "$PAYMENT_URL/api/v1/payments" -H 'X-Merchant-Id: 11111111-1111-1111-1111-111111111111' \
-     -H 'Idempotency-Key: spoof' -H "$JSON" -d '{"amount":50.00,"currency":"USD"}')"
+     -H 'Idempotency-Key: spoof' -H "$JSON" -d '{"amount":5000,"currency":"USD"}')"
 
 echo "== Payment creation and idempotency =="
 IK="order-$SUFFIX"
 PID=$(body -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H "Idempotency-Key: $IK" -H "$JSON" \
-  -d '{"amount":100.00,"currency":"USD"}' | jget id)
+  -d '{"amount":10000,"currency":"USD"}' | jget id)
 check "create payment through the gateway" 201 \
   "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H "Idempotency-Key: $IK-2" -H "$JSON" \
-     -d '{"amount":100.00,"currency":"USD"}')"
+     -d '{"amount":10000,"currency":"USD"}')"
 check "replay, same key and body -> 200" 200 \
   "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H "Idempotency-Key: $IK" -H "$JSON" \
-     -d '{"amount":100.00,"currency":"USD"}')"
-check "replay, insignificant trailing zeros -> 200" 200 \
-  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H "Idempotency-Key: $IK" -H "$JSON" \
-     -d '{"amount":100,"currency":"USD"}')"
+     -d '{"amount":10000,"currency":"USD"}')"
 check "replay, different amount -> 409" 409 \
   "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H "Idempotency-Key: $IK" -H "$JSON" \
-     -d '{"amount":999999.00,"currency":"USD"}')"
+     -d '{"amount":99999900,"currency":"USD"}')"
 check "replay, different currency -> 409" 409 \
   "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H "Idempotency-Key: $IK" -H "$JSON" \
-     -d '{"amount":100.00,"currency":"EUR"}')"
+     -d '{"amount":10000,"currency":"EUR"}')"
 REPLAY_ID=$(body -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H "Idempotency-Key: $IK" -H "$JSON" \
-  -d '{"amount":100.00,"currency":"USD"}' | jget id)
+  -d '{"amount":10000,"currency":"USD"}' | jget id)
 check "replay returns the original payment id" "$PID" "$REPLAY_ID"
 
 echo "== Request validation =="
 check "missing Idempotency-Key" 400 \
-  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H "$JSON" -d '{"amount":10.00,"currency":"USD"}')"
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H "$JSON" -d '{"amount":1000,"currency":"USD"}')"
 check "non-ISO currency ###" 400 \
   "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H 'Idempotency-Key: v1' -H "$JSON" \
-     -d '{"amount":10.00,"currency":"###"}')"
+     -d '{"amount":1000,"currency":"###"}')"
 check "lowercase currency" 400 \
   "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H 'Idempotency-Key: v2' -H "$JSON" \
-     -d '{"amount":10.00,"currency":"usd"}')"
-# NUMERIC(19,4) would silently round this; it must be refused instead.
-check "amount with more precision than the column" 400 \
+     -d '{"amount":1000,"currency":"usd"}')"
+# Amounts are minor units; Jackson would truncate 10.99 to 10 if we let it.
+check "fractional amount rejected, not truncated" 400 \
   "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H 'Idempotency-Key: v3' -H "$JSON" \
-     -d '{"amount":10.1234567,"currency":"USD"}')"
+     -d '{"amount":10.99,"currency":"USD"}')"
 check "negative amount" 400 \
   "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H 'Idempotency-Key: v4' -H "$JSON" \
-     -d '{"amount":-50.00,"currency":"USD"}')"
+     -d '{"amount":-5000,"currency":"USD"}')"
 check "zero amount" 400 \
   "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" -H 'Idempotency-Key: v5' -H "$JSON" \
      -d '{"amount":0,"currency":"USD"}')"
@@ -168,16 +170,34 @@ check "get payment by id" 200 "$(code "$GATEWAY_URL/api/v1/payments/$PID" -H "$K
 check "get unknown payment" 404 \
   "$(code "$GATEWAY_URL/api/v1/payments/00000000-0000-0000-0000-000000000000" -H "$KEY_HEADER")"
 check "list payments" 200 "$(code "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER")"
-check "illegal CREATED -> CAPTURED" 409 \
-  "$(code -X POST "$GATEWAY_URL/api/v1/payments/$PID/status" -H "$KEY_HEADER" -H "$JSON" -d '{"status":"CAPTURED"}')"
-check "legal CREATED -> AUTHORIZED" 200 \
-  "$(code -X POST "$GATEWAY_URL/api/v1/payments/$PID/status" -H "$KEY_HEADER" -H "$JSON" -d '{"status":"AUTHORIZED"}')"
-check "legal AUTHORIZED -> CAPTURED" 200 \
-  "$(code -X POST "$GATEWAY_URL/api/v1/payments/$PID/status" -H "$KEY_HEADER" -H "$JSON" -d '{"status":"CAPTURED"}')"
-check "CAPTURED is terminal" 409 \
-  "$(code -X POST "$GATEWAY_URL/api/v1/payments/$PID/status" -H "$KEY_HEADER" -H "$JSON" -d '{"status":"FAILED"}')"
-check "unknown status value rejected" 400 \
-  "$(code -X POST "$GATEWAY_URL/api/v1/payments/$PID/status" -H "$KEY_HEADER" -H "$JSON" -d '{"status":"BANANA"}')"
+# A merchant must not be able to move its own payment forward; only a verified provider
+# callback can. The route is gone entirely.
+check "merchant cannot self-capture a payment" 404   "$(code -X POST "$GATEWAY_URL/api/v1/payments/$PID/status" -H "$KEY_HEADER" -H "$JSON" -d '{"status":"CAPTURED"}')"
+
+echo "== Asynchronous provider flow =="
+# Routed, dispatched, and completed by provider callback with no further client action.
+final_status=""
+for _ in $(seq 1 40); do
+  final_status=$(body "$GATEWAY_URL/api/v1/payments/$PID" -H "$KEY_HEADER" | jget status)
+  [ "$final_status" = "CAPTURED" ] && break
+  [ "$final_status" = "FAILED" ] && break
+done
+check "payment reaches CAPTURED with no client action" CAPTURED "$final_status"
+
+if [ -n "${ROUTER_URL:-}" ]; then
+  attempts=$(body "$ROUTER_URL/internal/router/payments/$PID/attempts")
+  case "$attempts" in
+    *ACCEPTED*) printf "  PASS  %-58s %s
+" "router recorded an accepted provider attempt" "ok"; pass=$((pass + 1));;
+    *) printf "  FAIL  %-58s %s
+" "router recorded an accepted provider attempt" "$attempts"; fail=$((fail + 1));;
+  esac
+fi
+
+if [ -n "${WEBHOOK_URL:-}" ]; then
+  check "forged callback signature refused" 401     "$(code -X POST "$WEBHOOK_URL/internal/provider/webhooks/mock-bank-a" -H 'X-Provider-Signature: deadbeef' -H "$JSON" -d "{\"eventId\":\"forged\",\"paymentId\":\"$PID\",\"outcome\":\"CAPTURED\"}")"
+  check "callback from an unknown provider refused" 401     "$(code -X POST "$WEBHOOK_URL/internal/provider/webhooks/evil-bank" -H 'X-Provider-Signature: whatever' -H "$JSON" -d "{\"eventId\":\"forged2\",\"paymentId\":\"$PID\",\"outcome\":\"CAPTURED\"}")"
+fi
 
 echo "== Tenant isolation =="
 OTHER_MID=$(body -X POST "$MERCHANT_URL/api/v1/merchants" -H "$ADMIN_HEADER" -H "$JSON" \

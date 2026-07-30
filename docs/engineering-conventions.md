@@ -17,18 +17,29 @@
 ## Database Conventions
 
 - use Flyway for all schema changes
-- store money as `NUMERIC(19,4)`, never as a float or double
-- reject request amounts with more precision than the column holds, rather than letting the
-  database round them silently
+- store money as `BIGINT` in the currency's minor units, never as a float, double, or decimal
 - use `TIMESTAMP WITH TIME ZONE` for every timestamp; a plain `TIMESTAMP` silently discards the
   offset written by an `OffsetDateTime`
 - use UUIDs for domain identifiers
 - prefer append-only history for financial records
 
-Money is stored as exact fixed-point decimal rather than integer minor units. Postgres `NUMERIC`
-is exact, so there is no float drift, and 4 decimal places leaves room for currencies with more
-than two and for fractional-unit fees. The tradeoff is that every writer must validate scale on
-the way in, which `CreatePaymentRequest` does with `@Digits`.
+### Money
+
+Amounts are integers in the currency's smallest unit: `10000` is USD 100.00, and `100` is JPY 100
+because the yen has no minor unit. This is how Stripe, Razorpay, and Adyen model money, and it is
+what the architecture document specifies.
+
+Integers remove rounding and scale from every conversation. There is no "which scale did you
+mean", no drift, and no per-service agreement to maintain once ledger entries, refunds, and
+settlements all carry amounts.
+
+Two consequences worth knowing:
+
+- APIs accept and return integers. A fractional amount is a client error, not something to round.
+  `spring.jackson.deserialization.accept-float-as-int` is disabled in payment-service, because
+  Jackson's default is to truncate `10.99` to `10` — silently charging the wrong amount.
+- Presentation-layer formatting needs the currency's minor-unit exponent (2 for USD, 0 for JPY,
+  3 for KWD). That belongs in whatever renders an amount, not in the storage model.
 
 ## Testing Conventions
 

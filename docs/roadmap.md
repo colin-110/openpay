@@ -4,15 +4,27 @@ Each phase is sized for approximately 2 to 5 days and must leave the repository 
 
 ## Delivered So Far
 
-Phases 1 to 3 are implemented, with these gaps still open inside them:
+Phases 1 to 3 are implemented, plus the asynchronous provider flow that phases 5, 6, and part of 7
+describe. The system now routes a payment to an acquirer, fails over when one is unhealthy, and
+completes the payment from a signature-verified callback.
 
-- Phase 2: `users` and `audit_logs` tables, `POST /api/v1/auth/login`, and the
-  `merchant.created.v1` / `apikey.created.v1` topics are not built. API key auth is complete.
-- Phase 3: `POST /api/v1/refunds` and the `payment.*` topics are not built. Payment creation,
-  fingerprinted idempotency, optimistic locking, and the state machine are complete.
+Built:
 
-Kafka is running in Compose but no service produces or consumes yet; that is Phase 7. The
-`payment_events` table is written on every state change and is the outbox those topics will relay.
+- phases 1-3, except the gaps listed below
+- `mock-bank-service` (phase 5), deployed twice as mock-bank-a and mock-bank-b
+- `provider-router-service` (phase 6) with priority routing, failover, and a circuit breaker
+- `webhook-service` (phase 10's inbound half) with HMAC verification and deduplication
+- transactional outbox and Kafka event backbone (the core of phase 7)
+
+Still open inside those phases:
+
+- Phase 2: `users`, `audit_logs`, and `POST /api/v1/auth/login`
+- Phase 3: `POST /api/v1/refunds`
+- Phase 6: routing rules are static configuration, not a `provider_routing_rules` table
+- Phase 7: no DLQ topics and no replay tool; a poison event currently just retries
+- Phase 10: outbound merchant webhooks are not built, only inbound provider callbacks
+
+Money is stored as `BIGINT` minor units throughout, matching the architecture document.
 
 ## Phase 1 - Project Initialization
 

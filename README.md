@@ -10,10 +10,14 @@ architecture, distributed systems patterns, and production engineering practices
 | `gateway-service` | 8080 | — | Front door. Authenticates merchant API keys and routes to the service that owns each path. |
 | `auth-service` | 8081 | `openpay_auth` | Issues and validates API keys. Stores only key hashes. |
 | `merchant-service` | 8082 | `openpay_merchant` | Merchant onboarding and lookup. |
-| `payment-service` | 8083 | `openpay_payment` | Payment creation, idempotency, and the payment state machine. |
+| `payment-service` | 8083 | `openpay_payment` | Payment creation, idempotency, the state machine, and the transactional outbox. |
+| `webhook-service` | 8084 | `openpay_webhook` | Trust boundary for inbound provider callbacks: signature verification and deduplication. |
+| `provider-router-service` | 8085 | `openpay_router` | Chooses an acquirer, fails over, and trips a circuit breaker on a bad one. |
+| `mock-bank-service` | 9001 / 9002 | � | Simulated acquirers. One codebase, run twice as `mock-bank-a` and `mock-bank-b`. |
 
-Shared code lives in `libs/`: `common-observability` (correlation IDs) and `common-security`
-(API key and admin token authentication, applied per path by configuration).
+Shared code lives in `libs/`: `common-observability` (correlation IDs), `common-security`
+(API key and admin token authentication, applied per path by configuration), and `common-kafka`
+(topic names, the event envelope, and the JSON event contracts every service agrees on).
 
 ## Credentials
 
@@ -60,9 +64,40 @@ export OPENPAY_ADMIN_TOKEN=dev-admin-token
 `test` runs the unit tests. `verify` additionally runs the `*IT` integration tests, which start a
 real PostgreSQL via Testcontainers and require Docker to be running.
 
-### 4. Run the services
+### 4. Run everything at once (Windows)
 
-Each service needs its own terminal. `-am` builds the shared libraries it depends on:
+Seven services in seven terminals is enough friction to stop anyone actually running this, so
+there is a helper. It checks that infrastructure is up, launches each service in its own window,
+and waits until all of them report healthy:
+
+```bash
+.\scriptsun-local.ps1
+```
+
+Stop them all with:
+
+```bash
+.\scriptsun-local.ps1 -Stop
+```
+
+Then run the acceptance suite against the live stack:
+
+```bash
+bash scripts/e2e.sh
+```
+
+### 5. Or run the services individually
+
+Each service needs its own terminal. `-am` builds the shared libraries it depends on.
+
+For the asynchronous flow you also need matching signing secrets, so webhook-service can verify
+what the banks send:
+
+```bash
+export MOCK_BANK_A_SECRET=bank-a-secret
+export MOCK_BANK_B_SECRET=bank-b-secret
+```
+
 
 ```bash
 ./mvnw -pl services/merchant-service -am spring-boot:run
@@ -80,8 +115,42 @@ Each service needs its own terminal. `-am` builds the shared libraries it depend
 ./mvnw -pl services/gateway-service -am spring-boot:run
 ```
 
+```bash
+./mvnw -pl services/webhook-service -am spring-boot:run
+```
+
+```bash
+./mvnw -pl services/provider-router-service -am spring-boot:run
+```
+
+The two acquirers are the same module run twice with different configuration:
+
+```bash
+BANK_NAME=mock-bank-a BANK_PORT=9001 BANK_SIGNING_SECRET=bank-a-secret ./mvnw -pl services/mock-bank-service -am spring-boot:run
+```
+
+```bash
+BANK_NAME=mock-bank-b BANK_PORT=9002 BANK_SIGNING_SECRET=bank-b-secret ./mvnw -pl services/mock-bank-service -am spring-boot:run
+```
+
 Start order matters for a full flow: auth-service verifies merchants against merchant-service, and
 payment-service verifies API keys against auth-service.
+
+### 6. Watch failover happen
+
+Kill `mock-bank-a` and create a payment. The router records a failed attempt against A, succeeds on
+B, and after three consecutive failures stops calling A at all:
+
+```bash
+curl http://localhost:8085/internal/router/providers
+```
+
+```bash
+curl http://localhost:8085/internal/router/payments/<PAYMENT_ID>/attempts
+```
+
+Each acquirer can also be made to misbehave on purpose with `BANK_DECLINE_RATE`,
+`BANK_TIMEOUT_RATE`, and `BANK_UNAVAILABLE`.
 
 ## API Walkthrough
 
@@ -100,7 +169,7 @@ curl -X POST http://localhost:8081/api/v1/api-keys -H "X-Admin-Token: dev-admin-
 Create a payment through the gateway:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/payments -H "X-Api-Key: <API_KEY>" -H "Idempotency-Key: order-1001" -H "Content-Type: application/json" -d '{"amount":100.00,"currency":"USD"}'
+curl -X POST http://localhost:8080/api/v1/payments -H "X-Api-Key: <API_KEY>" -H "Idempotency-Key: order-1001" -H "Content-Type: application/json" -d '{"amount":10000,"currency":"USD"}'
 ```
 
 Advance it through the state machine:
@@ -116,7 +185,6 @@ Merchant-facing, via the gateway on 8080, authenticated with `X-Api-Key`:
 - `POST /api/v1/payments` — create a payment. Requires `Idempotency-Key`.
 - `GET /api/v1/payments/{paymentId}`
 - `GET /api/v1/payments?page=0&size=20`
-- `POST /api/v1/payments/{paymentId}/status`
 
 Platform-operator, authenticated with `X-Admin-Token`:
 
@@ -200,6 +268,10 @@ Delivered:
 - API key issuance and validation, with admin-gated issuance
 - gateway routing and API key enforcement
 - payment creation with fingerprinted idempotency, plus the payment state machine
+- transactional outbox and a Kafka event backbone
+- provider routing with failover and a per-acquirer circuit breaker
+- simulated acquirers with configurable latency, declines, and outages
+- signature-verified, deduplicated provider callbacks
 - CI running unit and integration tests on JDK 21 and 25
 
 Not yet built (see [docs/roadmap.md](docs/roadmap.md)):
