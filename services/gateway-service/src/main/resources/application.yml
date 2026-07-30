@@ -8,6 +8,10 @@ spring:
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
 
+openpay:
+  auth:
+    base-url: ${AUTH_SERVICE_BASE_URL:http://localhost:8081}
+
 server:
   port: 8080
   shutdown: graceful
