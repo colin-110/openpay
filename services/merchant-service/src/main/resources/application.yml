@@ -2,7 +2,7 @@ spring:
   application:
     name: merchant-service
   datasource:
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:openpay_merchant}
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:openpay_merchant}
     username: ${DB_USERNAME:openpay}
     password: ${DB_PASSWORD:openpay}
   jpa:
