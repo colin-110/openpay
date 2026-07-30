@@ -28,7 +28,7 @@ public class Merchant {
     @Column(name = "webhook_url")
     private String webhookUrl;
 
-    @Column(name = "default_currency", nullable = false, length = 3)
+    @Column(name = "default_currency", nullable = false, length = 3, columnDefinition = "bpchar")
     private String defaultCurrency;
 
     @Column(name = "created_at", nullable = false)
