@@ -12,6 +12,20 @@ spring:
   flyway:
     enabled: true
 
+openpay:
+  merchant:
+    base-url: ${MERCHANT_SERVICE_BASE_URL:http://localhost:8082}
+  security:
+    # Issuing a credential is a platform-operator action. Empty by default: a shipped default
+    # would be a publicly known secret, so admin paths fail closed until this is set.
+    admin-token: ${OPENPAY_ADMIN_TOKEN:}
+    admin-paths:
+      - /api/v1/api-keys
+  auth:
+    max-failed-validations: 20
+    failed-validation-window: PT1M
+    last-used-refresh-interval: PT5M
+
 server:
   port: 8081
   shutdown: graceful

@@ -12,6 +12,13 @@ spring:
   flyway:
     enabled: true
 
+openpay:
+  security:
+    # Merchant onboarding and lookup are platform-operator actions, not merchant-facing ones.
+    admin-token: ${OPENPAY_ADMIN_TOKEN:}
+    admin-paths:
+      - /api/v1/merchants
+
 server:
   port: 8082
   shutdown: graceful

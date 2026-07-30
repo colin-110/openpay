@@ -5,12 +5,16 @@ import com.openpay.auth.api.CreateApiKeyResponse;
 import com.openpay.auth.api.ValidateApiKeyResponse;
 import com.openpay.auth.domain.ApiKey;
 import com.openpay.auth.domain.ApiKeyRepository;
+import com.openpay.auth.infrastructure.MerchantServiceClient;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.time.OffsetDateTime;
 import java.util.HexFormat;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -19,20 +23,40 @@ public class ApiKeyService {
 
     private static final String ACTIVE_STATUS = "ACTIVE";
     private static final String KEY_PREFIX_PREFIX = "opk_";
-    private static final int PREFIX_RANDOM_CHARS = 12;
+    private static final int PREFIX_RANDOM_BYTES = 6;
+    private static final int SECRET_RANDOM_BYTES = 32;
+
+    private static final Logger log = LoggerFactory.getLogger(ApiKeyService.class);
 
     private final ApiKeyRepository apiKeyRepository;
+    private final MerchantServiceClient merchantServiceClient;
+    private final ApiKeyUsageTracker usageTracker;
+    private final ValidationAttemptLimiter attemptLimiter;
+    private final SecureRandom secureRandom = new SecureRandom();
 
-    public ApiKeyService(ApiKeyRepository apiKeyRepository) {
+    public ApiKeyService(
+            ApiKeyRepository apiKeyRepository,
+            MerchantServiceClient merchantServiceClient,
+            ApiKeyUsageTracker usageTracker,
+            ValidationAttemptLimiter attemptLimiter) {
         this.apiKeyRepository = apiKeyRepository;
+        this.merchantServiceClient = merchantServiceClient;
+        this.usageTracker = usageTracker;
+        this.attemptLimiter = attemptLimiter;
     }
 
     @Transactional
     public CreateApiKeyResponse createApiKey(CreateApiKeyRequest request) {
-        String randomKey = UUID.randomUUID().toString().replace("-", "")
-                + UUID.randomUUID().toString().replace("-", "");
-        String keyPrefix = KEY_PREFIX_PREFIX + randomKey.substring(0, PREFIX_RANDOM_CHARS);
-        String apiKey = keyPrefix + "." + randomKey.substring(PREFIX_RANDOM_CHARS);
+        if (!merchantServiceClient.merchantExists(request.merchantId())) {
+            throw new UnknownMerchantException(request.merchantId());
+        }
+        if (request.expiresAt() != null && request.expiresAt().isBefore(OffsetDateTime.now())) {
+            throw new InvalidApiKeyRequestException("expiresAt must be in the future");
+        }
+
+        String keyPrefix = KEY_PREFIX_PREFIX + randomHex(PREFIX_RANDOM_BYTES);
+        String secret = randomHex(SECRET_RANDOM_BYTES);
+        String apiKey = keyPrefix + "." + secret;
 
         ApiKey entity = new ApiKey();
         entity.setId(UUID.randomUUID());
@@ -45,6 +69,9 @@ public class ApiKeyService {
         entity.setExpiresAt(request.expiresAt());
 
         ApiKey saved = apiKeyRepository.save(entity);
+        log.info("Issued API key id={} for merchantId={}", saved.getId(), saved.getMerchantId());
+
+        // The plaintext key is returned exactly once, here. Only its hash is persisted.
         return new CreateApiKeyResponse(
                 saved.getId(),
                 saved.getMerchantId(),
@@ -57,13 +84,16 @@ public class ApiKeyService {
                 saved.getCreatedAt());
     }
 
-    @Transactional
+    @Transactional(readOnly = true)
     public ValidateApiKeyResponse validateKey(String apiKey) {
         String keyPrefix = extractPrefix(apiKey);
-        ApiKey entity = apiKeyRepository.findByKeyPrefix(keyPrefix)
-                .orElseThrow(() -> new InvalidApiKeyException("API key is invalid"));
+        attemptLimiter.checkAllowed(keyPrefix);
 
-        if (!entity.getKeyHash().equals(hash(apiKey))) {
+        ApiKey entity = apiKeyRepository.findByKeyPrefix(keyPrefix).orElse(null);
+        if (entity == null || !constantTimeEquals(entity.getKeyHash(), hash(apiKey))) {
+            attemptLimiter.recordFailure(keyPrefix);
+            // Same message whether the prefix is unknown or the secret is wrong: distinguishing
+            // them would tell an attacker when they have found a real prefix.
             throw new InvalidApiKeyException("API key is invalid");
         }
         if (!ACTIVE_STATUS.equals(entity.getStatus())) {
@@ -73,7 +103,11 @@ public class ApiKeyService {
             throw new InvalidApiKeyException("API key is expired");
         }
 
-        entity.setLastUsedAt(OffsetDateTime.now());
+        attemptLimiter.recordSuccess(keyPrefix);
+        if (usageTracker.isStale(entity.getLastUsedAt())) {
+            usageTracker.touch(entity.getId());
+        }
+
         return new ValidateApiKeyResponse(true, entity.getMerchantId(), entity.getScope(), entity.getStatus());
     }
 
@@ -83,6 +117,17 @@ public class ApiKeyService {
             throw new InvalidApiKeyException("API key is invalid");
         }
         return apiKey.substring(0, separatorIndex);
+    }
+
+    private String randomHex(int byteCount) {
+        byte[] bytes = new byte[byteCount];
+        secureRandom.nextBytes(bytes);
+        return HexFormat.of().formatHex(bytes);
+    }
+
+    private boolean constantTimeEquals(String storedHash, String presentedHash) {
+        return MessageDigest.isEqual(
+                storedHash.getBytes(StandardCharsets.UTF_8), presentedHash.getBytes(StandardCharsets.UTF_8));
     }
 
     private String hash(String rawValue) {
