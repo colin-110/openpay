@@ -6,6 +6,8 @@ import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 import java.time.OffsetDateTime;
 import java.util.UUID;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 @Entity
 @Table(name = "payment_events")
@@ -20,6 +22,12 @@ public class PaymentEvent {
     @Column(nullable = false)
     private String type;
 
+    /**
+     * {@code columnDefinition} alone only tells Flyway what to create; Hibernate would still bind
+     * this String as varchar and Postgres rejects that against a jsonb column. The JdbcTypeCode is
+     * what actually makes the insert work.
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
     @Column(columnDefinition = "jsonb")
     private String payload;
 
