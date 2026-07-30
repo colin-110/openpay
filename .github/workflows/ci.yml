@@ -8,27 +8,39 @@ on:
 
 jobs:
   build-and-verify:
-    name: Build & Verify
+    name: Build & Verify (JDK ${{ matrix.java }})
     runs-on: ubuntu-latest
-    
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # 21 is the compile target; 25 is what developers actually run locally. Testing both
+        # keeps a runtime-only difference from being discovered on someone's laptop.
+        java: [ '21', '25' ]
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 21
+      - name: Set up JDK ${{ matrix.java }}
         uses: actions/setup-java@v4
         with:
-          java-version: '21'
+          java-version: ${{ matrix.java }}
           distribution: 'temurin'
           cache: 'maven'
 
+      # `verify` runs the unit tests (surefire) and then the *IT integration tests (failsafe),
+      # which start a real PostgreSQL through Testcontainers using the runner's Docker daemon.
+      # Those are what actually prove the JPA entities match the Flyway migrations.
       - name: Build and verify with Maven
         run: ./mvnw -B clean verify
 
-      - name: Upload Test Results
+      - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: surefire-reports
-          path: '**/target/surefire-reports/'
+          name: test-reports-jdk${{ matrix.java }}
+          path: |
+            **/target/surefire-reports/
+            **/target/failsafe-reports/
           retention-days: 7

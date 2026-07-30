@@ -14,6 +14,7 @@
 
     <modules>
         <module>libs/common-observability</module>
+        <module>libs/common-security</module>
         <module>services/gateway-service</module>
         <module>services/auth-service</module>
         <module>services/merchant-service</module>
@@ -25,6 +26,13 @@
         <spring.boot.version>3.5.4</spring.boot.version>
         <springdoc.version>2.8.9</springdoc.version>
         <testcontainers.version>1.21.3</testcontainers.version>
+        <!--
+          docker-java negotiates an API version older than Docker Engine 29 accepts, so
+          Testcontainers fails with a bare "Could not find a valid Docker environment".
+          Pinning a supported version fixes it. 1.44 ships in Docker 25+ (2024); override with
+          -Dtestcontainers.docker.api.version=... on an older daemon.
+        -->
+        <testcontainers.docker.api.version>1.44</testcontainers.docker.api.version>
         <maven.compiler.release>${java.version}</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
@@ -56,6 +64,28 @@
                 <configuration>
                     <skip>true</skip>
                 </configuration>
+            </plugin>
+            <!--
+              Integration tests (*IT) run under failsafe during `verify`, not during `test`.
+              They start a real PostgreSQL via Testcontainers, so `mvn test` stays runnable
+              without Docker while `mvn verify` proves entities actually match the migrations.
+            -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <api.version>${testcontainers.docker.api.version}</api.version>
+                    </systemPropertyVariables>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
         <pluginManagement>
