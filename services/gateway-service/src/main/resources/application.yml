@@ -1,16 +1,23 @@
 spring:
   application:
     name: gateway-service
-  data:
-    redis:
-      host: ${REDIS_HOST:localhost}
-      port: ${REDIS_PORT:6379}
-  kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
 
 openpay:
-  auth:
-    base-url: ${AUTH_SERVICE_BASE_URL:http://localhost:8081}
+  security:
+    auth-base-url: ${AUTH_SERVICE_BASE_URL:http://localhost:8081}
+    # Merchant-facing paths the gateway authenticates before forwarding. Merchant admin paths are
+    # deliberately absent: they use the admin token, which merchant-service checks itself.
+    api-key-paths:
+      - /api/v1/payments
+      - /api/v1/protected
+  gateway:
+    connect-timeout: 2s
+    read-timeout: 10s
+    routes:
+      - path-prefix: /api/v1/payments
+        target: ${PAYMENT_SERVICE_BASE_URL:http://localhost:8083}
+      - path-prefix: /api/v1/merchants
+        target: ${MERCHANT_SERVICE_BASE_URL:http://localhost:8082}
 
 server:
   port: 8080
