@@ -13,7 +13,7 @@ architecture, distributed systems patterns, and production engineering practices
 | `payment-service` | 8083 | `openpay_payment` | Payment creation, idempotency, the state machine, and the transactional outbox. |
 | `webhook-service` | 8084 | `openpay_webhook` | Trust boundary for inbound provider callbacks: signature verification and deduplication. |
 | `provider-router-service` | 8085 | `openpay_router` | Chooses an acquirer, fails over, and trips a circuit breaker on a bad one. |
-| `mock-bank-service` | 9001 / 9002 | � | Simulated acquirers. One codebase, run twice as `mock-bank-a` and `mock-bank-b`. |
+| `mock-bank-service` | 9001 / 9002 | — | Simulated acquirers. One codebase, run twice as `mock-bank-a` and `mock-bank-b`. |
 
 Shared code lives in `libs/`: `common-observability` (correlation IDs), `common-security`
 (API key and admin token authentication, applied per path by configuration), and `common-kafka`
@@ -71,13 +71,13 @@ there is a helper. It checks that infrastructure is up, launches each service in
 and waits until all of them report healthy:
 
 ```bash
-.\scriptsun-local.ps1
+.\scripts\run-local.ps1
 ```
 
 Stop them all with:
 
 ```bash
-.\scriptsun-local.ps1 -Stop
+.\scripts\run-local.ps1 -Stop
 ```
 
 Then run the acceptance suite against the live stack:
@@ -97,7 +97,6 @@ what the banks send:
 export MOCK_BANK_A_SECRET=bank-a-secret
 export MOCK_BANK_B_SECRET=bank-b-secret
 ```
-
 
 ```bash
 ./mvnw -pl services/merchant-service -am spring-boot:run
@@ -172,10 +171,11 @@ Create a payment through the gateway:
 curl -X POST http://localhost:8080/api/v1/payments -H "X-Api-Key: <API_KEY>" -H "Idempotency-Key: order-1001" -H "Content-Type: application/json" -d '{"amount":10000,"currency":"USD"}'
 ```
 
-Advance it through the state machine:
+That returns `201` with status `CREATED`. Nothing else is required: poll the payment and watch it
+advance on its own as the router dispatches it and the acquirer calls back.
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/payments/<PAYMENT_ID>/status -H "X-Api-Key: <API_KEY>" -H "Content-Type: application/json" -d '{"status":"AUTHORIZED"}'
+curl http://localhost:8080/api/v1/payments/<PAYMENT_ID> -H "X-Api-Key: <API_KEY>"
 ```
 
 ## Endpoints
@@ -193,9 +193,14 @@ Platform-operator, authenticated with `X-Admin-Token`:
 - `GET /api/v1/merchants?page=0&size=20`
 - `POST /api/v1/api-keys`
 
-Internal:
+Internal, not exposed through the gateway:
 
 - `POST /api/v1/auth/validate-key` — called by the gateway and payment-service.
+- `POST /internal/provider/webhooks/{provider}` — acquirer callbacks. HMAC-signed over the raw
+  request body and deduplicated on the provider's own event id.
+- `GET /internal/router/providers` — circuit breaker state per acquirer.
+- `GET /internal/router/payments/{paymentId}/attempts` — what was tried, in order, and why each
+  attempt ended.
 
 Every service exposes `/actuator/health`, `/actuator/info`, and `/actuator/prometheus`.
 
@@ -209,17 +214,45 @@ client bug rather than a retry, and silently returning the original payment woul
 Concurrency is handled by a unique constraint on `(merchant_id, idempotency_key)`: if two requests
 race, the loser catches the constraint violation and returns the winner's payment.
 
+## How a Payment Actually Flows
+
+Creating a payment returns immediately with `CREATED`. Everything after that happens on its own:
+
+```text
+POST /api/v1/payments
+  └─> payment row + outbox row committed in ONE transaction
+        └─> relay publishes payment.created.v1
+              └─> provider-router picks an acquirer by priority, skipping any
+                  whose circuit breaker is open
+                    ├─ acquirer accepts ──> payment.provider-dispatched.v1
+                    │                        └─> PENDING_PROVIDER
+                    └─ acquirer refuses or hangs ──> next acquirer
+                                                     all exhausted ──> FAILED
+                          └─> acquirer POSTs a signed callback to webhook-service
+                                └─> signature verified, duplicate rejected
+                                      └─> provider.callback-received.v1
+                                            └─> AUTHORIZED, then CAPTURED
+```
+
+A full run locally takes about three seconds from `201 Created` to `CAPTURED`.
+
 ## Payment State Machine
 
 ```text
-CREATED ──> AUTHORIZED ──> CAPTURED
-   │             │
-   └─────────────┴────────> FAILED
+CREATED ──> PENDING_PROVIDER ──> AUTHORIZED ──> CAPTURED
+   │               │                  │
+   └───────────────┴──────────────────┴──────> FAILED
+   │                                  │
+   └──────────────────────────────────┴──────> CANCELLED
 ```
 
-`CAPTURED` and `FAILED` are terminal. Illegal transitions are refused with `409`; the rule lives on
-the entity, so no caller can bypass it. Concurrent updates to the same payment are caught by an
-optimistic-locking `@Version` column and surface as `409`.
+`CAPTURED`, `FAILED`, and `CANCELLED` are terminal. The rule lives on the entity, so no caller can
+bypass it, and concurrent updates are caught by an optimistic-locking `@Version` column.
+
+**Merchants cannot move their own payments.** There is no status endpoint on the public API: only
+a routing decision or a signature-verified provider callback advances a payment. Transitions
+driven by events are deliberately tolerant — a redelivered callback asking for the state we are
+already in is a no-op, because Kafka delivers at least once and acquirers re-send.
 
 ## Testing
 
