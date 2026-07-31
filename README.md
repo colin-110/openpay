@@ -197,6 +197,10 @@ Merchant-facing, via the gateway on 8080, authenticated with `X-Api-Key`:
 - `POST /api/v1/payments` — create a payment. Requires `Idempotency-Key`.
 - `GET /api/v1/payments/{paymentId}`
 - `GET /api/v1/payments?page=0&size=20`
+- `POST /api/v1/refunds` — refund a captured payment. Requires `Idempotency-Key`. Omit `amount`
+  to refund everything still refundable.
+- `GET /api/v1/refunds/{refundId}`
+- `GET /api/v1/refunds?paymentId={paymentId}`
 
 Platform-operator, authenticated with `X-Admin-Token`:
 
@@ -302,6 +306,53 @@ Balances are derived by summing the journal, never stored in a column that could
 ```bash
 curl "http://localhost:8086/api/v1/ledger/accounts/MERCHANT_PAYABLE/balance?merchantId=<ID>&currency=USD" -H "X-Admin-Token: dev-admin-token"
 ```
+
+## Refunds
+
+A refund is its own resource, because a payment can be refunded in parts and "refunded" is a
+running total against it rather than a point on its lifecycle.
+
+```text
+POST /api/v1/refunds            refund PENDING
+  └─> refund.created.v1
+        └─> router sends it back to the acquirer that took the payment
+              └─> acquirer callback, signature verified
+                    └─> refund SUCCEEDED
+                          ├─> ledger reverses the capture
+                          └─> settlement accrues a negative payable
+```
+
+The refundable balance is the payment amount minus everything already committed, and PENDING
+refunds count towards that: left out, several concurrent requests could each pass their own check
+and together refund more than the payment was worth. A FAILED refund releases its amount again.
+
+A refund goes back through the acquirer that took the money, never a different one. There is no
+failover here; sending it elsewhere would be asking a bank to return funds it never received. If
+that acquirer is gone or refuses, the refund fails loudly rather than hanging.
+
+The payment only becomes `REFUNDED` when every minor unit has come back; a partial refund leaves it
+`CAPTURED`. The platform fee is not returned, which is how most gateways price a refund.
+
+### Carry-forward
+
+A refund is accrued as a negative payable, so it sits in the same pending pool as captures and nets
+against them. Carry-forward falls out of that rather than needing its own mechanism.
+
+Verified end to end on a 500.00 payment:
+
+```text
+capture 50000                       payable  50000
+refund  20000                       payable  30000
+settle                              payout gross 30000, fee 1000, net 29000; payable 0
+refund  30000  (after settling)     payable -30000   <- merchant owes us
+settle                              NO payout, deficit carried forward
+capture 100000 arrives              
+settle                              payout gross 70000  <- deficit absorbed
+```
+
+A negative payable is a receivable, not a bug: the merchant was paid for money they have since
+given back. Paying out a negative amount is meaningless, and zeroing it would quietly write off
+money owed, so the items stay pending and reduce the next payout instead.
 
 ## Settlement
 

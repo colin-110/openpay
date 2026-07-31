@@ -44,22 +44,40 @@ public class CallbackSender {
             Thread.sleep(properties.getCallbackDelay().toMillis());
 
             if (declined) {
-                send(paymentId, providerReference, "FAILED", "insufficient_funds");
+                send(paymentId, null, providerReference, "FAILED", "insufficient_funds");
                 return;
             }
 
-            send(paymentId, providerReference, "AUTHORIZED", null);
+            send(paymentId, null, providerReference, "AUTHORIZED", null);
             Thread.sleep(properties.getCallbackDelay().toMillis());
-            send(paymentId, providerReference, "CAPTURED", null);
+            send(paymentId, null, providerReference, "CAPTURED", null);
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
         }
     }
 
-    private void send(UUID paymentId, String providerReference, String outcome, String failureReason) {
+    /** Refund outcomes are a single callback: the money either went back or it did not. */
+    @Async
+    public void scheduleRefundOutcome(
+            UUID refundId, UUID paymentId, String providerReference, boolean declined) {
+        try {
+            Thread.sleep(properties.getCallbackDelay().toMillis());
+            if (declined) {
+                send(paymentId, refundId, providerReference, "REFUND_FAILED", "refund_rejected");
+            } else {
+                send(paymentId, refundId, providerReference, "REFUND_SUCCEEDED", null);
+            }
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void send(
+            UUID paymentId, UUID refundId, String providerReference, String outcome, String failureReason) {
         ProviderCallback callback = new ProviderCallback(
                 properties.getName() + "-evt-" + UUID.randomUUID(),
                 paymentId,
+                refundId,
                 properties.getName(),
                 providerReference,
                 outcome,

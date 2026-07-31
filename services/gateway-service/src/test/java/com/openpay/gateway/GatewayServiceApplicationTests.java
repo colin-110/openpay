@@ -17,6 +17,7 @@ class GatewayServiceApplicationTests {
     void routesAreConfiguredForBothDownstreamServices() {
         assertThat(reverseProxy.routeFor("/api/v1/payments/abc")).isPresent();
         assertThat(reverseProxy.routeFor("/api/v1/merchants")).isPresent();
+        assertThat(reverseProxy.routeFor("/api/v1/refunds")).isPresent();
         assertThat(reverseProxy.routeFor("/api/v1/ping")).isEmpty();
     }
 }

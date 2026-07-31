@@ -5,6 +5,7 @@ import com.openpay.events.EventCodec;
 import com.openpay.events.EventEnvelope;
 import com.openpay.events.OpenPayTopics;
 import com.openpay.events.payload.ProviderCallbackReceived;
+import com.openpay.events.payload.RefundCallbackReceived;
 import com.openpay.webhook.domain.ProviderWebhookEvent;
 import com.openpay.webhook.domain.ProviderWebhookEventRepository;
 import java.util.UUID;
@@ -24,6 +25,8 @@ import org.springframework.stereotype.Service;
 public class WebhookIngestService {
 
     private static final Logger log = LoggerFactory.getLogger(WebhookIngestService.class);
+    private static final java.util.Set<String> KNOWN_OUTCOMES = java.util.Set.of(
+            "AUTHORIZED", "CAPTURED", "FAILED", "REFUND_SUCCEEDED", "REFUND_FAILED");
 
     private final ProviderWebhookEventRepository repository;
     private final SignatureVerifier signatureVerifier;
@@ -61,6 +64,10 @@ public class WebhookIngestService {
         if (providerEventId == null || outcome == null || paymentIdText == null) {
             return IngestResult.MALFORMED;
         }
+        if (!KNOWN_OUTCOMES.contains(outcome)) {
+            log.warn("Rejecting callback from {} with unknown outcome {}", providerName, outcome);
+            return IngestResult.MALFORMED;
+        }
 
         UUID paymentId;
         try {
@@ -86,8 +93,16 @@ public class WebhookIngestService {
             return IngestResult.DUPLICATE;
         }
 
-        publish(providerName, providerEventId, paymentId, text(body, "providerReference"),
-                outcome, text(body, "failureReason"), correlationId);
+        String refundIdText = text(body, "refundId");
+        if (refundIdText != null) {
+            // A refund outcome moves a refund, not a payment, so it goes onto its own topic
+            // rather than forcing every payment consumer to branch on what it received.
+            publishRefund(providerName, providerEventId, paymentId, UUID.fromString(refundIdText),
+                    outcome, text(body, "failureReason"), correlationId);
+        } else {
+            publish(providerName, providerEventId, paymentId, text(body, "providerReference"),
+                    outcome, text(body, "failureReason"), correlationId);
+        }
         return IngestResult.ACCEPTED;
     }
 
@@ -114,6 +129,30 @@ public class WebhookIngestService {
         kafkaTemplate.send(
                 OpenPayTopics.PROVIDER_CALLBACK_RECEIVED, paymentId.toString(), eventCodec.encode(envelope));
         log.info("Published {} callback for payment {} from {}", outcome, paymentId, providerName);
+    }
+
+    private void publishRefund(
+            String providerName,
+            String providerEventId,
+            UUID paymentId,
+            UUID refundId,
+            String outcome,
+            String failureReason,
+            String correlationId) {
+
+        RefundCallbackReceived.RefundOutcome refundOutcome = "REFUND_SUCCEEDED".equals(outcome)
+                ? RefundCallbackReceived.RefundOutcome.SUCCEEDED
+                : RefundCallbackReceived.RefundOutcome.FAILED;
+
+        RefundCallbackReceived payload = new RefundCallbackReceived(
+                refundId, paymentId, providerName, providerEventId, refundOutcome, failureReason);
+
+        EventEnvelope<RefundCallbackReceived> envelope = EventEnvelope.of(
+                OpenPayTopics.REFUND_CALLBACK_RECEIVED, refundId.toString(), correlationId, payload);
+
+        kafkaTemplate.send(
+                OpenPayTopics.REFUND_CALLBACK_RECEIVED, refundId.toString(), eventCodec.encode(envelope));
+        log.info("Published {} refund callback for refund {} from {}", outcome, refundId, providerName);
     }
 
     private String text(JsonNode node, String field) {

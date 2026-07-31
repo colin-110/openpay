@@ -20,7 +20,10 @@ public class ProxyController {
         this.reverseProxy = reverseProxy;
     }
 
-    @RequestMapping({"/api/v1/payments/**", "/api/v1/payments", "/api/v1/merchants/**", "/api/v1/merchants"})
+    @RequestMapping({
+            "/api/v1/payments/**", "/api/v1/payments",
+            "/api/v1/refunds/**", "/api/v1/refunds",
+            "/api/v1/merchants/**", "/api/v1/merchants"})
     public ResponseEntity<byte[]> proxy(
             HttpServletRequest request, @RequestBody(required = false) byte[] body) {
 

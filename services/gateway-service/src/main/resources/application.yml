@@ -9,12 +9,16 @@ openpay:
     # deliberately absent: they use the admin token, which merchant-service checks itself.
     api-key-paths:
       - /api/v1/payments
+      - /api/v1/refunds
       - /api/v1/protected
   gateway:
     connect-timeout: 2s
     read-timeout: 10s
     routes:
       - path-prefix: /api/v1/payments
+        target: ${PAYMENT_SERVICE_BASE_URL:http://localhost:8083}
+      # Refunds are owned by payment-service too: a refund is only meaningful against a payment.
+      - path-prefix: /api/v1/refunds
         target: ${PAYMENT_SERVICE_BASE_URL:http://localhost:8083}
       - path-prefix: /api/v1/merchants
         target: ${MERCHANT_SERVICE_BASE_URL:http://localhost:8082}

@@ -63,6 +63,29 @@ public class BankController {
                 properties.getName(), providerReference, "ACCEPTED"));
     }
 
+    @PostMapping("/refunds")
+    public ResponseEntity<?> acceptRefund(@Valid @RequestBody ProviderRefundRequest request)
+            throws InterruptedException {
+
+        if (properties.isUnavailable()) {
+            return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", "acquirer_unavailable", "provider", properties.getName()));
+        }
+
+        Thread.sleep(properties.getLatency().toMillis());
+        boolean declined = roll() < properties.getDeclineRate();
+
+        log.info("{} accepted refund {} against payment {} (will {})",
+                properties.getName(), request.refundId(), request.paymentId(),
+                declined ? "reject" : "return the money");
+
+        callbackSender.scheduleRefundOutcome(
+                request.refundId(), request.paymentId(), request.providerReference(), declined);
+
+        return ResponseEntity.accepted().body(new ProviderPaymentResponse(
+                properties.getName(), request.providerReference(), "ACCEPTED"));
+    }
+
     @GetMapping("/health")
     public Map<String, Object> health() {
         return Map.of(

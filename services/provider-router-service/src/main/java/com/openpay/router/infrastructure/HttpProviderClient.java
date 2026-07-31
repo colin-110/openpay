@@ -24,6 +24,33 @@ public class HttpProviderClient implements ProviderClient {
     }
 
     @Override
+    public void dispatchRefund(
+            String providerName, String baseUrl, UUID refundId, UUID paymentId,
+            long amount, String currency, String providerReference) {
+        try {
+            restClient.post()
+                    .uri(baseUrl + "/provider/refunds")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .body(Map.of(
+                            "refundId", refundId.toString(),
+                            "paymentId", paymentId.toString(),
+                            "amount", amount,
+                            "currency", currency,
+                            "providerReference", providerReference == null ? "" : providerReference))
+                    .retrieve()
+                    .onStatus(HttpStatusCode::isError, (request, clientResponse) -> {
+                        throw new ProviderUnavailableException(
+                                providerName + " refused the refund with " + clientResponse.getStatusCode(), null);
+                    })
+                    .toBodilessEntity();
+        } catch (ProviderUnavailableException exception) {
+            throw exception;
+        } catch (RuntimeException exception) {
+            throw new ProviderUnavailableException(providerName + " refund call failed", exception);
+        }
+    }
+
+    @Override
     public String dispatch(String providerName, String baseUrl, UUID paymentId, long amount, String currency) {
         try {
             Map<?, ?> response = restClient.post()

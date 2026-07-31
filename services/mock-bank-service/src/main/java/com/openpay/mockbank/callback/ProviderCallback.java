@@ -12,6 +12,8 @@ import java.util.UUID;
 public record ProviderCallback(
         String eventId,
         UUID paymentId,
+        /** Set only when this callback concerns a refund; null for a payment outcome. */
+        UUID refundId,
         String providerName,
         String providerReference,
         String outcome,

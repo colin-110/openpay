@@ -8,4 +8,11 @@ public interface ProviderClient {
      * @throws ProviderUnavailableException if the provider refused, errored, or did not answer in time
      */
     String dispatch(String providerName, String baseUrl, UUID paymentId, long amount, String currency);
+
+    /**
+     * @throws ProviderUnavailableException if the provider refused, errored, or did not answer in time
+     */
+    void dispatchRefund(
+            String providerName, String baseUrl, UUID refundId, UUID paymentId,
+            long amount, String currency, String providerReference);
 }

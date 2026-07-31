@@ -29,6 +29,9 @@ public final class OpenPayTopics {
     /** A refund completed and the money is back with the customer. Keyed by refund id. */
     public static final String REFUND_SUCCEEDED = "refund.succeeded.v1";
 
+    /** A provider reported the outcome of a refund. Keyed by refund id. */
+    public static final String REFUND_CALLBACK_RECEIVED = "refund.callback-received.v1";
+
     private OpenPayTopics() {
     }
 }
