@@ -1,0 +1,14 @@
+# Keep the build context small and the cache stable. target/ in particular would ship host-built
+# classes into the image and invalidate the layer cache on every local compile.
+target/
+**/target/
+.git/
+.github/
+.idea/
+.vscode/
+.mvn/wrapper/apache-maven-*
+*.log
+docs/
+scripts/
+platform/observability/
+README.md

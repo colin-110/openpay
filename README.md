@@ -69,7 +69,31 @@ export OPENPAY_ADMIN_TOKEN=dev-admin-token
 `test` runs the unit tests. `verify` additionally runs the `*IT` integration tests, which start a
 real PostgreSQL via Testcontainers and require Docker to be running.
 
-### 4. Run everything at once (Windows)
+### 4. Run everything in Docker
+
+The whole platform, infrastructure and services, from one command:
+
+```bash
+docker compose -f platform/docker/docker-compose.yml -f platform/docker/docker-compose.apps.yml up -d --build
+```
+
+Services start in dependency order and wait on each other's health checks, so the first run takes a
+few minutes and then everything is up. Tear it down with:
+
+```bash
+docker compose -f platform/docker/docker-compose.yml -f platform/docker/docker-compose.apps.yml down
+```
+
+One Dockerfile builds every service. The build stage is identical for all of them, so Docker builds
+the reactor once and each image reuses that layer; only the final `COPY` differs. Images run as a
+non-root user and size their heap from the container's memory limit rather than a hard-coded
+`-Xmx`.
+
+Kafka advertises two addresses, because the right one depends on who is asking: containers resolve
+`kafka:29092`, while a process on the host cannot and uses `localhost:9092`. That is what lets the
+containerised stack and the Maven workflow below coexist without reconfiguration.
+
+### 5. Or run services from Maven against Dockerised infrastructure (Windows)
 
 Eleven processes in eleven terminals is enough friction to stop anyone actually running this, so
 there is a helper. It checks that infrastructure is up, launches each service in its own window,
@@ -91,7 +115,7 @@ Then run the acceptance suite against the live stack:
 bash scripts/e2e.sh
 ```
 
-### 5. Or run the services individually
+### 6. Or run the services individually
 
 Each service needs its own terminal. `-am` builds the shared libraries it depends on.
 
@@ -148,7 +172,7 @@ BANK_NAME=mock-bank-b BANK_PORT=9002 BANK_SIGNING_SECRET=bank-b-secret ./mvnw -p
 Start order matters for a full flow: auth-service verifies merchants against merchant-service, and
 payment-service verifies API keys against auth-service.
 
-### 6. Watch failover happen
+### 7. Watch failover happen
 
 Kill `mock-bank-a` and create a payment. The router records a failed attempt against A, succeeds on
 B, and after three consecutive failures stops calling A at all:
@@ -521,6 +545,7 @@ Delivered:
 - settlement accrual, fee calculation, and payout batching that reconciles against the ledger
 - refunds with over-refund protection and negative-balance carry-forward
 - signed outbound merchant webhooks with retries and a delivery log
+- the entire platform containerised and runnable with one command
 - CI running unit and integration tests on JDK 21 and 25
 
 Not yet built (see [docs/roadmap.md](docs/roadmap.md)):
@@ -529,5 +554,5 @@ Not yet built (see [docs/roadmap.md](docs/roadmap.md)):
 - Kafka event publishing and the transactional outbox — `payment_events` is written but nothing
   relays it yet
 - ledger, mock banks, provider routing, settlement, fraud, webhooks
-- service Dockerfiles and Kubernetes manifests
+- Kubernetes manifests
 - any real money movement: payments are recorded, never sent to a provider

@@ -66,12 +66,31 @@
 
     <build>
         <plugins>
+            <!--
+              This project imports the Spring Boot BOM rather than inheriting from
+              spring-boot-starter-parent, and the repackage goal only gets a default execution from
+              that parent. Without this block `mvn package` produced plain jars with no manifest
+              main class and no dependencies: nothing that could actually be run or deployed. It
+              went unnoticed because every local run used spring-boot:run, which never touches the
+              packaged artifact.
+
+              skip is true here and overridden to false in each service, so libraries stay plain
+              jars and only the applications are repackaged.
+            -->
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
                     <skip>true</skip>
                 </configuration>
+                <executions>
+                    <execution>
+                        <id>repackage</id>
+                        <goals>
+                            <goal>repackage</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
             <!--
               Integration tests (*IT) run under failsafe during `verify`, not during `test`.

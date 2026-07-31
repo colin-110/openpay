@@ -1,0 +1,256 @@
+# The OpenPay services themselves. Infrastructure lives in docker-compose.yml; this file is layered
+# on top so the existing "run infra in Docker, services from Maven" workflow still works unchanged.
+#
+#   docker compose -f platform/docker/docker-compose.yml -f platform/docker/docker-compose.apps.yml up -d --build
+#
+# Every service is configured entirely through environment variables, which is what makes the same
+# jar runnable on a laptop and in a container without a separate profile.
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  environment: &common-env
+    DB_HOST: postgres
+    # 5432 inside the network. The 5433 on the host is only there to avoid clashing with a local
+    # PostgreSQL, and containers should never inherit that workaround.
+    DB_PORT: 5432
+    DB_USERNAME: openpay
+    DB_PASSWORD: openpay
+    KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    OPENPAY_ADMIN_TOKEN: ${OPENPAY_ADMIN_TOKEN:?set OPENPAY_ADMIN_TOKEN before starting the stack}
+    AUTH_SERVICE_BASE_URL: http://auth-service:8081
+    MERCHANT_SERVICE_BASE_URL: http://merchant-service:8082
+    PAYMENT_SERVICE_BASE_URL: http://payment-service:8083
+
+x-healthcheck: &app-healthcheck
+  interval: 10s
+  timeout: 5s
+  retries: 30
+  start_period: 40s
+
+services:
+  merchant-service:
+    <<: *service-defaults
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        MODULE: services/merchant-service
+        ARTIFACT: merchant-service
+    container_name: openpay-merchant-service
+    environment:
+      <<: *common-env
+      DB_NAME: openpay_merchant
+    ports: ["8082:8082"]
+    depends_on:
+      postgres: {condition: service_healthy}
+    healthcheck:
+      <<: *app-healthcheck
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8082/actuator/health || exit 1"]
+
+  auth-service:
+    <<: *service-defaults
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        MODULE: services/auth-service
+        ARTIFACT: auth-service
+    container_name: openpay-auth-service
+    environment:
+      <<: *common-env
+      DB_NAME: openpay_auth
+    ports: ["8081:8081"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      merchant-service: {condition: service_healthy}
+    healthcheck:
+      <<: *app-healthcheck
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/actuator/health || exit 1"]
+
+  payment-service:
+    <<: *service-defaults
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        MODULE: services/payment-service
+        ARTIFACT: payment-service
+    container_name: openpay-payment-service
+    environment:
+      <<: *common-env
+      DB_NAME: openpay_payment
+    ports: ["8083:8083"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      auth-service: {condition: service_healthy}
+    healthcheck:
+      <<: *app-healthcheck
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8083/actuator/health || exit 1"]
+
+  webhook-service:
+    <<: *service-defaults
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        MODULE: services/webhook-service
+        ARTIFACT: webhook-service
+    container_name: openpay-webhook-service
+    environment:
+      <<: *common-env
+      DB_NAME: openpay_webhook
+      MOCK_BANK_A_SECRET: ${MOCK_BANK_A_SECRET:-bank-a-secret}
+      MOCK_BANK_B_SECRET: ${MOCK_BANK_B_SECRET:-bank-b-secret}
+    ports: ["8084:8084"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+    healthcheck:
+      <<: *app-healthcheck
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8084/actuator/health || exit 1"]
+
+  provider-router-service:
+    <<: *service-defaults
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        MODULE: services/provider-router-service
+        ARTIFACT: provider-router-service
+    container_name: openpay-provider-router-service
+    environment:
+      <<: *common-env
+      DB_NAME: openpay_router
+      MOCK_BANK_A_URL: http://mock-bank-a:9001
+      MOCK_BANK_B_URL: http://mock-bank-b:9002
+    ports: ["8085:8085"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+    healthcheck:
+      <<: *app-healthcheck
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8085/actuator/health || exit 1"]
+
+  ledger-service:
+    <<: *service-defaults
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        MODULE: services/ledger-service
+        ARTIFACT: ledger-service
+    container_name: openpay-ledger-service
+    environment:
+      <<: *common-env
+      DB_NAME: openpay_ledger
+    ports: ["8086:8086"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+    healthcheck:
+      <<: *app-healthcheck
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8086/actuator/health || exit 1"]
+
+  settlement-service:
+    <<: *service-defaults
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        MODULE: services/settlement-service
+        ARTIFACT: settlement-service
+    container_name: openpay-settlement-service
+    environment:
+      <<: *common-env
+      DB_NAME: openpay_settlement
+    ports: ["8087:8087"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+    healthcheck:
+      <<: *app-healthcheck
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8087/actuator/health || exit 1"]
+
+  notification-service:
+    <<: *service-defaults
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        MODULE: services/notification-service
+        ARTIFACT: notification-service
+    container_name: openpay-notification-service
+    environment:
+      <<: *common-env
+      DB_NAME: openpay_notification
+    ports: ["8088:8088"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+      merchant-service: {condition: service_healthy}
+    healthcheck:
+      <<: *app-healthcheck
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8088/actuator/health || exit 1"]
+
+  gateway-service:
+    <<: *service-defaults
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        MODULE: services/gateway-service
+        ARTIFACT: gateway-service
+    container_name: openpay-gateway-service
+    environment:
+      <<: *common-env
+    ports: ["8080:8080"]
+    depends_on:
+      auth-service: {condition: service_healthy}
+      payment-service: {condition: service_healthy}
+      merchant-service: {condition: service_healthy}
+    healthcheck:
+      <<: *app-healthcheck
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health || exit 1"]
+
+  # Both acquirers are the same image with different configuration, which is the point: two
+  # independently misbehaving endpoints, one codebase.
+  mock-bank-a:
+    <<: *service-defaults
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        MODULE: services/mock-bank-service
+        ARTIFACT: mock-bank-service
+    container_name: openpay-mock-bank-a
+    environment:
+      <<: *common-env
+      BANK_NAME: mock-bank-a
+      BANK_PORT: 9001
+      BANK_SIGNING_SECRET: ${MOCK_BANK_A_SECRET:-bank-a-secret}
+      WEBHOOK_BASE_URL: http://webhook-service:8084/internal/provider/webhooks
+    ports: ["9001:9001"]
+    healthcheck:
+      <<: *app-healthcheck
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9001/actuator/health || exit 1"]
+
+  mock-bank-b:
+    <<: *service-defaults
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        MODULE: services/mock-bank-service
+        ARTIFACT: mock-bank-service
+    container_name: openpay-mock-bank-b
+    environment:
+      <<: *common-env
+      BANK_NAME: mock-bank-b
+      BANK_PORT: 9002
+      BANK_SIGNING_SECRET: ${MOCK_BANK_B_SECRET:-bank-b-secret}
+      WEBHOOK_BASE_URL: http://webhook-service:8084/internal/provider/webhooks
+    ports: ["9002:9002"]
+    healthcheck:
+      <<: *app-healthcheck
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9002/actuator/health || exit 1"]
