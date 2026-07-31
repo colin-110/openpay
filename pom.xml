@@ -101,6 +101,15 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
                 <configuration>
+                    <!--
+                      Failsafe runs after package, and package now repackages each service into a
+                      Spring Boot fat jar whose classes live under BOOT-INF/classes. Resolving the
+                      module's own artifact from there leaves JUnit unable to discover anything,
+                      which surfaces as "TestEngine with ID 'junit-jupiter' failed to discover
+                      tests" rather than as a classpath error. Pointing at the plain output
+                      directory keeps integration tests running against ordinary classes.
+                    -->
+                    <classesDirectory>${project.build.outputDirectory}</classesDirectory>
                     <systemPropertyVariables>
                         <api.version>${testcontainers.docker.api.version}</api.version>
                     </systemPropertyVariables>
