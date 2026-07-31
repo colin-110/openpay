@@ -36,6 +36,8 @@ openpay:
     poll-interval-ms: 500
     batch-size: 100
   security:
+    # Same key auth-service signs with, so a dashboard session is accepted wherever an API key is.
+    jwt-secret: ${OPENPAY_JWT_SECRET:}
     auth-base-url: ${AUTH_SERVICE_BASE_URL:http://localhost:8081}
     # Every payment path requires a valid merchant API key. Merchant identity comes from the
     # validated key, never from a client-supplied header.

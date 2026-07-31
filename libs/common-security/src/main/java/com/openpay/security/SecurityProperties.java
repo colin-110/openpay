@@ -23,6 +23,9 @@ public class SecurityProperties {
      */
     private String adminToken = "";
 
+    /** Shared HS256 key for verifying dashboard sessions. Blank disables session auth. */
+    private String jwtSecret = "";
+
     private Duration connectTimeout = Duration.ofSeconds(2);
 
     private Duration readTimeout = Duration.ofSeconds(3);
@@ -57,6 +60,14 @@ public class SecurityProperties {
 
     public void setAdminToken(String adminToken) {
         this.adminToken = adminToken;
+    }
+
+    public String getJwtSecret() {
+        return jwtSecret;
+    }
+
+    public void setJwtSecret(String jwtSecret) {
+        this.jwtSecret = jwtSecret;
     }
 
     public Duration getConnectTimeout() {

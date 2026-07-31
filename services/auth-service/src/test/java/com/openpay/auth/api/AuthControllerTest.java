@@ -10,6 +10,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openpay.auth.application.ApiKeyService;
+import com.openpay.auth.application.UserService;
 import com.openpay.auth.application.InvalidApiKeyException;
 import java.time.OffsetDateTime;
 import java.util.UUID;
@@ -32,6 +33,9 @@ class AuthControllerTest {
 
     @MockBean
     private ApiKeyService apiKeyService;
+
+    @MockBean
+    private UserService userService;
 
     @Test
     void createsApiKey() throws Exception {

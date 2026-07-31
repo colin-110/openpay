@@ -1,6 +1,7 @@
 package com.openpay.auth.api;
 
 import com.openpay.auth.application.InvalidApiKeyException;
+import com.openpay.auth.application.InvalidCredentialsException;
 import com.openpay.auth.application.InvalidApiKeyRequestException;
 import com.openpay.auth.application.MerchantLookupUnavailableException;
 import com.openpay.auth.application.TooManyAttemptsException;
@@ -24,6 +25,13 @@ public class ApiExceptionHandler {
     public ResponseEntity<ErrorResponse> handleInvalidApiKey(
             InvalidApiKeyException exception, HttpServletRequest request) {
         return build(HttpStatus.UNAUTHORIZED, "invalid_api_key", exception.getMessage(), request.getRequestURI());
+    }
+
+    @ExceptionHandler(InvalidCredentialsException.class)
+    public ResponseEntity<ErrorResponse> handleInvalidCredentials(
+            InvalidCredentialsException exception, HttpServletRequest request) {
+        return build(HttpStatus.UNAUTHORIZED, "invalid_credentials", exception.getMessage(),
+                request.getRequestURI());
     }
 
     @ExceptionHandler(TooManyAttemptsException.class)

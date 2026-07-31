@@ -25,7 +25,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
-@SpringBootTest
+@SpringBootTest(properties = "openpay.jwt.secret=test-secret-that-is-long-enough-for-hs256")
 @Testcontainers
 class ApiKeyPersistenceIT {
 

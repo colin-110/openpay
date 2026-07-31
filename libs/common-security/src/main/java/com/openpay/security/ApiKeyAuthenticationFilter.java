@@ -43,6 +43,13 @@ public class ApiKeyAuthenticationFilter extends OncePerRequestFilter {
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
+        if (request.getAttribute(PRINCIPAL_ATTRIBUTE) != null) {
+            // A session token already identified the caller; demanding an API key as well
+            // would make the dashboard impossible.
+            chain.doFilter(request, response);
+            return;
+        }
+
         String apiKey = request.getHeader(API_KEY_HEADER);
         if (apiKey == null || apiKey.isBlank()) {
             errorWriter.write(response, HttpStatus.UNAUTHORIZED, "missing_api_key",

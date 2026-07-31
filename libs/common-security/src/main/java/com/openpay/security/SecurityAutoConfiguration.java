@@ -36,6 +36,26 @@ public class SecurityAutoConfiguration {
         return new HttpAuthServiceClient(restClient);
     }
 
+    /**
+     * Registered only when a secret is configured, so a service with no dashboard traffic is not
+     * made to hold a signing key it never uses.
+     */
+    @Bean
+    public FilterRegistrationBean<JwtAuthenticationFilter> jwtAuthenticationFilter(
+            SecurityProperties properties, ObjectMapper objectMapper) {
+        FilterRegistrationBean<JwtAuthenticationFilter> registration = new FilterRegistrationBean<>();
+        if (properties.getJwtSecret() == null || properties.getJwtSecret().isBlank()) {
+            registration.setEnabled(false);
+            return registration;
+        }
+        registration.setFilter(new JwtAuthenticationFilter(
+                properties.getJwtSecret(), properties.getApiKeyPaths(), objectMapper));
+        // Ahead of the API key filter, which then sees an already-authenticated request.
+        registration.setOrder(SECURITY_FILTER_ORDER - 1);
+        registration.addUrlPatterns("/*");
+        return registration;
+    }
+
     @Bean
     public FilterRegistrationBean<ApiKeyAuthenticationFilter> apiKeyAuthenticationFilter(
             AuthServiceClient authServiceClient, SecurityProperties properties, ObjectMapper objectMapper) {

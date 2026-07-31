@@ -15,12 +15,20 @@ spring:
 openpay:
   merchant:
     base-url: ${MERCHANT_SERVICE_BASE_URL:http://localhost:8082}
+  jwt:
+    # No default: HS256 with a weak or shared-by-accident key means forgeable sessions.
+    secret: ${OPENPAY_JWT_SECRET:}
+    ttl: ${OPENPAY_JWT_TTL:PT1H}
+    issuer: openpay
   security:
     # Issuing a credential is a platform-operator action. Empty by default: a shipped default
     # would be a publicly known secret, so admin paths fail closed until this is set.
     admin-token: ${OPENPAY_ADMIN_TOKEN:}
     admin-paths:
       - /api/v1/api-keys
+      # Creating dashboard users is operator-only. /api/v1/auth/login is deliberately absent:
+      # it is the entry point for humans and cannot require a credential they do not have.
+      - /api/v1/users
   auth:
     max-failed-validations: 20
     failed-validation-window: PT1M
