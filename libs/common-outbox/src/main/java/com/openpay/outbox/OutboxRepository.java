@@ -1,4 +1,4 @@
-package com.openpay.payment.outbox;
+package com.openpay.outbox;
 
 import java.time.OffsetDateTime;
 import java.util.List;

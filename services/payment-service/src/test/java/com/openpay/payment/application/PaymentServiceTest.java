@@ -13,7 +13,7 @@ import com.openpay.payment.domain.PaymentEvent;
 import com.openpay.payment.domain.PaymentEventRepository;
 import com.openpay.payment.domain.PaymentRepository;
 import com.openpay.payment.domain.PaymentStatus;
-import com.openpay.payment.outbox.OutboxWriter;
+import com.openpay.outbox.OutboxWriter;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;

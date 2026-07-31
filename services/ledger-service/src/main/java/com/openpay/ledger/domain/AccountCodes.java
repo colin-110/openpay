@@ -9,6 +9,9 @@ public final class AccountCodes {
     /** What we owe a merchant for captured payments. Per-merchant liability. */
     public static final String MERCHANT_PAYABLE = "MERCHANT_PAYABLE";
 
+    /** Fees the platform kept out of settled payments. Platform-owned revenue. */
+    public static final String PLATFORM_REVENUE = "PLATFORM_REVENUE";
+
     private AccountCodes() {
     }
 }

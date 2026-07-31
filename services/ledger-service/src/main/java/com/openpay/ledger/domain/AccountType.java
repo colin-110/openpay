@@ -9,7 +9,9 @@ package com.openpay.ledger.domain;
  */
 public enum AccountType {
     ASSET(EntryDirection.DEBIT),
-    LIABILITY(EntryDirection.CREDIT);
+    LIABILITY(EntryDirection.CREDIT),
+    /** Fees the platform has earned. Grows on credits, like a liability. */
+    REVENUE(EntryDirection.CREDIT);
 
     private final EntryDirection increasingDirection;
 

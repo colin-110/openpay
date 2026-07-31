@@ -22,6 +22,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 @SpringBootTest(properties = {
         "spring.kafka.listener.auto-startup=false",
+        "openpay.outbox.relay-enabled=false",
         "openpay.settlement.scheduled=false",
         "openpay.settlement.fee-basis-points=200",
         "openpay.settlement.fee-fixed-minor=0"

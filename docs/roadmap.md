@@ -25,8 +25,8 @@ Still open inside those phases:
 - Phase 6: routing rules are static configuration, not a `provider_routing_rules` table
 - Phase 7: DLQ topics exist, but there is no replay tool; messages land there and must be
   re-published by hand
-- Phase 8: payouts are batched but never actually sent anywhere, and settlement does not
-  yet post its own ledger entries clearing the payable
+- Phase 8: payouts are batched and clear the ledger payable, but no money is actually sent
+  anywhere; there is no payout rail
 - Phase 10: outbound merchant webhooks are not built, only inbound provider callbacks
 
 Money is stored as `BIGINT` minor units throughout, matching the architecture document.

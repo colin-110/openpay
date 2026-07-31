@@ -1,4 +1,4 @@
-package com.openpay.payment.outbox;
+package com.openpay.outbox;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;

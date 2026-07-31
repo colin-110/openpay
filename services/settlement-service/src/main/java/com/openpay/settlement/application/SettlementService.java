@@ -1,5 +1,8 @@
 package com.openpay.settlement.application;
 
+import com.openpay.events.OpenPayTopics;
+import com.openpay.events.payload.SettlementCreated;
+import com.openpay.outbox.OutboxWriter;
 import com.openpay.settlement.domain.Settlement;
 import com.openpay.settlement.domain.SettlementItem;
 import com.openpay.settlement.domain.SettlementItemRepository;
@@ -29,21 +32,25 @@ import org.springframework.transaction.annotation.Transactional;
 public class SettlementService {
 
     private static final Logger log = LoggerFactory.getLogger(SettlementService.class);
+    private static final String AGGREGATE_TYPE = "settlement";
 
     private final SettlementItemRepository itemRepository;
     private final SettlementRepository settlementRepository;
     private final FeeCalculator feeCalculator;
     private final SettlementProperties properties;
+    private final OutboxWriter outboxWriter;
 
     public SettlementService(
             SettlementItemRepository itemRepository,
             SettlementRepository settlementRepository,
             FeeCalculator feeCalculator,
-            SettlementProperties properties) {
+            SettlementProperties properties,
+            OutboxWriter outboxWriter) {
         this.itemRepository = itemRepository;
         this.settlementRepository = settlementRepository;
         this.feeCalculator = feeCalculator;
         this.properties = properties;
+        this.outboxWriter = outboxWriter;
     }
 
     /**
@@ -151,6 +158,13 @@ public class SettlementService {
 
         items.forEach(item -> item.assignTo(settlement.getId()));
         itemRepository.saveAll(items);
+
+        // Written in the same transaction as the settlement, so the ledger can never be told about
+        // a payout that rolled back, and a payout can never commit without telling the ledger.
+        outboxWriter.append(AGGREGATE_TYPE, OpenPayTopics.SETTLEMENT_CREATED, settlement.getId(),
+                new SettlementCreated(
+                        settlement.getId(), key.merchantId(), key.currency(), settlementDate,
+                        gross, fees, net, items.size()));
 
         log.info("Settled {} items for merchant {} in {}: gross {}, fees {}, net {}",
                 items.size(), key.merchantId(), key.currency(), gross, fees, net);

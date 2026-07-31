@@ -18,8 +18,10 @@ architecture, distributed systems patterns, and production engineering practices
 | `mock-bank-service` | 9001 / 9002 | — | Simulated acquirers. One codebase, run twice as `mock-bank-a` and `mock-bank-b`. |
 
 Shared code lives in `libs/`: `common-observability` (correlation IDs), `common-security`
-(API key and admin token authentication, applied per path by configuration), and `common-kafka`
-(topic names, the event envelope, and the JSON event contracts every service agrees on).
+(API key and admin token authentication, applied per path by configuration), `common-kafka`
+(topic names, the event envelope, and the JSON event contracts every service agrees on), and
+`common-outbox` (the transactional outbox, extracted once a second service needed to publish
+events atomically with its own writes).
 
 ## Credentials
 
@@ -330,9 +332,23 @@ Three rules are enforced:
 - **Eligible items are claimed with `FOR UPDATE SKIP LOCKED`**, so two concurrent runs cannot put
   the same item into two different payouts.
 
+When a settlement is created it publishes `settlement.created.v1` through its own outbox, and the
+ledger clears the payable:
+
+```text
+DEBIT   MERCHANT_PAYABLE   50000    we no longer owe it
+CREDIT  PLATFORM_REVENUE    1000    the fee we kept
+CREDIT  GATEWAY_CLEARING   49000    the cash that left
+```
+
+Gross equals fee plus net, so it balances. Without this the ledger would only ever grow: capture
+credits the payable and nothing would debit it, so the books would report money owed to a merchant
+who had already been paid.
+
 A settlement's totals always equal the sum of its items, and `fee + net == gross` at both levels.
-Verified end to end: three payments totalling 39999 produced one payout of gross 39999, fees 800,
-net 39199, reconciling exactly against the ledger's `MERCHANT_PAYABLE` balance for that merchant.
+Verified end to end: two payments totalling 50000 accrued a payable of 50000, then settled to a
+payout of gross 50000, fee 1000, net 49000 — after which the merchant's payable read exactly zero
+and the fee appeared in platform revenue.
 
 ```bash
 curl -X POST http://localhost:8087/api/v1/settlements/run -H "X-Admin-Token: dev-admin-token"

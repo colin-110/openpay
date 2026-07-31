@@ -24,6 +24,9 @@ spring:
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
 
 openpay:
+  outbox:
+    relay-enabled: true
+    poll-interval-ms: 500
   settlement:
     # 2.00% of gross. A flat fee is supported but defaults to zero, because a non-zero one makes
     # small payments net negative and this phase has no carry-forward policy.

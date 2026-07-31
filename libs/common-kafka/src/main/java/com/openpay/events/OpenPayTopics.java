@@ -20,6 +20,9 @@ public final class OpenPayTopics {
     /** A provider told us the outcome of a transaction. Keyed by payment id. */
     public static final String PROVIDER_CALLBACK_RECEIVED = "provider.callback-received.v1";
 
+    /** A payout batch was created. Keyed by settlement id. */
+    public static final String SETTLEMENT_CREATED = "settlement.created.v1";
+
     private OpenPayTopics() {
     }
 }

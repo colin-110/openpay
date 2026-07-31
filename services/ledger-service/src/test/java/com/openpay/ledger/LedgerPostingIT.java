@@ -213,6 +213,90 @@ class LedgerPostingIT {
         }).hasMessageContaining("append-only");
     }
 
+
+    @Test
+    void settlingClearsTheMerchantPayableToZero() {
+        UUID merchantId = UUID.randomUUID();
+        // Capture 30000, then settle it: 600 fee (2%) kept, 29400 paid out.
+        ledgerService.post(capture(UUID.randomUUID(), UUID.randomUUID(), merchantId, 30_000));
+        assertThat(ledgerService.balance(AccountCodes.MERCHANT_PAYABLE, merchantId, "USD").balance())
+                .isEqualTo(30_000L);
+
+        ledgerService.post(settlement(UUID.randomUUID(), merchantId, 30_000, 600, 29_400));
+
+        // The whole point: a merchant who has been paid is no longer owed anything.
+        assertThat(ledgerService.balance(AccountCodes.MERCHANT_PAYABLE, merchantId, "USD").balance())
+                .isZero();
+    }
+
+    @Test
+    void feesLandInRevenueAndCashLeavesClearing() {
+        UUID merchantId = UUID.randomUUID();
+        long clearingBefore = clearingBalance();
+        long revenueBefore = revenueBalance();
+
+        ledgerService.post(capture(UUID.randomUUID(), UUID.randomUUID(), merchantId, 30_000));
+        ledgerService.post(settlement(UUID.randomUUID(), merchantId, 30_000, 600, 29_400));
+
+        // Clearing took in 30000 and paid out 29400, keeping the 600 that became revenue.
+        assertThat(clearingBalance() - clearingBefore).isEqualTo(600L);
+        assertThat(revenueBalance() - revenueBefore).isEqualTo(600L);
+    }
+
+    @Test
+    void aSettlementPostingBalances() {
+        UUID merchantId = UUID.randomUUID();
+        ledgerService.post(capture(UUID.randomUUID(), UUID.randomUUID(), merchantId, 12_345));
+
+        LedgerTransaction transaction =
+                ledgerService.post(settlement(UUID.randomUUID(), merchantId, 12_345, 247, 12_098));
+
+        long debits = 0;
+        long credits = 0;
+        for (LedgerEntry entry : entryRepository.findByTransactionId(transaction.getId())) {
+            if (entry.getDirection() == EntryDirection.DEBIT) {
+                debits += entry.getAmount();
+            } else {
+                credits += entry.getAmount();
+            }
+        }
+        assertThat(debits).isEqualTo(credits).isEqualTo(12_345L);
+    }
+
+    @Test
+    void aRedeliveredSettlementDoesNotClearTwice() {
+        UUID merchantId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+        ledgerService.post(capture(UUID.randomUUID(), UUID.randomUUID(), merchantId, 10_000));
+
+        ledgerService.post(settlement(eventId, merchantId, 10_000, 200, 9_800));
+        ledgerService.post(settlement(eventId, merchantId, 10_000, 200, 9_800));
+
+        // Double-clearing would drive the payable negative, making it look like we overpaid.
+        assertThat(ledgerService.balance(AccountCodes.MERCHANT_PAYABLE, merchantId, "USD").balance())
+                .isZero();
+    }
+
+    private long revenueBalance() {
+        try {
+            return ledgerService.balance(AccountCodes.PLATFORM_REVENUE, null, "USD").balance();
+        } catch (RuntimeException notCreatedYet) {
+            return 0L;
+        }
+    }
+
+    private PostingRequest settlement(UUID eventId, UUID merchantId, long gross, long fee, long net) {
+        return new PostingRequest(
+                eventId, "SETTLEMENT", UUID.randomUUID(), "USD", "Settlement payout",
+                List.of(
+                        new PostingRequest.Line(AccountCodes.MERCHANT_PAYABLE, merchantId,
+                                AccountType.LIABILITY, EntryDirection.DEBIT, gross),
+                        new PostingRequest.Line(AccountCodes.PLATFORM_REVENUE, null,
+                                AccountType.REVENUE, EntryDirection.CREDIT, fee),
+                        new PostingRequest.Line(AccountCodes.GATEWAY_CLEARING, null,
+                                AccountType.ASSET, EntryDirection.CREDIT, net)));
+    }
+
     private PostingRequest capture(UUID eventId, UUID paymentId, UUID merchantId, long amount) {
         return capture(eventId, paymentId, merchantId, amount, "USD");
     }

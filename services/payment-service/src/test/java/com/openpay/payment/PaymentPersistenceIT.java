@@ -15,8 +15,8 @@ import com.openpay.payment.domain.PaymentEvent;
 import com.openpay.payment.domain.PaymentEventRepository;
 import com.openpay.payment.domain.PaymentRepository;
 import com.openpay.payment.domain.PaymentStatus;
-import com.openpay.payment.outbox.OutboxEvent;
-import com.openpay.payment.outbox.OutboxRepository;
+import com.openpay.outbox.OutboxEvent;
+import com.openpay.outbox.OutboxRepository;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.UUID;
@@ -41,7 +41,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 // No broker in this test: the outbox row is asserted directly, and the relay and
 // listeners are switched off so they do not poll a Kafka that is not running.
 @SpringBootTest(properties = {
-        "openpay.outbox.enabled=false",
+        "openpay.outbox.relay-enabled=false",
         "spring.kafka.listener.auto-startup=false"
 })
 @Testcontainers

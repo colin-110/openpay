@@ -13,7 +13,7 @@ import com.openpay.payment.domain.PaymentEvent;
 import com.openpay.payment.domain.PaymentEventRepository;
 import com.openpay.payment.domain.PaymentRepository;
 import com.openpay.payment.domain.PaymentStatus;
-import com.openpay.payment.outbox.OutboxWriter;
+import com.openpay.outbox.OutboxWriter;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -33,6 +33,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class PaymentService {
 
     private static final Logger log = LoggerFactory.getLogger(PaymentService.class);
+    private static final String AGGREGATE_TYPE = "payment";
 
     private final PaymentRepository paymentRepository;
     private final PaymentEventRepository paymentEventRepository;
@@ -73,7 +74,7 @@ public class PaymentService {
 
             // Same transaction as the payment row: the event cannot escape without the payment,
             // and the payment cannot commit without the event.
-            outboxWriter.append(OpenPayTopics.PAYMENT_CREATED, payment.getId(), new PaymentCreated(
+            outboxWriter.append(AGGREGATE_TYPE, OpenPayTopics.PAYMENT_CREATED, payment.getId(), new PaymentCreated(
                     payment.getId(), payment.getMerchantId(), payment.getAmount(), payment.getCurrency()));
 
             log.info("Created payment id={} merchantId={}", payment.getId(), merchantId);
@@ -136,7 +137,7 @@ public class PaymentService {
 
         payment.transitionTo(target);
         recordEvent(payment, "PAYMENT_" + target.name());
-        outboxWriter.append(OpenPayTopics.PAYMENT_STATUS_UPDATED, payment.getId(), new PaymentStatusUpdated(
+        outboxWriter.append(AGGREGATE_TYPE, OpenPayTopics.PAYMENT_STATUS_UPDATED, payment.getId(), new PaymentStatusUpdated(
                 payment.getId(),
                 payment.getMerchantId(),
                 current.name(),

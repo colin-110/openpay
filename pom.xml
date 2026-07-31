@@ -16,6 +16,7 @@
         <module>libs/common-observability</module>
         <module>libs/common-security</module>
         <module>libs/common-kafka</module>
+        <module>libs/common-outbox</module>
         <module>services/gateway-service</module>
         <module>services/auth-service</module>
         <module>services/merchant-service</module>

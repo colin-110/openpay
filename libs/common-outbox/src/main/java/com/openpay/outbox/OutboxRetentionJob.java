@@ -1,4 +1,4 @@
-package com.openpay.payment.outbox;
+package com.openpay.outbox;
 
 import java.time.Duration;
 import java.time.OffsetDateTime;
@@ -6,7 +6,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
@@ -16,7 +15,6 @@ import org.springframework.transaction.annotation.Transactional;
  * published rows around is what lets you answer "did we actually emit that event, and when"
  * during an incident. Past that window {@code payment_events} remains the durable history.
  */
-@Component
 public class OutboxRetentionJob {
 
     private static final Logger log = LoggerFactory.getLogger(OutboxRetentionJob.class);

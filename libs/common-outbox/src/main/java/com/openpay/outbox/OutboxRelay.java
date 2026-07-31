@@ -1,4 +1,4 @@
-package com.openpay.payment.outbox;
+package com.openpay.outbox;
 
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -8,7 +8,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Limit;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
-import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
@@ -18,7 +17,6 @@ import org.springframework.transaction.annotation.Transactional;
  * a crash between the send and the update replays the event. Consumers are expected to be
  * idempotent, which is why every envelope carries an {@code eventId}.
  */
-@Component
 public class OutboxRelay {
 
     private static final Logger log = LoggerFactory.getLogger(OutboxRelay.class);
