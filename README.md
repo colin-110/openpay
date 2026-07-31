@@ -14,6 +14,7 @@ architecture, distributed systems patterns, and production engineering practices
 | `webhook-service` | 8084 | `openpay_webhook` | Trust boundary for inbound provider callbacks: signature verification and deduplication. |
 | `provider-router-service` | 8085 | `openpay_router` | Chooses an acquirer, fails over, and trips a circuit breaker on a bad one. |
 | `ledger-service` | 8086 | `openpay_ledger` | Double-entry journal. Append-only, enforced by the database. |
+| `settlement-service` | 8087 | `openpay_settlement` | Accrues payables on capture and batches them into merchant payouts. |
 | `mock-bank-service` | 9001 / 9002 | — | Simulated acquirers. One codebase, run twice as `mock-bank-a` and `mock-bank-b`. |
 
 Shared code lives in `libs/`: `common-observability` (correlation IDs), `common-security`
@@ -67,7 +68,7 @@ real PostgreSQL via Testcontainers and require Docker to be running.
 
 ### 4. Run everything at once (Windows)
 
-Nine processes in nine terminals is enough friction to stop anyone actually running this, so
+Ten processes in ten terminals is enough friction to stop anyone actually running this, so
 there is a helper. It checks that infrastructure is up, launches each service in its own window,
 and waits until all of them report healthy:
 
@@ -125,6 +126,10 @@ export MOCK_BANK_B_SECRET=bank-b-secret
 
 ```bash
 ./mvnw -pl services/ledger-service -am spring-boot:run
+```
+
+```bash
+./mvnw -pl services/settlement-service -am spring-boot:run
 ```
 
 The two acquirers are the same module run twice with different configuration:
@@ -208,6 +213,8 @@ Internal, not exposed through the gateway:
   attempt ended.
 - `GET /api/v1/ledger/accounts/{accountCode}/balance` — derived from the journal, admin-gated.
 - `GET /api/v1/ledger/entries?referenceId={paymentId}` — every transaction and both sides of each.
+- `GET /api/v1/settlements/{settlementId}` — a payout and the payments inside it.
+- `POST /api/v1/settlements/run` — close a settlement window explicitly.
 
 Every service exposes `/actuator/health`, `/actuator/info`, and `/actuator/prometheus`.
 
@@ -294,6 +301,47 @@ Balances are derived by summing the journal, never stored in a column that could
 curl "http://localhost:8086/api/v1/ledger/accounts/MERCHANT_PAYABLE/balance?merchantId=<ID>&currency=USD" -H "X-Admin-Token: dev-admin-token"
 ```
 
+## Settlement
+
+A captured payment becomes payable immediately; money leaves on a schedule. Those are two separate
+records on purpose, and keeping them apart is what makes a payout auditable back to the exact
+payments inside it.
+
+```text
+payment CAPTURED
+  └─> settlement_item accrued   gross 25000, fee 500 (2%), net 24500, PENDING
+        └─> window closes
+              └─> settlement    one per merchant, per currency, per date
+                    gross 39999   fees 800   net 39199   3 items
+```
+
+Fees are 2% by default, taken in basis points so the arithmetic stays in integers. A flat fee is
+supported but defaults to zero: with a non-zero one a small enough payment nets negative, which is
+a real situation needing a carry-forward policy this phase does not implement. When it happens the
+negative net is recorded and logged rather than clamped, because clamping would make the platform
+silently absorb the shortfall and the books would stop reconciling.
+
+Three rules are enforced:
+
+- **One item per payment**, by unique constraint. A redelivered capture must not accrue the same
+  money twice, and paying a merchant twice for one payment is the failure this prevents.
+- **One settlement per merchant, currency, and date**, also by constraint. The run is safe to
+  execute repeatedly; a second run finds nothing left to batch.
+- **Eligible items are claimed with `FOR UPDATE SKIP LOCKED`**, so two concurrent runs cannot put
+  the same item into two different payouts.
+
+A settlement's totals always equal the sum of its items, and `fee + net == gross` at both levels.
+Verified end to end: three payments totalling 39999 produced one payout of gross 39999, fees 800,
+net 39199, reconciling exactly against the ledger's `MERCHANT_PAYABLE` balance for that merchant.
+
+```bash
+curl -X POST http://localhost:8087/api/v1/settlements/run -H "X-Admin-Token: dev-admin-token"
+```
+
+```bash
+curl http://localhost:8087/api/v1/settlements/<SETTLEMENT_ID> -H "X-Admin-Token: dev-admin-token"
+```
+
 ## Event Delivery
 
 The outbox relay claims rows with `FOR UPDATE SKIP LOCKED`, so running several replicas of
@@ -358,6 +406,7 @@ Delivered:
 - signature-verified, deduplicated provider callbacks
 - double-entry ledger with an append-only journal enforced in the database
 - dead-letter routing for unprocessable events, and a multi-replica-safe outbox relay
+- settlement accrual, fee calculation, and payout batching that reconciles against the ledger
 - CI running unit and integration tests on JDK 21 and 25
 
 Not yet built (see [docs/roadmap.md](docs/roadmap.md)):

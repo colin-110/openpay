@@ -4,3 +4,4 @@ CREATE DATABASE openpay_payment;
 CREATE DATABASE openpay_router;
 CREATE DATABASE openpay_webhook;
 CREATE DATABASE openpay_ledger;
+CREATE DATABASE openpay_settlement;

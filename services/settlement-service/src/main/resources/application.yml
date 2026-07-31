@@ -1,0 +1,59 @@
+spring:
+  application:
+    name: settlement-service
+  datasource:
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:openpay_settlement}
+    username: ${DB_USERNAME:openpay}
+    password: ${DB_PASSWORD:openpay}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+  flyway:
+    enabled: true
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+    consumer:
+      group-id: settlement-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+
+openpay:
+  settlement:
+    # 2.00% of gross. A flat fee is supported but defaults to zero, because a non-zero one makes
+    # small payments net negative and this phase has no carry-forward policy.
+    fee-basis-points: ${SETTLEMENT_FEE_BPS:200}
+    fee-fixed-minor: ${SETTLEMENT_FEE_FIXED:0}
+    # Zero locally so a demo settles immediately. A real deployment holds captured funds until the
+    # acquirer's reversal window has closed.
+    hold-period: ${SETTLEMENT_HOLD_PERIOD:0s}
+    scheduled: ${SETTLEMENT_SCHEDULED:true}
+    cron: ${SETTLEMENT_CRON:0 0 2 * * *}
+  security:
+    # Payouts are platform-operator data.
+    admin-token: ${OPENPAY_ADMIN_TOKEN:}
+    admin-paths:
+      - /api/v1/settlements
+
+server:
+  port: 8087
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %-5level [%thread] [%X{correlationId}] %logger{36} - %msg%n"

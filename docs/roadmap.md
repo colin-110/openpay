@@ -11,6 +11,8 @@ completes the payment from a signature-verified callback.
 Built:
 
 - phases 1-3, except the gaps listed below
+- `ledger-service` (phase 4) with a database-enforced append-only journal
+- `settlement-service` (phase 8) accruing payables and batching payouts
 - `mock-bank-service` (phase 5), deployed twice as mock-bank-a and mock-bank-b
 - `provider-router-service` (phase 6) with priority routing, failover, and a circuit breaker
 - `webhook-service` (phase 10's inbound half) with HMAC verification and deduplication
@@ -21,7 +23,10 @@ Still open inside those phases:
 - Phase 2: `users`, `audit_logs`, and `POST /api/v1/auth/login`
 - Phase 3: `POST /api/v1/refunds`
 - Phase 6: routing rules are static configuration, not a `provider_routing_rules` table
-- Phase 7: no DLQ topics and no replay tool; a poison event currently just retries
+- Phase 7: DLQ topics exist, but there is no replay tool; messages land there and must be
+  re-published by hand
+- Phase 8: payouts are batched but never actually sent anywhere, and settlement does not
+  yet post its own ledger entries clearing the payable
 - Phase 10: outbound merchant webhooks are not built, only inbound provider callbacks
 
 Money is stored as `BIGINT` minor units throughout, matching the architecture document.
