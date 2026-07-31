@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.openpay.payment.domain.PaymentEventRepository;
 import com.openpay.payment.domain.PaymentRepository;
+import com.openpay.payment.domain.RefundRepository;
 import com.openpay.outbox.OutboxWriter;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -27,6 +28,9 @@ class PaymentServiceApplicationTests {
 
     // This context has no database at all, so the outbox is switched off and the one bean that
     // depends on it is mocked. PaymentPersistenceIT covers the real wiring.
+    @MockBean
+    private RefundRepository refundRepository;
+
     @MockBean
     private OutboxWriter outboxWriter;
 

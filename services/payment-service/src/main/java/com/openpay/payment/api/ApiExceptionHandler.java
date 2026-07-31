@@ -2,6 +2,8 @@ package com.openpay.payment.api;
 
 import com.openpay.payment.application.IdempotencyKeyConflictException;
 import com.openpay.payment.application.PaymentNotFoundException;
+import com.openpay.payment.application.RefundNotAllowedException;
+import com.openpay.payment.application.RefundNotFoundException;
 import com.openpay.payment.domain.InvalidPaymentTransitionException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
@@ -27,6 +29,20 @@ public class ApiExceptionHandler {
     @ExceptionHandler(PaymentNotFoundException.class)
     public ResponseEntity<ErrorResponse> handleNotFound(PaymentNotFoundException exception, HttpServletRequest request) {
         return build(HttpStatus.NOT_FOUND, "payment_not_found", exception.getMessage(), request);
+    }
+
+    @ExceptionHandler(RefundNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleRefundNotFound(
+            RefundNotFoundException exception, HttpServletRequest request) {
+        return build(HttpStatus.NOT_FOUND, "refund_not_found", exception.getMessage(), request);
+    }
+
+    @ExceptionHandler(RefundNotAllowedException.class)
+    public ResponseEntity<ErrorResponse> handleRefundNotAllowed(
+            RefundNotAllowedException exception, HttpServletRequest request) {
+        // 422 rather than 400: the request is well formed, but the payment's state or remaining
+        // refundable balance will not permit it.
+        return build(HttpStatus.UNPROCESSABLE_ENTITY, "refund_not_allowed", exception.getMessage(), request);
     }
 
     @ExceptionHandler(IdempotencyKeyConflictException.class)

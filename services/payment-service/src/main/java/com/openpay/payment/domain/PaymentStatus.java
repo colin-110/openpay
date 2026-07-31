@@ -8,9 +8,9 @@ import java.util.Set;
  * Payment lifecycle.
  *
  * <p>A subset of the states in the architecture document: the ones this system actually moves
- * through today. {@code REFUND_PENDING}, {@code REFUNDED}, and {@code SETTLED} arrive with the
- * refund and settlement phases, and adding them before anything can produce them would be
- * decoration rather than a state machine.
+ * through today. {@code SETTLED} is deliberately absent -- settlement is tracked by
+ * settlement-service against its own records, and duplicating it here would create two sources of
+ * truth for whether a merchant has been paid.
  */
 public enum PaymentStatus {
 
@@ -30,15 +30,21 @@ public enum PaymentStatus {
     FAILED,
 
     /** Withdrawn before capture. Terminal. */
-    CANCELLED;
+    CANCELLED,
+
+    /** Every minor unit has been returned to the customer. Terminal. */
+    REFUNDED;
 
     private static final Map<PaymentStatus, Set<PaymentStatus>> ALLOWED_TRANSITIONS = Map.of(
             CREATED, EnumSet.of(PENDING_PROVIDER, FAILED, CANCELLED),
             PENDING_PROVIDER, EnumSet.of(AUTHORIZED, CAPTURED, FAILED),
             AUTHORIZED, EnumSet.of(CAPTURED, FAILED, CANCELLED),
-            CAPTURED, EnumSet.noneOf(PaymentStatus.class),
+            // Only a fully returned payment leaves CAPTURED. A partial refund does not move the
+            // payment at all; the refunds themselves carry that detail.
+            CAPTURED, EnumSet.of(REFUNDED),
             FAILED, EnumSet.noneOf(PaymentStatus.class),
-            CANCELLED, EnumSet.noneOf(PaymentStatus.class));
+            CANCELLED, EnumSet.noneOf(PaymentStatus.class),
+            REFUNDED, EnumSet.noneOf(PaymentStatus.class));
 
     public boolean canTransitionTo(PaymentStatus target) {
         return ALLOWED_TRANSITIONS.getOrDefault(this, Set.of()).contains(target);

@@ -41,6 +41,7 @@ openpay:
     # validated key, never from a client-supplied header.
     api-key-paths:
       - /api/v1/payments
+      - /api/v1/refunds
 
 server:
   port: 8083

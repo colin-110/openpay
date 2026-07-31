@@ -23,6 +23,12 @@ public final class OpenPayTopics {
     /** A payout batch was created. Keyed by settlement id. */
     public static final String SETTLEMENT_CREATED = "settlement.created.v1";
 
+    /** A refund was accepted and needs dispatching. Keyed by refund id. */
+    public static final String REFUND_CREATED = "refund.created.v1";
+
+    /** A refund completed and the money is back with the customer. Keyed by refund id. */
+    public static final String REFUND_SUCCEEDED = "refund.succeeded.v1";
+
     private OpenPayTopics() {
     }
 }

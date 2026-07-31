@@ -27,6 +27,7 @@ class PaymentStateMachineTest {
             "AUTHORIZED,CAPTURED",
             "AUTHORIZED,FAILED",
             "AUTHORIZED,CANCELLED",
+            "CAPTURED,REFUNDED",
     })
     void allowsLegalTransitions(PaymentStatus from, PaymentStatus to) {
         assertThat(from.canTransitionTo(to)).isTrue();
@@ -45,20 +46,23 @@ class PaymentStateMachineTest {
             "CAPTURED,AUTHORIZED",
             "FAILED,AUTHORIZED",
             "CANCELLED,CAPTURED",
+            "CREATED,REFUNDED",
+            "AUTHORIZED,REFUNDED",
+            "REFUNDED,CAPTURED",
     })
     void rejectsIllegalTransitions(PaymentStatus from, PaymentStatus to) {
         assertThat(from.canTransitionTo(to)).isFalse();
     }
 
     @ParameterizedTest
-    @EnumSource(value = PaymentStatus.class, names = {"CAPTURED", "FAILED", "CANCELLED"})
+    @EnumSource(value = PaymentStatus.class, names = {"FAILED", "CANCELLED", "REFUNDED"})
     void terminalStatesAcceptNothing(PaymentStatus terminal) {
         assertThat(terminal.isTerminal()).isTrue();
         assertThat(terminal.allowedTransitions()).isEmpty();
     }
 
     @ParameterizedTest
-    @EnumSource(value = PaymentStatus.class, names = {"CREATED", "PENDING_PROVIDER", "AUTHORIZED"})
+    @EnumSource(value = PaymentStatus.class, names = {"CREATED", "PENDING_PROVIDER", "AUTHORIZED", "CAPTURED"})
     void nonTerminalStatesCanStillMove(PaymentStatus status) {
         assertThat(status.isTerminal()).isFalse();
         assertThat(status.allowedTransitions()).isNotEmpty();
