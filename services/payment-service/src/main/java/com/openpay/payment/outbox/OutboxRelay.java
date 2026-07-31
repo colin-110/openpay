@@ -42,8 +42,9 @@ public class OutboxRelay {
     @Scheduled(fixedDelayString = "${openpay.outbox.poll-interval-ms:500}")
     @Transactional
     public void publishPending() {
-        List<OutboxEvent> pending =
-                outboxRepository.findByPublishedAtIsNullOrderByCreatedAtAsc(Limit.of(batchSize));
+        // Claims rows with FOR UPDATE SKIP LOCKED, so running several replicas of this service
+        // divides the work rather than publishing everything N times.
+        List<OutboxEvent> pending = outboxRepository.claimPendingBatch(batchSize);
         if (pending.isEmpty()) {
             return;
         }

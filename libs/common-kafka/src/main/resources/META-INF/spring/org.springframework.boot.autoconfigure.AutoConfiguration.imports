@@ -1,1 +1,2 @@
 com.openpay.events.EventsAutoConfiguration
+com.openpay.events.KafkaErrorHandlingAutoConfiguration
