@@ -158,10 +158,6 @@ class PaymentPersistenceIT {
         UUID paymentId = paymentService.createPayment(
                 merchantId, "it-key-5", new CreatePaymentRequest(1_500L, "USD")).payment().id();
 
-        // Nothing may skip the provider: a payment cannot be captured straight from CREATED.
-        assertThat(paymentService.applyTransition(paymentId, PaymentStatus.CAPTURED, "test")).isFalse();
-        assertThat(paymentService.getPayment(merchantId, paymentId).status()).isEqualTo(PaymentStatus.CREATED);
-
         assertThat(paymentService.applyTransition(paymentId, PaymentStatus.PENDING_PROVIDER, "routed")).isTrue();
         assertThat(paymentService.applyTransition(paymentId, PaymentStatus.AUTHORIZED, "callback")).isTrue();
         assertThat(paymentService.applyTransition(paymentId, PaymentStatus.CAPTURED, "callback")).isTrue();
@@ -171,6 +167,23 @@ class PaymentPersistenceIT {
                 .filteredOn(event -> event.getPaymentId().equals(paymentId))
                 .extracting(PaymentEvent::getType)
                 .contains("PAYMENT_CREATED", "PAYMENT_PENDING_PROVIDER", "PAYMENT_AUTHORIZED", "PAYMENT_CAPTURED");
+    }
+
+    @Test
+    void anOutcomeArrivingBeforeTheRoutingNotificationIsStillApplied() {
+        UUID merchantId = UUID.randomUUID();
+        UUID paymentId = paymentService.createPayment(
+                merchantId, "it-key-order", new CreatePaymentRequest(1_500L, "USD")).payment().id();
+
+        // The two events are on separate topics, so this order is entirely possible. Refusing the
+        // outcome here would strand the payment once the routing notification arrived.
+        assertThat(paymentService.applyTransition(paymentId, PaymentStatus.CAPTURED, "callback first"))
+                .isTrue();
+        assertThat(paymentService.applyTransition(paymentId, PaymentStatus.PENDING_PROVIDER, "late routing"))
+                .isFalse();
+
+        assertThat(paymentService.getPayment(merchantId, paymentId).status())
+                .isEqualTo(PaymentStatus.CAPTURED);
     }
 
     @Test

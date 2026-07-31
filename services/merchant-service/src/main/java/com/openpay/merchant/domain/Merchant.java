@@ -28,6 +28,10 @@ public class Merchant {
     @Column(name = "webhook_url")
     private String webhookUrl;
 
+    /** HMAC key for signing outbound webhooks. Null until one is issued. */
+    @Column(name = "webhook_secret", length = 128)
+    private String webhookSecret;
+
     @Column(name = "default_currency", nullable = false, length = 3, columnDefinition = "bpchar")
     private String defaultCurrency;
 
@@ -71,6 +75,14 @@ public class Merchant {
 
     public String getWebhookUrl() {
         return webhookUrl;
+    }
+
+    public String getWebhookSecret() {
+        return webhookSecret;
+    }
+
+    public void setWebhookSecret(String webhookSecret) {
+        this.webhookSecret = webhookSecret;
     }
 
     public void setWebhookUrl(String webhookUrl) {

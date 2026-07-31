@@ -28,6 +28,10 @@ class PaymentStateMachineTest {
             "AUTHORIZED,FAILED",
             "AUTHORIZED,CANCELLED",
             "CAPTURED,REFUNDED",
+            // Callbacks and routing notifications are on separate topics with no ordering between
+            // them, so an outcome can legitimately arrive before the routing notification.
+            "CREATED,AUTHORIZED",
+            "CREATED,CAPTURED",
     })
     void allowsLegalTransitions(PaymentStatus from, PaymentStatus to) {
         assertThat(from.canTransitionTo(to)).isTrue();
@@ -35,9 +39,6 @@ class PaymentStateMachineTest {
 
     @ParameterizedTest
     @CsvSource({
-            // A payment must go through a provider; it cannot be captured on the merchant's say-so.
-            "CREATED,AUTHORIZED",
-            "CREATED,CAPTURED",
             "CREATED,CREATED",
             "PENDING_PROVIDER,CREATED",
             "PENDING_PROVIDER,CANCELLED",
@@ -72,7 +73,8 @@ class PaymentStateMachineTest {
     void entityRefusesAnIllegalTransition() {
         Payment payment = payment();
 
-        assertThatThrownBy(() -> payment.transitionTo(PaymentStatus.CAPTURED))
+        // A payment cannot be refunded before any money has been taken.
+        assertThatThrownBy(() -> payment.transitionTo(PaymentStatus.REFUNDED))
                 .isInstanceOf(InvalidPaymentTransitionException.class);
         assertThat(payment.getStatus()).isEqualTo(PaymentStatus.CREATED);
     }

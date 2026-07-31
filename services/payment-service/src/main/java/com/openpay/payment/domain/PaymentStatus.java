@@ -35,8 +35,16 @@ public enum PaymentStatus {
     /** Every minor unit has been returned to the customer. Terminal. */
     REFUNDED;
 
+    // CREATED accepts AUTHORIZED and CAPTURED directly, not just PENDING_PROVIDER.
+    //
+    // Routing and provider callbacks arrive on separate topics, so nothing orders them relative to
+    // each other. When a callback is processed before the routing notification, refusing it would
+    // drop the real outcome and leave the payment stranded in PENDING_PROVIDER once the late
+    // notification lands. Reaching AUTHORIZED already implies a provider answered, so accepting it
+    // loses no safety: the guarantee that a merchant cannot advance its own payment lives at the
+    // API, which has no transition endpoint at all.
     private static final Map<PaymentStatus, Set<PaymentStatus>> ALLOWED_TRANSITIONS = Map.of(
-            CREATED, EnumSet.of(PENDING_PROVIDER, FAILED, CANCELLED),
+            CREATED, EnumSet.of(PENDING_PROVIDER, AUTHORIZED, CAPTURED, FAILED, CANCELLED),
             PENDING_PROVIDER, EnumSet.of(AUTHORIZED, CAPTURED, FAILED),
             AUTHORIZED, EnumSet.of(CAPTURED, FAILED, CANCELLED),
             // Only a fully returned payment leaves CAPTURED. A partial refund does not move the

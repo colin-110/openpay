@@ -27,7 +27,7 @@ Still open inside those phases:
   re-published by hand
 - Phase 8: payouts are batched and clear the ledger payable, but no money is actually sent
   anywhere; there is no payout rail
-- Phase 10: outbound merchant webhooks are not built, only inbound provider callbacks
+- Phase 10: complete for webhooks. Email notification is not built; delivery is HTTP only.
 
 Money is stored as `BIGINT` minor units throughout, matching the architecture document.
 

@@ -15,6 +15,7 @@ architecture, distributed systems patterns, and production engineering practices
 | `provider-router-service` | 8085 | `openpay_router` | Chooses an acquirer, fails over, and trips a circuit breaker on a bad one. |
 | `ledger-service` | 8086 | `openpay_ledger` | Double-entry journal. Append-only, enforced by the database. |
 | `settlement-service` | 8087 | `openpay_settlement` | Accrues payables on capture and batches them into merchant payouts. |
+| `notification-service` | 8088 | `openpay_notification` | Delivers signed webhooks to merchants, with retries and a delivery log. |
 | `mock-bank-service` | 9001 / 9002 | — | Simulated acquirers. One codebase, run twice as `mock-bank-a` and `mock-bank-b`. |
 
 Shared code lives in `libs/`: `common-observability` (correlation IDs), `common-security`
@@ -70,7 +71,7 @@ real PostgreSQL via Testcontainers and require Docker to be running.
 
 ### 4. Run everything at once (Windows)
 
-Ten processes in ten terminals is enough friction to stop anyone actually running this, so
+Eleven processes in eleven terminals is enough friction to stop anyone actually running this, so
 there is a helper. It checks that infrastructure is up, launches each service in its own window,
 and waits until all of them report healthy:
 
@@ -221,6 +222,9 @@ Internal, not exposed through the gateway:
 - `GET /api/v1/ledger/entries?referenceId={paymentId}` — every transaction and both sides of each.
 - `GET /api/v1/settlements/{settlementId}` — a payout and the payments inside it.
 - `POST /api/v1/settlements/run` — close a settlement window explicitly.
+- `GET /api/v1/merchants/{merchantId}/webhook-config` — delivery URL and signing secret.
+- `POST /api/v1/merchants/{merchantId}/webhook-secret` — rotate the signing secret.
+- `GET /api/v1/webhooks/deliveries` — what was sent, what failed, and why.
 
 Every service exposes `/actuator/health`, `/actuator/info`, and `/actuator/prometheus`.
 
@@ -409,6 +413,47 @@ curl -X POST http://localhost:8087/api/v1/settlements/run -H "X-Admin-Token: dev
 curl http://localhost:8087/api/v1/settlements/<SETTLEMENT_ID> -H "X-Admin-Token: dev-admin-token"
 ```
 
+## Merchant Webhooks
+
+Merchants are told about outcomes rather than having to poll for them.
+
+```text
+payment CAPTURED / FAILED / REFUNDED, or refund SUCCEEDED
+  └─> queued as one delivery per source event
+        └─> POST to the merchant's URL, signed
+              ├─ 2xx        DELIVERED
+              └─ anything else, or a timeout
+                    └─ retried with widening backoff, then ABANDONED
+```
+
+Not every internal state change is sent. `PENDING_PROVIDER` means we are mid-conversation with an
+acquirer, which is our concern rather than the merchant's, and forwarding it would train them to
+ignore us.
+
+Each delivery carries three headers:
+
+```text
+X-OpenPay-Signature   HMAC-SHA256 of "<timestamp>.<body>"
+X-OpenPay-Timestamp   unix seconds
+X-OpenPay-Event-Id    stable per source event, so merchants can deduplicate
+```
+
+The timestamp is inside the signed payload deliberately. Signing the body alone would let anyone
+who captured one delivery replay it forever, so a merchant should reject a stale timestamp as well
+as a bad signature.
+
+Each merchant gets a signing secret at onboarding, readable only through an admin-gated internal
+endpoint and never returned by the merchant-facing read. Unlike an API key it cannot be stored as a
+hash, because we have to reproduce the signature on every delivery; in a real deployment that
+column belongs in a secret manager. It can be rotated without re-onboarding.
+
+Failed deliveries are retried on exponential backoff up to a cap, then marked `ABANDONED` rather
+than deleted: a merchant who never got told has to stay findable.
+
+```bash
+curl "http://localhost:8088/api/v1/webhooks/deliveries?merchantId=<ID>" -H "X-Admin-Token: dev-admin-token"
+```
+
 ## Event Delivery
 
 The outbox relay claims rows with `FOR UPDATE SKIP LOCKED`, so running several replicas of
@@ -474,6 +519,8 @@ Delivered:
 - double-entry ledger with an append-only journal enforced in the database
 - dead-letter routing for unprocessable events, and a multi-replica-safe outbox relay
 - settlement accrual, fee calculation, and payout batching that reconciles against the ledger
+- refunds with over-refund protection and negative-balance carry-forward
+- signed outbound merchant webhooks with retries and a delivery log
 - CI running unit and integration tests on JDK 21 and 25
 
 Not yet built (see [docs/roadmap.md](docs/roadmap.md)):

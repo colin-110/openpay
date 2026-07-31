@@ -25,6 +25,7 @@
         <module>services/webhook-service</module>
         <module>services/ledger-service</module>
         <module>services/settlement-service</module>
+        <module>services/notification-service</module>
         <module>services/mock-bank-service</module>
     </modules>
 

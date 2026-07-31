@@ -32,14 +32,17 @@ public class RefundService {
 
     private final RefundRepository refundRepository;
     private final PaymentRepository paymentRepository;
+    private final PaymentService paymentService;
     private final OutboxWriter outboxWriter;
 
     public RefundService(
             RefundRepository refundRepository,
             PaymentRepository paymentRepository,
+            PaymentService paymentService,
             OutboxWriter outboxWriter) {
         this.refundRepository = refundRepository;
         this.paymentRepository = paymentRepository;
+        this.paymentService = paymentService;
         this.outboxWriter = outboxWriter;
     }
 
@@ -152,7 +155,14 @@ public class RefundService {
                 .toList();
     }
 
-    /** The payment is only REFUNDED once every minor unit of it has actually come back. */
+    /**
+     * The payment is only REFUNDED once every minor unit of it has actually come back.
+     *
+     * <p>The transition is routed through PaymentService rather than applied to the entity here,
+     * so it emits payment.status-updated.v1 like every other transition. Writing the entity
+     * directly moved the payment but told nobody, leaving the ledger, settlement, and the
+     * merchant's own webhook unaware it had happened.
+     */
     private void markPaymentRefundedIfFullyReturned(Refund refund) {
         Payment payment = paymentRepository.findById(refund.getPaymentId()).orElse(null);
         if (payment == null) {
@@ -164,8 +174,9 @@ public class RefundService {
                 .sum();
 
         if (succeeded >= payment.getAmount() && payment.getStatus() == PaymentStatus.CAPTURED) {
-            payment.transitionTo(PaymentStatus.REFUNDED);
-            log.info("Payment {} is fully refunded", payment.getId());
+            paymentService.applyTransition(
+                    payment.getId(), PaymentStatus.REFUNDED,
+                    "fully refunded by refund " + refund.getId());
         }
     }
 

@@ -13,6 +13,7 @@ import com.openpay.payment.application.RefundResult;
 import com.openpay.payment.application.RefundService;
 import com.openpay.payment.domain.PaymentStatus;
 import com.openpay.payment.domain.RefundStatus;
+import com.openpay.outbox.OutboxRepository;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -38,6 +39,9 @@ class RefundIT {
 
     @Autowired
     private RefundService refundService;
+
+    @Autowired
+    private OutboxRepository outboxRepository;
 
     @Test
     void refundsACapturedPaymentInFull() {
@@ -165,6 +169,23 @@ class RefundIT {
 
         assertThat(paymentService.getPayment(merchantId, paymentId).status())
                 .isEqualTo(PaymentStatus.REFUNDED);
+    }
+
+    @Test
+    void fullyRefundingAPaymentEmitsAStatusEvent() {
+        UUID merchantId = UUID.randomUUID();
+        UUID paymentId = capturedPayment(merchantId, 10_000, "r-evt");
+        long before = outboxRepository.count();
+
+        RefundResult refund = refundService.createRefund(
+                merchantId, "evt-1", new CreateRefundRequest(paymentId, 10_000L, null));
+        refundService.applyOutcome(refund.refund().id(), RefundStatus.SUCCEEDED, null);
+
+        // refund.created, refund.succeeded, and the payment's own REFUNDED transition. Without the
+        // last one the ledger, settlement, and the merchant's webhook never learn about it.
+        assertThat(outboxRepository.count()).isEqualTo(before + 3);
+        assertThat(outboxRepository.findAll().stream()
+                .anyMatch(event -> event.getPayload().contains("REFUNDED"))).isTrue();
     }
 
     @Test
