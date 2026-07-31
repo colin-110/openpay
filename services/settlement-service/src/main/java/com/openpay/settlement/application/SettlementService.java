@@ -6,6 +6,7 @@ import com.openpay.outbox.OutboxWriter;
 import com.openpay.settlement.domain.Settlement;
 import com.openpay.settlement.domain.SettlementItem;
 import com.openpay.settlement.domain.SettlementItemRepository;
+import com.openpay.settlement.domain.SettlementItemType;
 import com.openpay.settlement.domain.SettlementRepository;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -63,7 +64,8 @@ public class SettlementService {
     public SettlementItem accrue(
             UUID merchantId, UUID paymentId, String currency, long grossAmount, OffsetDateTime capturedAt) {
 
-        Optional<SettlementItem> existing = itemRepository.findByPaymentId(paymentId);
+        Optional<SettlementItem> existing =
+                itemRepository.findByPaymentIdAndItemType(paymentId, SettlementItemType.CAPTURE);
         if (existing.isPresent()) {
             log.info("Payment {} is already accrued, ignoring redelivery", paymentId);
             return existing.get();
@@ -82,8 +84,40 @@ public class SettlementService {
                     merchantId, paymentId, currency, fee.gross(), fee.fee(), fee.net(), capturedAt));
         } catch (DataIntegrityViolationException exception) {
             log.info("Concurrent accrual for payment {}, keeping the winner", paymentId);
-            return itemRepository.findByPaymentId(paymentId)
+            return itemRepository.findByPaymentIdAndItemType(paymentId, SettlementItemType.CAPTURE)
                     .orElseThrow(() -> exception);
+        }
+    }
+
+    /**
+     * Records a refund as a negative payable.
+     *
+     * <p>Carry-forward falls out of this rather than needing its own mechanism: the refund sits in
+     * the same pending pool as captures and nets against them when the window closes. If a merchant
+     * refunds more than they took in a period, the group's net goes negative and no payout is made,
+     * so the deficit stays pending and reduces the next payout instead.
+     *
+     * <p>The fee is not returned. The original payment was still processed, which is how most
+     * gateways price a refund, so only the gross comes back off the payable.
+     */
+    @Transactional
+    public SettlementItem accrueRefund(
+            UUID merchantId, UUID paymentId, UUID refundId, String currency,
+            long refundAmount, OffsetDateTime refundedAt) {
+
+        Optional<SettlementItem> existing = itemRepository.findByRefundId(refundId);
+        if (existing.isPresent()) {
+            log.info("Refund {} is already accrued, ignoring redelivery", refundId);
+            return existing.get();
+        }
+
+        try {
+            return itemRepository.saveAndFlush(new SettlementItem(
+                    merchantId, paymentId, refundId, SettlementItemType.REFUND, currency,
+                    -refundAmount, 0L, -refundAmount, refundedAt));
+        } catch (DataIntegrityViolationException exception) {
+            log.info("Concurrent accrual for refund {}, keeping the winner", refundId);
+            return itemRepository.findByRefundId(refundId).orElseThrow(() -> exception);
         }
     }
 
@@ -152,6 +186,15 @@ public class SettlementService {
         long gross = items.stream().mapToLong(SettlementItem::getGrossAmount).sum();
         long fees = items.stream().mapToLong(SettlementItem::getFeeAmount).sum();
         long net = items.stream().mapToLong(SettlementItem::getNetAmount).sum();
+
+        // Refunds can outweigh captures in a window. Paying out a negative amount is meaningless,
+        // and zeroing it would quietly write off money the merchant owes us, so the items stay
+        // pending and carry into the next window instead.
+        if (net <= 0) {
+            log.info("Merchant {} nets {} in {} for {}: carrying {} items forward rather than paying out",
+                    key.merchantId(), net, key.currency(), settlementDate, items.size());
+            return Optional.empty();
+        }
 
         Settlement settlement = settlementRepository.saveAndFlush(new Settlement(
                 key.merchantId(), key.currency(), settlementDate, gross, fees, net, items.size()));

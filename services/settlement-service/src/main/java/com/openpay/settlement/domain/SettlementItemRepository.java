@@ -12,7 +12,9 @@ import org.springframework.stereotype.Repository;
 @Repository
 public interface SettlementItemRepository extends JpaRepository<SettlementItem, UUID> {
 
-    Optional<SettlementItem> findByPaymentId(UUID paymentId);
+    Optional<SettlementItem> findByPaymentIdAndItemType(UUID paymentId, SettlementItemType itemType);
+
+    Optional<SettlementItem> findByRefundId(UUID refundId);
 
     List<SettlementItem> findBySettlementId(UUID settlementId);
 

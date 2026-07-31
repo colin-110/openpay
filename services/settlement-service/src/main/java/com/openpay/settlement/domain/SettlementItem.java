@@ -22,6 +22,14 @@ public class SettlementItem {
     @Column(name = "payment_id", nullable = false)
     private UUID paymentId;
 
+    /** Set only on refund items; null for captures. */
+    @Column(name = "refund_id")
+    private UUID refundId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "item_type", nullable = false, length = 20)
+    private SettlementItemType itemType;
+
     @Column(nullable = false, length = 3, columnDefinition = "bpchar")
     private String currency;
 
@@ -54,9 +62,18 @@ public class SettlementItem {
     public SettlementItem(
             UUID merchantId, UUID paymentId, String currency,
             long grossAmount, long feeAmount, long netAmount, OffsetDateTime capturedAt) {
+        this(merchantId, paymentId, null, SettlementItemType.CAPTURE, currency,
+                grossAmount, feeAmount, netAmount, capturedAt);
+    }
+
+    public SettlementItem(
+            UUID merchantId, UUID paymentId, UUID refundId, SettlementItemType itemType, String currency,
+            long grossAmount, long feeAmount, long netAmount, OffsetDateTime capturedAt) {
         this.id = UUID.randomUUID();
         this.merchantId = merchantId;
         this.paymentId = paymentId;
+        this.refundId = refundId;
+        this.itemType = itemType;
         this.currency = currency;
         this.grossAmount = grossAmount;
         this.feeAmount = feeAmount;
@@ -76,6 +93,14 @@ public class SettlementItem {
 
     public UUID getPaymentId() {
         return paymentId;
+    }
+
+    public UUID getRefundId() {
+        return refundId;
+    }
+
+    public SettlementItemType getItemType() {
+        return itemType;
     }
 
     public String getCurrency() {

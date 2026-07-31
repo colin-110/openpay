@@ -7,6 +7,7 @@ import com.openpay.settlement.domain.Settlement;
 import com.openpay.settlement.domain.SettlementItem;
 import com.openpay.settlement.domain.SettlementItemRepository;
 import com.openpay.settlement.domain.SettlementItemStatus;
+import com.openpay.settlement.domain.SettlementItemType;
 import com.openpay.settlement.domain.SettlementStatus;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
@@ -185,6 +186,98 @@ class SettlementIT {
 
         assertThat(settlementService.complete(settlement.getId()).getStatus())
                 .isEqualTo(SettlementStatus.COMPLETED);
+    }
+
+
+    @Test
+    void aRefundNetsAgainstCapturesInTheSameWindow() {
+        UUID merchantId = UUID.randomUUID();
+        LocalDate date = LocalDate.now().plusDays(uniqueDayOffset());
+        settlementService.accrue(merchantId, UUID.randomUUID(), "USD", 50_000, OffsetDateTime.now());
+        settlementService.accrueRefund(
+                merchantId, UUID.randomUUID(), UUID.randomUUID(), "USD", 20_000, OffsetDateTime.now());
+
+        Settlement settlement = forMerchant(settlementService.runSettlement(date), merchantId, "USD");
+
+        // 50000 in, 20000 back out, 1000 fee on the capture only.
+        assertThat(settlement.getGrossAmount()).isEqualTo(30_000L);
+        assertThat(settlement.getFeeAmount()).isEqualTo(1_000L);
+        assertThat(settlement.getNetAmount()).isEqualTo(29_000L);
+        assertThat(settlement.getItemCount()).isEqualTo(2);
+    }
+
+    @Test
+    void aWindowThatNetsNegativeCarriesForwardInsteadOfPayingOut() {
+        UUID merchantId = UUID.randomUUID();
+        LocalDate date = LocalDate.now().plusDays(uniqueDayOffset());
+        settlementService.accrue(merchantId, UUID.randomUUID(), "USD", 10_000, OffsetDateTime.now());
+        settlementService.accrueRefund(
+                merchantId, UUID.randomUUID(), UUID.randomUUID(), "USD", 40_000, OffsetDateTime.now());
+
+        List<Settlement> created = settlementService.runSettlement(date);
+
+        // Paying out a negative amount is meaningless, and zeroing it would write off money the
+        // merchant owes us.
+        assertThat(created.stream().anyMatch(s -> s.getMerchantId().equals(merchantId))).isFalse();
+    }
+
+    @Test
+    void aCarriedForwardDeficitReducesTheNextPayout() {
+        UUID merchantId = UUID.randomUUID();
+        settlementService.accrue(merchantId, UUID.randomUUID(), "USD", 10_000, OffsetDateTime.now());
+        settlementService.accrueRefund(
+                merchantId, UUID.randomUUID(), UUID.randomUUID(), "USD", 40_000, OffsetDateTime.now());
+        settlementService.runSettlement(LocalDate.now().plusDays(uniqueDayOffset()));
+
+        // New volume arrives in a later window; the earlier deficit is still owed.
+        settlementService.accrue(merchantId, UUID.randomUUID(), "USD", 100_000, OffsetDateTime.now());
+        Settlement later = forMerchant(
+                settlementService.runSettlement(LocalDate.now().plusDays(uniqueDayOffset())),
+                merchantId, "USD");
+
+        // 10000 + 100000 captured, 40000 refunded => 70000 gross across all three items.
+        assertThat(later.getItemCount()).isEqualTo(3);
+        assertThat(later.getGrossAmount()).isEqualTo(70_000L);
+        assertThat(later.getNetAmount()).isEqualTo(70_000L - 2_200L);
+    }
+
+    @Test
+    void aRedeliveredRefundAccruesOnlyOnce() {
+        UUID merchantId = UUID.randomUUID();
+        UUID refundId = UUID.randomUUID();
+        UUID paymentId = UUID.randomUUID();
+
+        SettlementItem first = settlementService.accrueRefund(
+                merchantId, paymentId, refundId, "USD", 5_000, OffsetDateTime.now());
+        SettlementItem second = settlementService.accrueRefund(
+                merchantId, paymentId, refundId, "USD", 5_000, OffsetDateTime.now());
+
+        assertThat(second.getId()).isEqualTo(first.getId());
+    }
+
+    @Test
+    void aPaymentCanBeBothCapturedAndRefunded() {
+        UUID merchantId = UUID.randomUUID();
+        UUID paymentId = UUID.randomUUID();
+
+        settlementService.accrue(merchantId, paymentId, "USD", 10_000, OffsetDateTime.now());
+        SettlementItem refund = settlementService.accrueRefund(
+                merchantId, paymentId, UUID.randomUUID(), "USD", 10_000, OffsetDateTime.now());
+
+        // The old unique constraint was on payment_id alone, which would have made this impossible.
+        assertThat(refund.getGrossAmount()).isEqualTo(-10_000L);
+        assertThat(refund.getItemType()).isEqualTo(SettlementItemType.REFUND);
+    }
+
+    @Test
+    void refundsCarryNoFee() {
+        UUID merchantId = UUID.randomUUID();
+        SettlementItem refund = settlementService.accrueRefund(
+                merchantId, UUID.randomUUID(), UUID.randomUUID(), "USD", 7_000, OffsetDateTime.now());
+
+        // The original payment was still processed, so the platform keeps what it charged for it.
+        assertThat(refund.getFeeAmount()).isZero();
+        assertThat(refund.getNetAmount()).isEqualTo(-7_000L);
     }
 
     private Settlement forMerchant(List<Settlement> settlements, UUID merchantId, String currency) {
