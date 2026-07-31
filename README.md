@@ -13,6 +13,7 @@ architecture, distributed systems patterns, and production engineering practices
 | `payment-service` | 8083 | `openpay_payment` | Payment creation, idempotency, the state machine, and the transactional outbox. |
 | `webhook-service` | 8084 | `openpay_webhook` | Trust boundary for inbound provider callbacks: signature verification and deduplication. |
 | `provider-router-service` | 8085 | `openpay_router` | Chooses an acquirer, fails over, and trips a circuit breaker on a bad one. |
+| `ledger-service` | 8086 | `openpay_ledger` | Double-entry journal. Append-only, enforced by the database. |
 | `mock-bank-service` | 9001 / 9002 | — | Simulated acquirers. One codebase, run twice as `mock-bank-a` and `mock-bank-b`. |
 
 Shared code lives in `libs/`: `common-observability` (correlation IDs), `common-security`
@@ -66,7 +67,7 @@ real PostgreSQL via Testcontainers and require Docker to be running.
 
 ### 4. Run everything at once (Windows)
 
-Seven services in seven terminals is enough friction to stop anyone actually running this, so
+Nine processes in nine terminals is enough friction to stop anyone actually running this, so
 there is a helper. It checks that infrastructure is up, launches each service in its own window,
 and waits until all of them report healthy:
 
@@ -120,6 +121,10 @@ export MOCK_BANK_B_SECRET=bank-b-secret
 
 ```bash
 ./mvnw -pl services/provider-router-service -am spring-boot:run
+```
+
+```bash
+./mvnw -pl services/ledger-service -am spring-boot:run
 ```
 
 The two acquirers are the same module run twice with different configuration:
@@ -201,6 +206,8 @@ Internal, not exposed through the gateway:
 - `GET /internal/router/providers` — circuit breaker state per acquirer.
 - `GET /internal/router/payments/{paymentId}/attempts` — what was tried, in order, and why each
   attempt ended.
+- `GET /api/v1/ledger/accounts/{accountCode}/balance` — derived from the journal, admin-gated.
+- `GET /api/v1/ledger/entries?referenceId={paymentId}` — every transaction and both sides of each.
 
 Every service exposes `/actuator/health`, `/actuator/info`, and `/actuator/prometheus`.
 
@@ -254,6 +261,50 @@ a routing decision or a signature-verified provider callback advances a payment.
 driven by events are deliberately tolerant — a redelivered callback asking for the state we are
 already in is a no-op, because Kafka delivers at least once and acquirers re-send.
 
+## The Ledger
+
+Payments describe intent; the ledger records what the money actually did. When a payment is
+captured, `ledger-service` posts one balanced transaction:
+
+```text
+payment.status-updated.v1 (CAPTURED, 25000 USD, merchant M)
+  └─> transaction (reference: PAYMENT <id>)
+        DEBIT   GATEWAY_CLEARING              25000 USD   asset,     platform
+        CREDIT  MERCHANT_PAYABLE (merchant M) 25000 USD   liability, per-merchant
+```
+
+Funds arrived from the acquirer, so an asset rose; we now owe the merchant, so a liability rose.
+
+Three properties are enforced rather than assumed:
+
+- **Debits equal credits.** Checked before anything is written. An unbalanced journal cannot be
+  repaired by a later correction — every report drawn from it is wrong from that moment on.
+- **One event posts once.** A unique constraint on `ledger_transactions.event_id`, not a lookup,
+  because a lookup loses to a concurrent redelivery. At-least-once delivery must not become
+  at-least-once accounting.
+- **The journal is append-only.** A database trigger rejects `UPDATE` and `DELETE` on entries and
+  transactions, so the rule holds against any client, including a direct `psql` session.
+
+Only `CAPTURED` posts. `AUTHORIZED` reserves funds without moving them and a failed payment moved
+nothing, so posting either would inflate the books with money that does not exist.
+
+Balances are derived by summing the journal, never stored in a column that could drift from it:
+
+```bash
+curl "http://localhost:8086/api/v1/ledger/accounts/MERCHANT_PAYABLE/balance?merchantId=<ID>&currency=USD" -H "X-Admin-Token: dev-admin-token"
+```
+
+## Event Delivery
+
+The outbox relay claims rows with `FOR UPDATE SKIP LOCKED`, so running several replicas of
+payment-service divides the work instead of publishing every event once per replica. Published
+rows are purged after a retention window; `payment_events` remains the durable history.
+
+A message a consumer cannot process goes to `<topic>.dlq.v1` after a few quick retries, carrying
+the exception type, message, and stack trace in its headers. Spring Kafka's default is to retry
+ten times and then drop the record, which in a payment system is the worst option available: the
+event is gone, nothing alerts, and a payment simply stops advancing with no trace of why.
+
 ## Testing
 
 - **Unit tests** (`*Test`, surefire) — no infrastructure required.
@@ -305,6 +356,8 @@ Delivered:
 - provider routing with failover and a per-acquirer circuit breaker
 - simulated acquirers with configurable latency, declines, and outages
 - signature-verified, deduplicated provider callbacks
+- double-entry ledger with an append-only journal enforced in the database
+- dead-letter routing for unprocessable events, and a multi-replica-safe outbox relay
 - CI running unit and integration tests on JDK 21 and 25
 
 Not yet built (see [docs/roadmap.md](docs/roadmap.md)):
