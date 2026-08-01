@@ -3,6 +3,7 @@ package com.openpay.mockbank.callback;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openpay.mockbank.domain.BankProperties;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.HexFormat;
 import java.util.UUID;
@@ -26,6 +27,7 @@ public class CallbackSender {
 
     private static final Logger log = LoggerFactory.getLogger(CallbackSender.class);
     private static final String SIGNATURE_HEADER = "X-Provider-Signature";
+    private static final String TIMESTAMP_HEADER = "X-Provider-Timestamp";
     private static final String HMAC_ALGORITHM = "HmacSHA256";
 
     private final BankProperties properties;
@@ -86,11 +88,15 @@ public class CallbackSender {
 
         try {
             String body = objectMapper.writeValueAsString(callback);
+            long timestamp = Instant.now().getEpochSecond();
             restClient.post()
                     .uri(properties.getCallbackUrl() + "/" + properties.getName())
                     .contentType(MediaType.APPLICATION_JSON)
-                    // Signed over the exact bytes sent, so the receiver can verify authenticity.
-                    .header(SIGNATURE_HEADER, sign(body))
+                    // Signed over the timestamp and the exact bytes sent, so the receiver can
+                    // verify both who sent it and that it was sent now. A signature over the body
+                    // alone would stay valid forever once captured.
+                    .header(SIGNATURE_HEADER, sign(timestamp, body))
+                    .header(TIMESTAMP_HEADER, String.valueOf(timestamp))
                     .body(body)
                     .retrieve()
                     .toBodilessEntity();
@@ -102,12 +108,13 @@ public class CallbackSender {
         }
     }
 
-    private String sign(String body) {
+    private String sign(long timestampSeconds, String body) {
         try {
             Mac mac = Mac.getInstance(HMAC_ALGORITHM);
             mac.init(new SecretKeySpec(
                     properties.getSigningSecret().getBytes(StandardCharsets.UTF_8), HMAC_ALGORITHM));
-            return HexFormat.of().formatHex(mac.doFinal(body.getBytes(StandardCharsets.UTF_8)));
+            String signedPayload = timestampSeconds + "." + body;
+            return HexFormat.of().formatHex(mac.doFinal(signedPayload.getBytes(StandardCharsets.UTF_8)));
         } catch (Exception exception) {
             throw new IllegalStateException("Could not sign callback", exception);
         }

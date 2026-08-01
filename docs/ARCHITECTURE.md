@@ -85,7 +85,7 @@ Four kinds of caller, and the system treats them very differently.
 | Merchant server | `X-Api-Key` | `ApiKeyAuthenticationFilter` → auth-service | Payments, refunds |
 | Dashboard user | `Authorization: Bearer` | `JwtAuthenticationFilter` (local signature check) | Payments, refunds |
 | Platform operator | `X-Admin-Token` | `AdminTokenFilter` (constant-time compare) | Merchants, keys, users, ledger, settlements, deliveries |
-| Acquirer | HMAC-SHA256 over the raw body | `SignatureVerifier` | Callbacks only |
+| Acquirer | HMAC-SHA256 over `timestamp.body` | `SignatureVerifier` | Callbacks only |
 
 **Filter order matters and is deliberate.** In `SecurityAutoConfiguration`, ordered from
 `Ordered.HIGHEST_PRECEDENCE`:
@@ -229,7 +229,9 @@ arrives before the callback. If the callback wins the race, the payment is still
 forever once the late dispatch notice landed.
 
 **A callback is the instruction that releases funds**, which is exactly why webhook-service verifies
-the HMAC over the *raw* body before parsing it, and refuses any provider it has no secret for.
+the HMAC over the *raw* body before parsing it, and refuses any provider it has no secret for. The
+signature covers `timestamp.body`, so a callback captured off the wire stops being usable after
+five minutes rather than staying valid forever.
 
 ### 3.3 …read a payment
 

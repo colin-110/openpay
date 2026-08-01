@@ -26,6 +26,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class WebhookController {
 
     private static final String SIGNATURE_HEADER = "X-Provider-Signature";
+    private static final String TIMESTAMP_HEADER = "X-Provider-Timestamp";
 
     private final WebhookIngestService ingestService;
 
@@ -37,11 +38,13 @@ public class WebhookController {
     public ResponseEntity<Map<String, String>> receive(
             @PathVariable("provider") String provider,
             @RequestHeader(value = SIGNATURE_HEADER, required = false) String signature,
+            @RequestHeader(value = TIMESTAMP_HEADER, required = false) String timestamp,
             @RequestBody String rawBody,
             HttpServletRequest request) {
 
         WebhookIngestService.IngestResult result =
-                ingestService.ingest(provider, rawBody, signature, MDC.get(CorrelationIdFilter.MDC_KEY));
+                ingestService.ingest(
+                        provider, timestamp, rawBody, signature, MDC.get(CorrelationIdFilter.MDC_KEY));
 
         return switch (result) {
             // 200 for a duplicate, not an error: the provider did nothing wrong by retrying, and
@@ -49,6 +52,10 @@ public class WebhookController {
             case ACCEPTED, DUPLICATE -> ResponseEntity.ok(Map.of("status", result.name().toLowerCase()));
             case INVALID_SIGNATURE -> ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                     .body(Map.of("status", "invalid_signature"));
+            // Distinct from a bad signature so a provider with a drifting clock can tell what is
+            // wrong from the response instead of from our logs.
+            case STALE -> ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                    .body(Map.of("status", "stale_timestamp"));
             case MALFORMED -> ResponseEntity.badRequest().body(Map.of("status", "malformed"));
         };
     }

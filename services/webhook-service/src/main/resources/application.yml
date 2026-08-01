@@ -20,6 +20,9 @@ spring:
 
 openpay:
   webhook:
+    # How far a callback's clock may be from ours. Long enough to absorb ordinary drift and a slow
+    # retry, short enough that a captured callback is worthless almost immediately.
+    tolerance: ${WEBHOOK_TOLERANCE:5m}
     signing-secrets:
       # Must match each bank's BANK_SIGNING_SECRET. A provider with no secret here is refused.
       mock-bank-a: ${MOCK_BANK_A_SECRET:}

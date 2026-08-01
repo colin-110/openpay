@@ -44,10 +44,21 @@ public class WebhookIngestService {
         this.eventCodec = eventCodec;
     }
 
-    public IngestResult ingest(String providerName, String rawBody, String signature, String correlationId) {
-        if (!signatureVerifier.verify(providerName, rawBody, signature)) {
+    public IngestResult ingest(
+            String providerName, String timestamp, String rawBody, String signature, String correlationId) {
+
+        SignatureVerifier.Result verification =
+                signatureVerifier.verify(providerName, timestamp, rawBody, signature);
+        if (verification == SignatureVerifier.Result.INVALID_SIGNATURE) {
             log.warn("Rejected callback from {} with an invalid signature", providerName);
             return IngestResult.INVALID_SIGNATURE;
+        }
+        if (verification == SignatureVerifier.Result.STALE) {
+            // Correctly signed but too old. Reported separately from a bad signature because the
+            // two mean very different things operationally: one is an attack or a bug, the other
+            // is usually a clock that needs fixing.
+            log.warn("Rejected stale callback from {}", providerName);
+            return IngestResult.STALE;
         }
 
         JsonNode body;
@@ -164,6 +175,7 @@ public class WebhookIngestService {
         ACCEPTED,
         DUPLICATE,
         INVALID_SIGNATURE,
+        STALE,
         MALFORMED
     }
 }

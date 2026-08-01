@@ -203,6 +203,40 @@ fi
 if [ -n "${WEBHOOK_URL:-}" ]; then
   check "forged callback signature refused" 401     "$(code -X POST "$WEBHOOK_URL/internal/provider/webhooks/mock-bank-a" -H 'X-Provider-Signature: deadbeef' -H "$JSON" -d "{\"eventId\":\"forged\",\"paymentId\":\"$PID\",\"outcome\":\"CAPTURED\"}")"
   check "callback from an unknown provider refused" 401     "$(code -X POST "$WEBHOOK_URL/internal/provider/webhooks/evil-bank" -H 'X-Provider-Signature: whatever' -H "$JSON" -d "{\"eventId\":\"forged2\",\"paymentId\":\"$PID\",\"outcome\":\"CAPTURED\"}")"
+
+  # A capture callback is the instruction that releases funds, so a captured one must not stay
+  # usable. These sign with the bank's real secret: the only thing wrong with them is the clock.
+  BANK_A_SECRET="${MOCK_BANK_A_SECRET:-bank-a-secret}"
+  replay_body() { echo "{\"eventId\":\"replay-$1\",\"paymentId\":\"$PID\",\"outcome\":\"CAPTURED\"}"; }
+  sign_at() {  # timestamp, body -> hex signature over "timestamp.body"
+    "$PY" -c "import hmac,hashlib,sys;print(hmac.new(sys.argv[1].encode(),(sys.argv[2]+'.'+sys.argv[3]).encode(),hashlib.sha256).hexdigest())" \
+      "$BANK_A_SECRET" "$1" "$2"
+  }
+  NOW=$("$PY" -c 'import time;print(int(time.time()))')
+  HOUR_AGO=$((NOW - 3600))
+
+  STALE_BODY=$(replay_body stale)
+  check "a correctly signed callback from an hour ago is refused" 401 \
+    "$(code -X POST "$WEBHOOK_URL/internal/provider/webhooks/mock-bank-a" \
+       -H "X-Provider-Signature: $(sign_at "$HOUR_AGO" "$STALE_BODY")" \
+       -H "X-Provider-Timestamp: $HOUR_AGO" -H "$JSON" -d "$STALE_BODY")"
+
+  FRESH_BODY=$(replay_body rewritten)
+  check "an old signature replayed with a fresh timestamp is refused" 401 \
+    "$(code -X POST "$WEBHOOK_URL/internal/provider/webhooks/mock-bank-a" \
+       -H "X-Provider-Signature: $(sign_at "$HOUR_AGO" "$FRESH_BODY")" \
+       -H "X-Provider-Timestamp: $NOW" -H "$JSON" -d "$FRESH_BODY")"
+
+  NOTS_BODY=$(replay_body notimestamp)
+  check "a callback with no timestamp is refused" 401 \
+    "$(code -X POST "$WEBHOOK_URL/internal/provider/webhooks/mock-bank-a" \
+       -H "X-Provider-Signature: $(sign_at "$NOW" "$NOTS_BODY")" -H "$JSON" -d "$NOTS_BODY")"
+
+  GOOD_BODY=$(replay_body accepted)
+  check "a correctly signed callback sent now is accepted" 200 \
+    "$(code -X POST "$WEBHOOK_URL/internal/provider/webhooks/mock-bank-a" \
+       -H "X-Provider-Signature: $(sign_at "$NOW" "$GOOD_BODY")" \
+       -H "X-Provider-Timestamp: $NOW" -H "$JSON" -d "$GOOD_BODY")"
 fi
 
 echo "== Tenant isolation =="

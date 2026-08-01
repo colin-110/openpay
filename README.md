@@ -373,8 +373,10 @@ Human-facing, on auth-service directly, unauthenticated by necessity:
 Internal, not exposed through the gateway:
 
 - `POST /api/v1/auth/validate-key` — called by the gateway and payment-service.
-- `POST /internal/provider/webhooks/{provider}` — acquirer callbacks. HMAC-signed over the raw
-  request body and deduplicated on the provider's own event id.
+- `POST /internal/provider/webhooks/{provider}` — acquirer callbacks. HMAC-signed over
+  `timestamp.body` with `X-Provider-Signature` and `X-Provider-Timestamp`, refused outside a
+  five-minute window, and deduplicated on the provider's own event id. The timestamp is inside the
+  signature, so it cannot be rewritten to make a captured callback look fresh.
 - `GET /internal/router/providers` — circuit breaker state per acquirer.
 - `GET /internal/router/payments/{paymentId}/attempts` — what was tried, in order, and why each
   attempt ended.

@@ -12,7 +12,7 @@ actually lets someone do, and what fixing it takes.
 | 2 | API key scopes are never enforced | **High** | Fixed |
 | 3 | provider-router-service has no authentication at all | **High** | Fixed |
 | 4 | SSRF through the merchant webhook URL | **Medium** | Fixed |
-| 5 | No replay window on inbound acquirer callbacks | **Medium** | Open |
+| 5 | No replay window on inbound acquirer callbacks | **Medium** | Fixed |
 | 6 | One admin token opens everything | **Medium** | Open |
 | 7 | No rate limiting on merchant-facing writes | **Medium** | Open |
 | 8 | notification-service holds the platform admin token | **Medium** | Partly addressed |
@@ -157,9 +157,31 @@ valid forever. Today the dedup table blocks the replay — but that table has no
 the protection depends on rows never being deleted. Prune it for size, as you eventually will, and
 every pruned event becomes replayable. A replayed capture callback moves a payment to `CAPTURED`.
 
-**Fix.** Sign `timestamp.body` rather than `body`, require the header, and reject anything outside a
-five-minute tolerance. That makes freshness a property of the signature instead of a property of
-the database.
+**Fixed.** The signature now covers `timestamp.body` rather than `body`, and a
+`X-Provider-Timestamp` header is required. A callback more than five minutes from our clock is
+refused with `stale_timestamp`, and the tolerance is configurable.
+
+Three details matter more than the header itself:
+
+- **The timestamp is inside the signature.** If it travelled alongside, an attacker would replay a
+  captured message with today's timestamp and the freshness check would wave it through. There is
+  an acceptance check for exactly that.
+- **Missing is not "skip".** A callback with no timestamp is refused rather than falling back to
+  the old behaviour, or the check is opt-out by deleting a header.
+- **Freshness is checked after the signature.** An unauthenticated caller probing timestamps learns
+  nothing about our clock or our tolerance.
+
+Skew is tolerated in both directions. A provider whose clock runs a little fast is not replaying
+anything, and refusing it would turn a clock difference into payments that never capture.
+
+The deduplication table still does its job for genuine retries. What changed is that it is no
+longer the only thing standing between a captured callback and a replayed capture, so pruning it
+for size is now a storage decision rather than a security one.
+
+Verified against the running stack: a callback signed correctly with an hour-old timestamp is
+refused, the same signature replayed with a fresh timestamp is refused, one with no timestamp is
+refused, and one signed now is accepted — while ordinary payments still reach `CAPTURED` on their
+own, which is the check that proves both sides of the scheme agree.
 
 ---
 
