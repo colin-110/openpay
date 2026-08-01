@@ -28,7 +28,7 @@ public class LedgerController {
     public AccountBalance balance(
             @PathVariable("accountCode") String accountCode,
             @RequestParam(name = "merchantId", required = false) UUID merchantId,
-            @RequestParam(name = "currency", defaultValue = "USD") String currency) {
+            @RequestParam(name = "currency", defaultValue = "INR") String currency) {
         return ledgerService.balance(accountCode, merchantId, currency);
     }
 
