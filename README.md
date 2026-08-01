@@ -26,17 +26,20 @@ events atomically with its own writes).
 
 ## Credentials
 
-Two kinds of caller, two kinds of credential:
+Three kinds of caller, three kinds of credential:
 
 - **Merchant API key** (`X-Api-Key`) — for payment traffic. Issued by auth-service, presented by
   merchants. Merchant identity is derived from the validated key and never read from a
   client-supplied header.
-- **Admin token** (`X-Admin-Token`) — for platform-operator actions: onboarding merchants and
-  issuing API keys.
+- **Dashboard session** (`Authorization: Bearer`) — for people. A short-lived HS256 JWT issued by
+  `POST /api/v1/auth/login`, accepted on exactly the same paths as an API key. Downstream code
+  never learns which of the two was used: a payment read is scoped to a merchant either way.
+- **Admin token** (`X-Admin-Token`) — for platform-operator actions: onboarding merchants,
+  issuing API keys, and creating dashboard users.
 
-The admin token has **no default value**. A shipped default would be a publicly known secret, so
-admin endpoints fail closed until `OPENPAY_ADMIN_TOKEN` is set. Services log a warning at startup
-when it is missing.
+Neither the admin token nor the JWT secret has a default value. A shipped default would be a
+publicly known secret, so admin endpoints fail closed until `OPENPAY_ADMIN_TOKEN` is set, and
+auth-service refuses to start unless `OPENPAY_JWT_SECRET` is at least 32 bytes.
 
 ## Getting Started
 
@@ -46,19 +49,22 @@ when it is missing.
 docker compose -f platform/docker/docker-compose.yml up -d
 ```
 
-### 2. Set the admin token
+### 2. Set the admin token and the session signing key
 
 PowerShell:
 
 ```bash
-$env:OPENPAY_ADMIN_TOKEN = "dev-admin-token"
+$env:OPENPAY_ADMIN_TOKEN = "dev-admin-token"; $env:OPENPAY_JWT_SECRET = "dev-jwt-secret-not-for-production-use"
 ```
 
 bash:
 
 ```bash
-export OPENPAY_ADMIN_TOKEN=dev-admin-token
+export OPENPAY_ADMIN_TOKEN=dev-admin-token OPENPAY_JWT_SECRET=dev-jwt-secret-not-for-production-use
 ```
+
+Every service gets the same signing key: auth-service issues sessions and the services behind the
+gateway verify them. `scripts/run-local.ps1` sets both for you.
 
 ### 3. Build
 
@@ -215,9 +221,40 @@ advance on its own as the router dispatches it and the acquirer calls back.
 curl http://localhost:8080/api/v1/payments/<PAYMENT_ID> -H "X-Api-Key: <API_KEY>"
 ```
 
+## Merchant Dashboard
+
+A React SPA in `web/dashboard`: sign in, watch payments settle, and issue refunds. It is a client
+of the same public API a merchant would integrate against — it has no private endpoints and no
+database of its own, so anything the dashboard can do, a merchant can do over HTTP.
+
+Create a dashboard user for a merchant (admin):
+
+```bash
+curl -X POST http://localhost:8081/api/v1/users -H "X-Admin-Token: dev-admin-token" -H "Content-Type: application/json" -d '{"merchantId":"<MERCHANT_ID>","email":"owner@shop-1.test","password":"a-long-enough-password","role":"MERCHANT_ADMIN"}'
+```
+
+Then run it:
+
+```bash
+cd web/dashboard && npm install && npm run dev
+```
+
+It serves on `http://localhost:5173` and talks to the gateway on 8080 and auth-service on 8081.
+Point it elsewhere with `VITE_API_BASE` and `VITE_AUTH_BASE`.
+
+Because it runs on its own origin, both services it calls answer CORS preflights for
+`OPENPAY_DASHBOARD_ORIGINS` (defaulting to the Vite dev server). No internal service does: a page
+should not be able to reach past the gateway. The gateway also strips CORS headers coming back
+from downstream, so exactly one component decides the answer.
+
+The session lives in `sessionStorage` and is dropped on a `401`, so an expired token signs you out
+rather than leaving an empty table. Amounts are integer minor units end to end; only the display
+layer knows about decimal places.
+
 ## Endpoints
 
-Merchant-facing, via the gateway on 8080, authenticated with `X-Api-Key`:
+Merchant-facing, via the gateway on 8080, authenticated with either `X-Api-Key` or a dashboard
+session in `Authorization: Bearer`:
 
 - `POST /api/v1/payments` — create a payment. Requires `Idempotency-Key`.
 - `GET /api/v1/payments/{paymentId}`
@@ -233,6 +270,12 @@ Platform-operator, authenticated with `X-Admin-Token`:
 - `GET /api/v1/merchants/{merchantId}`
 - `GET /api/v1/merchants?page=0&size=20`
 - `POST /api/v1/api-keys`
+- `POST /api/v1/users` — create a dashboard user for a merchant.
+
+Human-facing, on auth-service directly, unauthenticated by necessity:
+
+- `POST /api/v1/auth/login` — returns a session token. An unknown email and a wrong password fail
+  identically, so login cannot be used to discover who has an account.
 
 Internal, not exposed through the gateway:
 
@@ -511,19 +554,32 @@ docs/
 libs/
   common-observability/
   common-security/
+  common-kafka/
+  common-outbox/
 platform/
   docker/
   observability/
+scripts/
 services/
-  auth-service/
   gateway-service/
+  auth-service/
   merchant-service/
   payment-service/
+  webhook-service/
+  provider-router-service/
+  ledger-service/
+  settlement-service/
+  notification-service/
+  mock-bank-service/
+web/
+  dashboard/
 ```
 
 - `services/` keeps deployable applications isolated.
 - `libs/` holds cross-cutting code that multiple services share.
 - `platform/` stores infrastructure assets instead of mixing them with app code.
+- `web/` holds front-end applications, which are API clients rather than services.
+- `scripts/` holds the local run script and the acceptance suite.
 - `docs/` captures architecture decisions.
 
 ## Status
@@ -546,13 +602,15 @@ Delivered:
 - refunds with over-refund protection and negative-balance carry-forward
 - signed outbound merchant webhooks with retries and a delivery log
 - the entire platform containerised and runnable with one command
+- human login with BCrypt password hashing and HS256 sessions, accepted anywhere an API key is
+- a merchant dashboard: sign in, watch payments settle, and issue refunds
 - CI running unit and integration tests on JDK 21 and 25
 
 Not yet built (see [docs/roadmap.md](docs/roadmap.md)):
 
-- refunds, users, and audit logs
-- Kafka event publishing and the transactional outbox — `payment_events` is written but nothing
-  relays it yet
-- ledger, mock banks, provider routing, settlement, fraud, webhooks
+- audit logs, and roles that actually restrict anything — `MERCHANT_VIEWER` is recorded but not
+  yet enforced
+- refresh tokens: a session simply expires and you sign in again
+- fraud screening
 - Kubernetes manifests
-- any real money movement: payments are recorded, never sent to a provider
+- any real money movement: the acquirers are simulated, so nothing leaves a database
