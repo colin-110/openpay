@@ -1,6 +1,7 @@
 package com.openpay.payment.domain;
 
 import jakarta.persistence.Column;
+import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
@@ -42,6 +43,10 @@ public class Payment {
     @Column(nullable = false)
     private PaymentStatus status;
 
+    /** Null for a payment whose method was never supplied, which is not the same as "unknown card". */
+    @Embedded
+    private PaymentMethod paymentMethod;
+
     @Version
     @Column(nullable = false)
     private Integer version;
@@ -62,13 +67,17 @@ public class Payment {
             String idempotencyKey,
             String requestFingerprint,
             Long amount,
-            String currency) {
+            String currency,
+            PaymentMethod paymentMethod) {
         this.id = id;
         this.merchantId = merchantId;
         this.idempotencyKey = idempotencyKey;
         this.requestFingerprint = requestFingerprint;
         this.amount = amount;
         this.currency = currency;
+        // An embeddable whose every column is null reads back as null anyway, so store nothing
+        // rather than a row of blanks pretending to be a method.
+        this.paymentMethod = paymentMethod == null || paymentMethod.isEmpty() ? null : paymentMethod;
         this.status = PaymentStatus.CREATED;
         this.createdAt = OffsetDateTime.now();
         this.updatedAt = this.createdAt;
@@ -76,6 +85,10 @@ public class Payment {
 
     public UUID getId() {
         return id;
+    }
+
+    public PaymentMethod getPaymentMethod() {
+        return paymentMethod;
     }
 
     public UUID getMerchantId() {

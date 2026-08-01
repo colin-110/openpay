@@ -7,10 +7,13 @@ import com.openpay.events.payload.PaymentCreated;
 import com.openpay.events.payload.PaymentStatusUpdated;
 import com.openpay.payment.api.CreatePaymentRequest;
 import com.openpay.payment.api.PagedResponse;
+import com.openpay.payment.api.PaymentMethodRequest;
+import com.openpay.payment.api.PaymentMethodView;
 import com.openpay.payment.api.PaymentResponse;
 import com.openpay.payment.domain.Payment;
 import com.openpay.payment.domain.PaymentEvent;
 import com.openpay.payment.domain.PaymentEventRepository;
+import com.openpay.payment.domain.PaymentMethod;
 import com.openpay.payment.domain.PaymentRepository;
 import com.openpay.payment.domain.PaymentStatus;
 import com.openpay.outbox.OutboxWriter;
@@ -68,7 +71,8 @@ public class PaymentService {
                     idempotencyKey,
                     fingerprint,
                     request.amount(),
-                    request.currency()));
+                    request.currency(),
+                    toPaymentMethod(request.paymentMethod())));
 
             recordEvent(payment, "PAYMENT_CREATED");
 
@@ -192,12 +196,32 @@ public class PaymentService {
         }
     }
 
+    /**
+     * Note what is dropped: the instrument token the merchant sent never reaches the entity. It is
+     * what the acquirer is given, not something this service has any reason to keep.
+     */
+    private PaymentMethod toPaymentMethod(PaymentMethodRequest request) {
+        return request == null
+                ? null
+                : new PaymentMethod(
+                        request.type(), request.network(), request.last4(), request.vpa(), request.bank());
+    }
+
     private PaymentResponse toResponse(Payment payment) {
+        PaymentMethod method = payment.getPaymentMethod();
         return new PaymentResponse(
                 payment.getId(),
                 payment.getStatus(),
                 payment.getAmount(),
                 payment.getCurrency(),
+                method == null
+                        ? null
+                        : new PaymentMethodView(
+                                method.getType(),
+                                method.getNetwork(),
+                                method.getLast4(),
+                                method.getVpa(),
+                                method.getBank()),
                 payment.getCreatedAt(),
                 payment.getUpdatedAt());
     }

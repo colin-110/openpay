@@ -7,10 +7,13 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openpay.events.OpenPayTopics;
 import com.openpay.payment.api.CreatePaymentRequest;
+import com.openpay.payment.api.PaymentMethodRequest;
+import com.openpay.payment.api.PaymentMethodView;
 import com.openpay.payment.api.PaymentResponse;
 import com.openpay.payment.application.IdempotencyKeyConflictException;
 import com.openpay.payment.application.PaymentResult;
 import com.openpay.payment.application.PaymentService;
+import com.openpay.payment.domain.Payment;
 import com.openpay.payment.domain.PaymentEvent;
 import com.openpay.payment.domain.PaymentEventRepository;
 import com.openpay.payment.domain.PaymentRepository;
@@ -68,7 +71,7 @@ class PaymentPersistenceIT {
         UUID merchantId = UUID.randomUUID();
 
         PaymentResult result = paymentService.createPayment(
-                merchantId, "it-key-1", new CreatePaymentRequest(10_000L, "USD"));
+                merchantId, "it-key-1", new CreatePaymentRequest(10_000L, "USD", null));
 
         assertThat(result.created()).isTrue();
         assertThat(paymentRepository.findById(result.payment().id())).isPresent();
@@ -94,7 +97,7 @@ class PaymentPersistenceIT {
         long largeAmount = 99_999_999_999_999L;
 
         PaymentResult result = paymentService.createPayment(
-                merchantId, "it-key-large", new CreatePaymentRequest(largeAmount, "USD"));
+                merchantId, "it-key-large", new CreatePaymentRequest(largeAmount, "USD", null));
 
         assertThat(paymentRepository.findById(result.payment().id()).orElseThrow().getAmount())
                 .isEqualTo(largeAmount);
@@ -106,7 +109,7 @@ class PaymentPersistenceIT {
         OffsetDateTime before = OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(1);
 
         PaymentResult result = paymentService.createPayment(
-                merchantId, "it-key-tz", new CreatePaymentRequest(500L, "EUR"));
+                merchantId, "it-key-tz", new CreatePaymentRequest(500L, "EUR", null));
 
         // Would drift if the column were `timestamp without time zone`, as V2 originally created it.
         OffsetDateTime stored = paymentRepository.findById(result.payment().id()).orElseThrow().getCreatedAt();
@@ -117,7 +120,7 @@ class PaymentPersistenceIT {
     @Test
     void replayingAKeyWithTheSameBodyReturnsTheOriginal() {
         UUID merchantId = UUID.randomUUID();
-        CreatePaymentRequest request = new CreatePaymentRequest(4_200L, "USD");
+        CreatePaymentRequest request = new CreatePaymentRequest(4_200L, "USD", null);
 
         PaymentResult first = paymentService.createPayment(merchantId, "it-key-2", request);
         PaymentResult second = paymentService.createPayment(merchantId, "it-key-2", request);
@@ -132,10 +135,10 @@ class PaymentPersistenceIT {
     void replayingAKeyWithADifferentBodyIsRejected() {
         UUID merchantId = UUID.randomUUID();
         paymentService.createPayment(
-                merchantId, "it-key-3", new CreatePaymentRequest(1_000L, "USD"));
+                merchantId, "it-key-3", new CreatePaymentRequest(1_000L, "USD", null));
 
         assertThatThrownBy(() -> paymentService.createPayment(
-                merchantId, "it-key-3", new CreatePaymentRequest(999_900L, "USD")))
+                merchantId, "it-key-3", new CreatePaymentRequest(999_900L, "USD", null)))
                 .isInstanceOf(IdempotencyKeyConflictException.class);
     }
 
@@ -144,7 +147,7 @@ class PaymentPersistenceIT {
         UUID owner = UUID.randomUUID();
         UUID stranger = UUID.randomUUID();
         PaymentResult result = paymentService.createPayment(
-                owner, "it-key-4", new CreatePaymentRequest(700L, "USD"));
+                owner, "it-key-4", new CreatePaymentRequest(700L, "USD", null));
 
         assertThatThrownBy(() -> paymentService.getPayment(stranger, result.payment().id()))
                 .isInstanceOf(RuntimeException.class);
@@ -156,7 +159,7 @@ class PaymentPersistenceIT {
     void walksTheProviderDrivenLifecycle() {
         UUID merchantId = UUID.randomUUID();
         UUID paymentId = paymentService.createPayment(
-                merchantId, "it-key-5", new CreatePaymentRequest(1_500L, "USD")).payment().id();
+                merchantId, "it-key-5", new CreatePaymentRequest(1_500L, "USD", null)).payment().id();
 
         assertThat(paymentService.applyTransition(paymentId, PaymentStatus.PENDING_PROVIDER, "routed")).isTrue();
         assertThat(paymentService.applyTransition(paymentId, PaymentStatus.AUTHORIZED, "callback")).isTrue();
@@ -173,7 +176,7 @@ class PaymentPersistenceIT {
     void anOutcomeArrivingBeforeTheRoutingNotificationIsStillApplied() {
         UUID merchantId = UUID.randomUUID();
         UUID paymentId = paymentService.createPayment(
-                merchantId, "it-key-order", new CreatePaymentRequest(1_500L, "USD")).payment().id();
+                merchantId, "it-key-order", new CreatePaymentRequest(1_500L, "USD", null)).payment().id();
 
         // The two events are on separate topics, so this order is entirely possible. Refusing the
         // outcome here would strand the payment once the routing notification arrived.
@@ -190,7 +193,7 @@ class PaymentPersistenceIT {
     void redeliveredCallbacksAreAbsorbedRatherThanFailing() {
         UUID merchantId = UUID.randomUUID();
         UUID paymentId = paymentService.createPayment(
-                merchantId, "it-key-dup", new CreatePaymentRequest(2_500L, "USD")).payment().id();
+                merchantId, "it-key-dup", new CreatePaymentRequest(2_500L, "USD", null)).payment().id();
         paymentService.applyTransition(paymentId, PaymentStatus.PENDING_PROVIDER, "routed");
         paymentService.applyTransition(paymentId, PaymentStatus.CAPTURED, "callback");
 
@@ -208,7 +211,7 @@ class PaymentPersistenceIT {
         long before = outboxRepository.count();
 
         UUID paymentId = paymentService.createPayment(
-                merchantId, "it-key-outbox", new CreatePaymentRequest(3_300L, "USD")).payment().id();
+                merchantId, "it-key-outbox", new CreatePaymentRequest(3_300L, "USD", null)).payment().id();
 
         assertThat(outboxRepository.count()).isEqualTo(before + 1);
         OutboxEvent event = outboxRepository.findAll().stream()
@@ -225,11 +228,11 @@ class PaymentPersistenceIT {
     void listingIsScopedToTheMerchantAndNewestFirst() {
         UUID merchantId = UUID.randomUUID();
         paymentService.createPayment(
-                merchantId, "it-list-1", new CreatePaymentRequest(100L, "USD"));
+                merchantId, "it-list-1", new CreatePaymentRequest(100L, "USD", null));
         paymentService.createPayment(
-                merchantId, "it-list-2", new CreatePaymentRequest(200L, "USD"));
+                merchantId, "it-list-2", new CreatePaymentRequest(200L, "USD", null));
         paymentService.createPayment(
-                UUID.randomUUID(), "it-list-3", new CreatePaymentRequest(300L, "USD"));
+                UUID.randomUUID(), "it-list-3", new CreatePaymentRequest(300L, "USD", null));
 
         var page = paymentService.listPayments(merchantId, null, PageRequest.of(0, 10));
 
@@ -239,10 +242,59 @@ class PaymentPersistenceIT {
     }
 
     @Test
+    void keepsOnlyTheSafeHalfOfAPaymentMethod() {
+        UUID merchantId = UUID.randomUUID();
+
+        PaymentResult result = paymentService.createPayment(
+                merchantId,
+                "it-method-upi",
+                new CreatePaymentRequest(150_000L, "INR", new PaymentMethodRequest(
+                        "upi", null, null, "colinthomas@okhdfcbank", "HDFC", "tok_live_do_not_store")));
+
+        PaymentMethodView method = result.payment().paymentMethod();
+        assertThat(method.type()).isEqualTo("upi");
+        assertThat(method.vpa()).isEqualTo("co***@okhdfcbank");
+        assertThat(method.bank()).isEqualTo("HDFC");
+
+        // The instrument token is what the acquirer needs, not what this service keeps. Assert on
+        // the whole stored row so a future column cannot quietly start holding it.
+        Payment stored = paymentRepository.findById(result.payment().id()).orElseThrow();
+        assertThat(stored.getPaymentMethod().getVpa()).doesNotContain("colinthomas");
+        assertThat(reflectAllStringFields(stored.getPaymentMethod())).noneMatch(
+                value -> value != null && value.contains("tok_live_do_not_store"));
+    }
+
+    @Test
+    void aPaymentWithNoMethodStoresNoneRatherThanAnEmptyOne() {
+        UUID merchantId = UUID.randomUUID();
+
+        PaymentResult result = paymentService.createPayment(
+                merchantId, "it-method-absent", new CreatePaymentRequest(999L, "INR", null));
+
+        assertThat(result.payment().paymentMethod()).isNull();
+        assertThat(paymentRepository.findById(result.payment().id()).orElseThrow().getPaymentMethod())
+                .isNull();
+    }
+
+    private java.util.List<String> reflectAllStringFields(Object target) {
+        return java.util.Arrays.stream(target.getClass().getDeclaredFields())
+                .peek(field -> field.setAccessible(true))
+                .filter(field -> field.getType() == String.class)
+                .map(field -> {
+                    try {
+                        return (String) field.get(target);
+                    } catch (IllegalAccessException exception) {
+                        throw new AssertionError(exception);
+                    }
+                })
+                .toList();
+    }
+
+    @Test
     void listingCanBeNarrowedToOneStatus() {
         UUID merchantId = UUID.randomUUID();
-        paymentService.createPayment(merchantId, "it-status-1", new CreatePaymentRequest(100L, "INR"));
-        paymentService.createPayment(merchantId, "it-status-2", new CreatePaymentRequest(200L, "INR"));
+        paymentService.createPayment(merchantId, "it-status-1", new CreatePaymentRequest(100L, "INR", null));
+        paymentService.createPayment(merchantId, "it-status-2", new CreatePaymentRequest(200L, "INR", null));
 
         var created = paymentService.listPayments(merchantId, PaymentStatus.CREATED, PageRequest.of(0, 10));
         var captured = paymentService.listPayments(merchantId, PaymentStatus.CAPTURED, PageRequest.of(0, 10));

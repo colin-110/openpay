@@ -125,7 +125,7 @@ class RefundIT {
     void refusesToRefundAPaymentThatWasNeverCaptured() {
         UUID merchantId = UUID.randomUUID();
         UUID paymentId = paymentService.createPayment(
-                merchantId, "r-7", new CreatePaymentRequest(10_000L, "USD")).payment().id();
+                merchantId, "r-7", new CreatePaymentRequest(10_000L, "USD", null)).payment().id();
 
         // Still CREATED: no money was ever taken, so there is nothing to give back.
         assertThatThrownBy(() -> refundService.createRefund(
@@ -240,7 +240,7 @@ class RefundIT {
     /** Drives a payment to CAPTURED the way the provider flow would. */
     private UUID capturedPayment(UUID merchantId, long amount, String key) {
         UUID paymentId = paymentService.createPayment(
-                merchantId, key, new CreatePaymentRequest(amount, "USD")).payment().id();
+                merchantId, key, new CreatePaymentRequest(amount, "USD", null)).payment().id();
         paymentService.applyTransition(paymentId, PaymentStatus.PENDING_PROVIDER, "test");
         paymentService.applyTransition(paymentId, PaymentStatus.CAPTURED, "test");
         return paymentId;

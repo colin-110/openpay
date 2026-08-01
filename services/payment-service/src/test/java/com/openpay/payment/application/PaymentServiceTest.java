@@ -130,13 +130,13 @@ class PaymentServiceTest {
     }
 
     private CreatePaymentRequest request(long minorUnits, String currency) {
-        return new CreatePaymentRequest(minorUnits, currency);
+        return new CreatePaymentRequest(minorUnits, currency, null);
     }
 
     /** Builds a stored payment carrying the fingerprint the service would have written. */
     private Payment existingPayment(UUID merchantId, long minorUnits, String currency) {
         Payment payment = new Payment(
-                UUID.randomUUID(), merchantId, IDEMPOTENCY_KEY, null, minorUnits, currency);
+                UUID.randomUUID(), merchantId, IDEMPOTENCY_KEY, null, minorUnits, currency, null);
         try {
             var method = PaymentService.class.getDeclaredMethod("fingerprint", CreatePaymentRequest.class);
             method.setAccessible(true);

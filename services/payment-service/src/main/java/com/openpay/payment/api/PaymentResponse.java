@@ -10,6 +10,8 @@ public record PaymentResponse(
         /** Amount in the currency's smallest unit. */
         Long amount,
         String currency,
+        /** Null when the payment was created without one. */
+        PaymentMethodView paymentMethod,
         OffsetDateTime createdAt,
         OffsetDateTime updatedAt) {
 }

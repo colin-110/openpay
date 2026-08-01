@@ -1,5 +1,6 @@
 package com.openpay.payment.api;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -18,5 +19,8 @@ public record CreatePaymentRequest(
 
         @NotBlank
         @Pattern(regexp = "^[A-Z]{3}$", message = "must be a 3-letter uppercase ISO 4217 code")
-        String currency) {
+        String currency,
+
+        /** Optional. A payment that does not say how it is being paid is still a payment. */
+        @Valid PaymentMethodRequest paymentMethod) {
 }
