@@ -5,6 +5,11 @@ spring:
 openpay:
   security:
     auth-base-url: ${AUTH_SERVICE_BASE_URL:http://localhost:8081}
+    # Same key auth-service signs with, so a dashboard session is accepted wherever an API key is.
+    jwt-secret: ${OPENPAY_JWT_SECRET:}
+    # The dashboard is a browser application on a different origin. Defaults to the local dev
+    # server only; a deployment names its real origin.
+    allowed-origins: ${OPENPAY_DASHBOARD_ORIGINS:http://localhost:5173}
     # Merchant-facing paths the gateway authenticates before forwarding. Merchant admin paths are
     # deliberately absent: they use the admin token, which merchant-service checks itself.
     api-key-paths:

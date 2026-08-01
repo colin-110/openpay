@@ -21,6 +21,9 @@ openpay:
     ttl: ${OPENPAY_JWT_TTL:PT1H}
     issuer: openpay
   security:
+    # Login is called by the dashboard directly rather than through the gateway, so this service
+    # answers cross-origin requests too.
+    allowed-origins: ${OPENPAY_DASHBOARD_ORIGINS:http://localhost:5173}
     # Issuing a credential is a platform-operator action. Empty by default: a shipped default
     # would be a publicly known secret, so admin paths fail closed until this is set.
     admin-token: ${OPENPAY_ADMIN_TOKEN:}

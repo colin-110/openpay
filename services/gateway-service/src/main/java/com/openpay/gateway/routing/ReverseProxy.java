@@ -25,6 +25,16 @@ public class ReverseProxy {
             "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
             "te", "trailer", "transfer-encoding", "upgrade", "content-length", "host");
 
+    /**
+     * The gateway is the origin a browser actually talks to, so it decides the CORS answer. A
+     * downstream service that also emitted these would produce two of each header, which browsers
+     * treat as no permission at all.
+     */
+    private static final Set<String> CORS_RESPONSE_HEADERS = Set.of(
+            "access-control-allow-origin", "access-control-allow-methods",
+            "access-control-allow-headers", "access-control-allow-credentials",
+            "access-control-expose-headers", "access-control-max-age");
+
     private static final Logger log = LoggerFactory.getLogger(ReverseProxy.class);
 
     private final RestClient restClient;
@@ -87,7 +97,8 @@ public class ReverseProxy {
     private HttpHeaders copyResponseHeaders(HttpHeaders downstreamHeaders) {
         HttpHeaders headers = new HttpHeaders();
         downstreamHeaders.forEach((name, values) -> {
-            if (!HOP_BY_HOP_HEADERS.contains(name.toLowerCase())) {
+            String lower = name.toLowerCase();
+            if (!HOP_BY_HOP_HEADERS.contains(lower) && !CORS_RESPONSE_HEADERS.contains(lower)) {
                 headers.addAll(name, values);
             }
         });

@@ -2,6 +2,7 @@ package com.openpay.security;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.Filter;
+import java.time.Duration;
 import java.util.List;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -11,6 +12,9 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.core.Ordered;
 import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
+import org.springframework.web.filter.CorsFilter;
 
 /**
  * Wires API-key and admin-token authentication into any service that puts this library on the
@@ -35,6 +39,38 @@ public class SecurityAutoConfiguration {
         FilterRegistrationBean<Filter> registration = new FilterRegistrationBean<>();
         registration.setFilter((request, response, chain) -> chain.doFilter(request, response));
         registration.setEnabled(false);
+        return registration;
+    }
+
+    /**
+     * A CORS preflight carries no credentials, so it has to be answered before anything demands
+     * one. Any later and the browser would be told the request was unauthorised and never send
+     * the real one.
+     */
+    @Bean
+    public FilterRegistrationBean<Filter> corsFilter(SecurityProperties properties) {
+        if (properties.getAllowedOrigins().isEmpty()) {
+            return notRegistered();
+        }
+
+        FilterRegistrationBean<Filter> registration = new FilterRegistrationBean<>();
+        CorsConfiguration cors = new CorsConfiguration();
+        cors.setAllowedOrigins(properties.getAllowedOrigins());
+        cors.setAllowedMethods(List.of("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"));
+        cors.setAllowedHeaders(List.of(
+                "Authorization", "Content-Type", "Idempotency-Key", "X-Api-Key", "X-Correlation-Id"));
+        cors.setExposedHeaders(List.of("Location", "X-Correlation-Id"));
+        // Sessions travel in the Authorization header, not a cookie, so the browser never needs
+        // to attach credentials — and not asking for them keeps wildcard origins impossible.
+        cors.setAllowCredentials(false);
+        cors.setMaxAge(Duration.ofHours(1));
+
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", cors);
+
+        registration.setFilter(new CorsFilter(source));
+        registration.setOrder(SECURITY_FILTER_ORDER - 2);
+        registration.addUrlPatterns("/*");
         return registration;
     }
 

@@ -26,6 +26,13 @@ public class SecurityProperties {
     /** Shared HS256 key for verifying dashboard sessions. Blank disables session auth. */
     private String jwtSecret = "";
 
+    /**
+     * Browser origins allowed to call this service. Empty by default, and deliberately so: only the
+     * two services a dashboard talks to directly should answer cross-origin requests. Setting it on
+     * an internal service would let a page reach past the gateway.
+     */
+    private List<String> allowedOrigins = new ArrayList<>();
+
     private Duration connectTimeout = Duration.ofSeconds(2);
 
     private Duration readTimeout = Duration.ofSeconds(3);
@@ -68,6 +75,14 @@ public class SecurityProperties {
 
     public void setJwtSecret(String jwtSecret) {
         this.jwtSecret = jwtSecret;
+    }
+
+    public List<String> getAllowedOrigins() {
+        return allowedOrigins;
+    }
+
+    public void setAllowedOrigins(List<String> allowedOrigins) {
+        this.allowedOrigins = allowedOrigins;
     }
 
     public Duration getConnectTimeout() {
