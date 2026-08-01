@@ -69,6 +69,20 @@ public class NotificationProperties {
         this.maxBackoff = maxBackoff;
     }
 
+    /**
+     * Whether a merchant endpoint on loopback may be delivered to. False everywhere except local
+     * development, where the only reachable test endpoint is on this machine.
+     */
+    private boolean allowLoopbackTargets = false;
+
+    public boolean isAllowLoopbackTargets() {
+        return allowLoopbackTargets;
+    }
+
+    public void setAllowLoopbackTargets(boolean allowLoopbackTargets) {
+        this.allowLoopbackTargets = allowLoopbackTargets;
+    }
+
     public Duration getConnectTimeout() {
         return connectTimeout;
     }

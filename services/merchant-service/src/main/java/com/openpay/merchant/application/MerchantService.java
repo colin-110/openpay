@@ -6,7 +6,7 @@ import com.openpay.merchant.api.WebhookConfigResponse;
 import com.openpay.merchant.api.PagedResponse;
 import com.openpay.merchant.domain.Merchant;
 import org.springframework.beans.factory.annotation.Value;
-import com.openpay.merchant.domain.WebhookUrlPolicy;
+import com.openpay.security.OutboundUrlPolicy;
 import com.openpay.merchant.domain.MerchantRepository;
 import java.security.SecureRandom;
 import java.util.HexFormat;
@@ -47,9 +47,10 @@ public class MerchantService {
                             "Merchant code already exists: " + request.merchantCode());
                 });
 
-        // Checked before anything is stored: an unsendable URL is a bad request, not a delivery
-        // failure discovered hours later by the notification service.
-        WebhookUrlPolicy.requireDeliverable(request.webhookUrl(), allowLoopbackWebhooks);
+        // Checked before anything is stored, so an unsendable URL is a bad request rather than a
+        // delivery failure discovered hours later. The same policy is applied again at connect
+        // time by notification-service, which is the check that actually protects the network.
+        OutboundUrlPolicy.requireDeliverable(request.webhookUrl(), allowLoopbackWebhooks);
 
         Merchant merchant = new Merchant();
         merchant.setId(UUID.randomUUID());

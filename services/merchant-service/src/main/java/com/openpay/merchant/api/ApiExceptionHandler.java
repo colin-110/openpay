@@ -7,7 +7,7 @@ import java.time.OffsetDateTime;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
-import com.openpay.merchant.domain.UndeliverableWebhookUrlException;
+import com.openpay.security.UndeliverableUrlException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 
@@ -25,9 +25,9 @@ public class ApiExceptionHandler {
         return build(HttpStatus.CONFLICT, "merchant_already_exists", exception.getMessage(), request.getRequestURI());
     }
 
-    @ExceptionHandler(UndeliverableWebhookUrlException.class)
+    @ExceptionHandler(UndeliverableUrlException.class)
     public ResponseEntity<ErrorResponse> handleUndeliverableWebhookUrl(
-            UndeliverableWebhookUrlException exception, HttpServletRequest request) {
+            UndeliverableUrlException exception, HttpServletRequest request) {
         return build(HttpStatus.BAD_REQUEST, "invalid_webhook_url", exception.getMessage(), request.getRequestURI());
     }
 

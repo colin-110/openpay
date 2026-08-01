@@ -11,7 +11,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import com.openpay.notification.infrastructure.PublicAddressDnsResolver;
+import org.apache.hc.client5.http.config.ConnectionConfig;
+import org.apache.hc.client5.http.config.RequestConfig;
+import org.apache.hc.client5.http.impl.classic.CloseableHttpClient;
+import org.apache.hc.client5.http.impl.classic.HttpClients;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManager;
+import org.apache.hc.client5.http.impl.io.PoolingHttpClientConnectionManagerBuilder;
+import org.apache.hc.core5.util.Timeout;
+import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -48,10 +56,37 @@ public class WebhookDispatcher {
         this.properties = properties;
         this.backoffPolicy = new BackoffPolicy(properties.getInitialBackoff(), properties.getMaxBackoff());
 
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
-        factory.setReadTimeout((int) properties.getReadTimeout().toMillis());
-        this.restClient = RestClient.builder().requestFactory(factory).build();
+        // Two things here are security, not plumbing.
+        //
+        // The DNS resolver refuses to resolve a merchant host to any address the platform must not
+        // reach. Doing it in the resolver rather than before the call is what closes DNS
+        // rebinding: the addresses it returns are the ones connected to, so there is no second
+        // lookup for an attacker to answer differently.
+        //
+        // Redirects are disabled. A merchant endpoint has no business redirecting us, and
+        // following one would hand an attacker the simplest SSRF there is — reply 302 to
+        // 169.254.169.254 and let the platform fetch it. The JDK's default client follows
+        // redirects, which is what this used to do.
+        PoolingHttpClientConnectionManager connectionManager =
+                PoolingHttpClientConnectionManagerBuilder.create()
+                        .setDnsResolver(new PublicAddressDnsResolver(properties.isAllowLoopbackTargets()))
+                        .setDefaultConnectionConfig(ConnectionConfig.custom()
+                                .setConnectTimeout(Timeout.ofMilliseconds(
+                                        properties.getConnectTimeout().toMillis()))
+                                .build())
+                        .build();
+
+        CloseableHttpClient httpClient = HttpClients.custom()
+                .setConnectionManager(connectionManager)
+                .disableRedirectHandling()
+                .setDefaultRequestConfig(RequestConfig.custom()
+                        .setResponseTimeout(Timeout.ofMilliseconds(properties.getReadTimeout().toMillis()))
+                        .build())
+                .build();
+
+        this.restClient = RestClient.builder()
+                .requestFactory(new HttpComponentsClientHttpRequestFactory(httpClient))
+                .build();
     }
 
     @Scheduled(fixedDelayString = "${openpay.notification.poll-interval-ms:1000}")

@@ -11,7 +11,7 @@ actually lets someone do, and what fixing it takes.
 | 1 | Session roles are never enforced | **High** | Fixed |
 | 2 | API key scopes are never enforced | **High** | Fixed |
 | 3 | provider-router-service has no authentication at all | **High** | Fixed |
-| 4 | SSRF through the merchant webhook URL | **Medium** | Partly fixed |
+| 4 | SSRF through the merchant webhook URL | **Medium** | Fixed |
 | 5 | No replay window on inbound acquirer callbacks | **Medium** | Open |
 | 6 | One admin token opens everything | **Medium** | Open |
 | 7 | No rate limiting on merchant-facing writes | **Medium** | Open |
@@ -114,20 +114,35 @@ Setting the URL is admin-gated today, which limits *who* can aim it — but that
 a control. The moment merchants configure their own webhook URL, as they do on every real gateway,
 this becomes directly exploitable.
 
-**Fix, and what is left.** The URL is now validated when it is set: `https` (with `http` allowed
-only for loopback in development), no credentials in the URL, and loopback, link-local, private,
-multicast and wildcard addresses refused.
+**Fixed, in two places, because one was never going to be enough.**
 
-A host that does not resolve is deliberately **allowed** — DNS is transient, and refusing a
-merchant's URL because its domain was briefly unresolvable during onboarding would block a
-legitimate setup for a reason unrelated to the URL. It also makes the check depend on network
-state. An unresolvable host fails delivery and says so in the delivery log.
+**Where the URL is stored**, `OutboundUrlPolicy.requireDeliverable` requires `https` (with `http`
+allowed only for loopback in development), refuses credentials in the URL, and refuses loopback,
+link-local, private, multicast and wildcard addresses. A host that does not resolve is deliberately
+allowed: DNS is transient, and refusing a merchant's URL because its domain was briefly
+unresolvable would block a legitimate setup for a reason unrelated to the URL.
 
-**Still open: DNS rebinding.** A host that resolves publicly when it is stored can be repointed at
-link-local before the webhook is sent. Closing that requires `WebhookDispatcher` to re-resolve and
-re-check immediately before connecting, which means lifting the policy into a shared library so
-notification-service can apply the same rule. The write-time check stops the direct attack; it does
-not stop a patient one.
+**Where the connection is made**, `PublicAddressDnsResolver` applies the same address rule inside
+DNS resolution. This is the half that actually closes the hole. Checking the URL and then
+connecting leaves a window — the HTTP client resolves the name again when it opens the socket, so
+an attacker controlling the record answers publicly for the check and with `169.254.169.254` for
+the connection. That is DNS rebinding, and no amount of checking beforehand prevents it. Resolving
+through the policy removes the window, because the addresses it returns are the addresses connected
+to; there is no second lookup to poison.
+
+**Redirects are disabled.** This turned out to be the easier attack and it was wide open:
+`WebhookDispatcher` used `HttpURLConnection`, which follows redirects by default, so a merchant
+endpoint replying `302 Location: http://169.254.169.254/` would have had the platform fetch it. A
+webhook endpoint has no business redirecting us.
+
+Both were verified against the running stack with a stand-in merchant on loopback. A well-behaved
+endpoint received its webhook (`DELIVERED`, one attempt, 200). An endpoint replying `302` towards a
+third port was retried three times and **the redirect target was never contacted**. Repointing a
+stored URL at `10.0.0.5` directly in the database — which is what a rebind amounts to — produced
+`10.0.0.5 resolves to 10.0.0.5, which is not publicly routable` and no connection.
+
+The policy lives in `common-security` and is used by both services, so the two checks cannot drift
+apart.
 
 ---
 

@@ -28,6 +28,9 @@ openpay:
     merchant-base-url: ${MERCHANT_SERVICE_BASE_URL:http://localhost:8082}
     # Used to read a merchant's delivery configuration, which includes their signing secret.
     admin-token: ${OPENPAY_ADMIN_TOKEN:}
+    # Delivering to loopback is refused unless this is on: in development the only reachable test
+    # endpoint is on this machine, everywhere else it would mean the platform calling itself.
+    allow-loopback-targets: ${ALLOW_LOOPBACK_WEBHOOKS:true}
     max-attempts: ${WEBHOOK_MAX_ATTEMPTS:8}
     initial-backoff: ${WEBHOOK_INITIAL_BACKOFF:5s}
     max-backoff: ${WEBHOOK_MAX_BACKOFF:6h}
