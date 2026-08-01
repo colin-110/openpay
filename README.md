@@ -199,7 +199,7 @@ Each acquirer can also be made to misbehave on purpose with `BANK_DECLINE_RATE`,
 Onboard a merchant (admin):
 
 ```bash
-curl -X POST http://localhost:8082/api/v1/merchants -H "X-Admin-Token: dev-admin-token" -H "Content-Type: application/json" -d '{"merchantCode":"shop-1","legalName":"Demo Shop","webhookUrl":null,"defaultCurrency":"USD"}'
+curl -X POST http://localhost:8082/api/v1/merchants -H "X-Admin-Token: dev-admin-token" -H "Content-Type: application/json" -d '{"merchantCode":"shop-1","legalName":"Demo Shop","webhookUrl":null,"defaultCurrency":"INR"}'
 ```
 
 Issue an API key for that merchant (admin). The plaintext key is returned exactly once:
@@ -211,7 +211,7 @@ curl -X POST http://localhost:8081/api/v1/api-keys -H "X-Admin-Token: dev-admin-
 Create a payment through the gateway:
 
 ```bash
-curl -X POST http://localhost:8080/api/v1/payments -H "X-Api-Key: <API_KEY>" -H "Idempotency-Key: order-1001" -H "Content-Type: application/json" -d '{"amount":10000,"currency":"USD"}'
+curl -X POST http://localhost:8080/api/v1/payments -H "X-Api-Key: <API_KEY>" -H "Idempotency-Key: order-1001" -H "Content-Type: application/json" -d '{"amount":250000,"currency":"INR"}'
 ```
 
 That returns `201` with status `CREATED`. Nothing else is required: poll the payment and watch it
@@ -223,17 +223,35 @@ curl http://localhost:8080/api/v1/payments/<PAYMENT_ID> -H "X-Api-Key: <API_KEY>
 
 ## Merchant Dashboard
 
-A React SPA in `web/dashboard`: sign in, watch payments settle, and issue refunds. It is a client
-of the same public API a merchant would integrate against — it has no private endpoints and no
-database of its own, so anything the dashboard can do, a merchant can do over HTTP.
+A React SPA in `web/dashboard`. It is a client of the same public API a merchant would integrate
+against — no private endpoints and no database of its own — so anything the dashboard can do, a
+merchant can do over HTTP.
 
-Create a dashboard user for a merchant (admin):
+Three sections:
+
+- **Overview** — captured volume, success rate, refunded value, and how many payments are still
+  with an acquirer, over the most recent window of traffic. Figures state the window they cover
+  rather than implying they cover everything.
+- **Payments** — the full list, filtered by status on the server and paged on the server. Searching
+  takes a whole payment ID, because an ID is a UUID and a substring search is not something the API
+  can honestly answer.
+- **Refunds** — every refund the merchant has issued, newest first, filtered by status.
+
+Selecting a payment opens a detail drawer: summary, an activity timeline built from the timestamps
+the API actually returns, the refunds against it, and the refund action itself. The open payment is
+part of the URL (`#/payments/<id>`), so a link to one payment is a link somebody can send.
+
+The console polls every five seconds, because a payment reaches `CAPTURED` on its own a few seconds
+after it is created. The **Live** toggle stops that, since a screen that reorders itself while you
+are reading it is its own kind of wrong.
+
+Seed a merchant, a dashboard user, and a spread of rupee payments and refunds:
 
 ```bash
-curl -X POST http://localhost:8081/api/v1/users -H "X-Admin-Token: dev-admin-token" -H "Content-Type: application/json" -d '{"merchantId":"<MERCHANT_ID>","email":"owner@shop-1.test","password":"a-long-enough-password","role":"MERCHANT_ADMIN"}'
+OPENPAY_ADMIN_TOKEN=dev-admin-token ./scripts/seed-demo.sh
 ```
 
-Then run it:
+That prints the login it created. Then run the dashboard:
 
 ```bash
 cd web/dashboard && npm install && npm run dev
@@ -241,6 +259,10 @@ cd web/dashboard && npm install && npm run dev
 
 It serves on `http://localhost:5173` and talks to the gateway on 8080 and auth-service on 8081.
 Point it elsewhere with `VITE_API_BASE` and `VITE_AUTH_BASE`.
+
+Amounts are integer minor units end to end — paise for INR, cents for USD — and only the display
+layer knows about decimal places. Rupees are grouped the Indian way, so ₹12,50,000.00 rather than
+₹1,250,000.00.
 
 Because it runs on its own origin, both services it calls answer CORS preflights for
 `OPENPAY_DASHBOARD_ORIGINS` (defaulting to the Vite dev server). No internal service does: a page
@@ -258,11 +280,14 @@ session in `Authorization: Bearer`:
 
 - `POST /api/v1/payments` — create a payment. Requires `Idempotency-Key`.
 - `GET /api/v1/payments/{paymentId}`
-- `GET /api/v1/payments?page=0&size=20`
+- `GET /api/v1/payments?page=0&size=20&status=CAPTURED` — `status` is optional.
 - `POST /api/v1/refunds` — refund a captured payment. Requires `Idempotency-Key`. Omit `amount`
   to refund everything still refundable.
 - `GET /api/v1/refunds/{refundId}`
-- `GET /api/v1/refunds?paymentId={paymentId}`
+- `GET /api/v1/refunds?paymentId={paymentId}` — every refund against one payment, oldest first.
+- `GET /api/v1/refunds?page=0&size=20&status=SUCCEEDED` — every refund the merchant has made,
+  newest first. Separate from the by-payment listing because the two answer different questions
+  and page differently.
 
 Platform-operator, authenticated with `X-Admin-Token`:
 
