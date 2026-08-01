@@ -13,9 +13,20 @@ export type Session = {
   role: string;
 };
 
+export type PaymentStatus =
+  | "CREATED"
+  | "PENDING_PROVIDER"
+  | "AUTHORIZED"
+  | "CAPTURED"
+  | "FAILED"
+  | "CANCELLED"
+  | "REFUNDED";
+
+export type RefundStatus = "PENDING" | "SUCCEEDED" | "FAILED";
+
 export type Payment = {
   id: string;
-  status: string;
+  status: PaymentStatus;
   amount: number;
   currency: string;
   createdAt: string;
@@ -25,12 +36,13 @@ export type Payment = {
 export type Refund = {
   id: string;
   paymentId: string;
-  status: string;
+  status: RefundStatus;
   amount: number;
   currency: string;
   reason: string | null;
   failureReason: string | null;
   createdAt: string;
+  updatedAt: string;
 };
 
 export type Page<T> = {
@@ -52,17 +64,29 @@ export class ApiError extends Error {
   }
 }
 
+/** An expired session is the one failure every screen has to react to the same way. */
+export function isUnauthorized(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 401;
+}
+
 async function request<T>(url: string, token: string | null, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      // The dashboard is a person, so it presents a session rather than an API key. The backend
-      // accepts either on these paths and scopes the result to the same merchant.
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(init.headers ?? {}),
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        // The dashboard is a person, so it presents a session rather than an API key. The backend
+        // accepts either on these paths and scopes the result to the same merchant.
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(init.headers ?? {}),
+      },
+    });
+  } catch {
+    // A network-level failure has no status and no body, but callers still need something with a
+    // message they can put on screen.
+    throw new ApiError(0, "network_error", "Could not reach the server");
+  }
 
   if (response.status === 204) return undefined as T;
 
@@ -77,6 +101,15 @@ async function request<T>(url: string, token: string | null, init: RequestInit =
   return body as T;
 }
 
+function query(params: Record<string, string | number | null | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== null && value !== undefined && value !== "") search.set(key, String(value));
+  }
+  const rendered = search.toString();
+  return rendered ? `?${rendered}` : "";
+}
+
 export const api = {
   login: (email: string, password: string) =>
     request<Session>(`${AUTH_BASE}/api/v1/auth/login`, null, {
@@ -84,13 +117,36 @@ export const api = {
       body: JSON.stringify({ email, password }),
     }),
 
-  payments: (token: string, page = 0, size = 20) =>
-    request<Page<Payment>>(`${BASE}/api/v1/payments?page=${page}&size=${size}`, token),
+  payments: (
+    token: string,
+    options: { page?: number; size?: number; status?: PaymentStatus | null } = {}
+  ) =>
+    request<Page<Payment>>(
+      `${BASE}/api/v1/payments${query({
+        page: options.page ?? 0,
+        size: options.size ?? 20,
+        status: options.status,
+      })}`,
+      token
+    ),
 
   payment: (token: string, id: string) => request<Payment>(`${BASE}/api/v1/payments/${id}`, token),
 
+  refunds: (
+    token: string,
+    options: { page?: number; size?: number; status?: RefundStatus | null } = {}
+  ) =>
+    request<Page<Refund>>(
+      `${BASE}/api/v1/refunds${query({
+        page: options.page ?? 0,
+        size: options.size ?? 20,
+        status: options.status,
+      })}`,
+      token
+    ),
+
   refundsFor: (token: string, paymentId: string) =>
-    request<Refund[]>(`${BASE}/api/v1/refunds?paymentId=${paymentId}`, token),
+    request<Refund[]>(`${BASE}/api/v1/refunds${query({ paymentId })}`, token),
 
   createRefund: (token: string, paymentId: string, amount: number | null, reason: string) =>
     request<Refund>(`${BASE}/api/v1/refunds`, token, {
@@ -103,13 +159,3 @@ export const api = {
       body: JSON.stringify({ paymentId, amount, reason: reason || null }),
     }),
 };
-
-/** Amounts travel as integer minor units; only the display layer knows about decimal places. */
-export function formatAmount(minorUnits: number, currency: string): string {
-  const exponent = currency === "JPY" || currency === "KRW" ? 0 : 2;
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency,
-    minimumFractionDigits: exponent,
-  }).format(minorUnits / 10 ** exponent);
-}
