@@ -17,6 +17,9 @@ x-service-defaults: &service-defaults
     DB_PASSWORD: openpay
     KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     OPENPAY_ADMIN_TOKEN: ${OPENPAY_ADMIN_TOKEN:?set OPENPAY_ADMIN_TOKEN before starting the stack}
+    # One signing key across the stack: auth-service issues dashboard sessions and the services
+    # behind the gateway verify them. HS256 needs at least 32 bytes.
+    OPENPAY_JWT_SECRET: ${OPENPAY_JWT_SECRET:?set OPENPAY_JWT_SECRET before starting the stack}
     AUTH_SERVICE_BASE_URL: http://auth-service:8081
     MERCHANT_SERVICE_BASE_URL: http://merchant-service:8082
     PAYMENT_SERVICE_BASE_URL: http://payment-service:8083

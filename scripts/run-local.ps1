@@ -20,6 +20,8 @@
 param(
     [switch]$Stop,
     [string]$AdminToken = "dev-admin-token",
+    # HS256 needs at least 32 bytes; auth-service refuses to start with anything shorter.
+    [string]$JwtSecret = "dev-jwt-secret-not-for-production-use",
     [string]$BankASecret = "bank-a-secret",
     [string]$BankBSecret = "bank-b-secret"
 )
@@ -78,7 +80,8 @@ $services = @(
 Write-Host "Starting $($services.Count) services..." -ForegroundColor Cyan
 
 foreach ($service in $services) {
-    $envSetup = "`$env:OPENPAY_ADMIN_TOKEN='$AdminToken'; "
+    # Every service gets the same signing key: auth-service issues sessions, the others verify them.
+    $envSetup = "`$env:OPENPAY_ADMIN_TOKEN='$AdminToken'; `$env:OPENPAY_JWT_SECRET='$JwtSecret'; "
     foreach ($key in $service.Env.Keys) {
         $envSetup += "`$env:$key='$($service.Env[$key])'; "
     }
