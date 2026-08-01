@@ -33,6 +33,12 @@ export type PaymentMethod = {
   bank: string | null;
 };
 
+/**
+ * Where a payment stands with risk screening. Orthogonal to its status: a HELD payment is still
+ * CREATED, because holding it interrupts routing rather than moving it somewhere.
+ */
+export type FraudStatus = "ALLOWED" | "HELD" | "BLOCKED" | "UNSCREENED";
+
 export type Payment = {
   id: string;
   status: PaymentStatus;
@@ -40,6 +46,7 @@ export type Payment = {
   currency: string;
   /** Null for a payment created without one, which is not the same as an unknown card. */
   paymentMethod: PaymentMethod | null;
+  fraudStatus: FraudStatus;
   createdAt: string;
   updatedAt: string;
 };

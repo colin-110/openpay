@@ -122,6 +122,10 @@ export function PaymentDrawer({
                 </dd>
                 <dt>Status</dt>
                 <dd>{titleCase(payment.status)}</dd>
+                <dt>Screening</dt>
+                <dd className={payment.fraudStatus === "ALLOWED" ? "" : "muted"}>
+                  {describeScreening(payment.fraudStatus)}
+                </dd>
                 <dt>Amount</dt>
                 <dd>{formatAmount(payment.amount, payment.currency)}</dd>
                 <dt>Method</dt>
@@ -143,7 +147,16 @@ export function PaymentDrawer({
 
             <section>
               <h3>Acquirer attempts</h3>
-              <Attempts attempts={attempts} error={attemptsError} />
+              {payment.fraudStatus === "HELD" ? (
+                // Without this the panel is simply empty, which reads as "the acquirers were not
+                // tried yet" when the truth is that they never will be until somebody decides.
+                <p className="muted">
+                  Held by risk screening. Nothing has been sent to an acquirer, and nothing will be
+                  until the review is resolved.
+                </p>
+              ) : (
+                <Attempts attempts={attempts} error={attemptsError} />
+              )}
             </section>
 
             <section>
@@ -199,6 +212,25 @@ export function PaymentDrawer({
  * succeeded on the second acquirer looks identical to one that succeeded on the first, until you
  * see that the first refused it.
  */
+/**
+ * UNSCREENED is deliberately not shown as "Allowed". "We decided this was fine" and "nobody looked"
+ * are different claims, and only one of them should be in front of somebody handling a dispute.
+ */
+function describeScreening(fraudStatus: Payment["fraudStatus"]): string {
+  switch (fraudStatus) {
+    case "ALLOWED":
+      return "Cleared";
+    case "HELD":
+      return "Held for review";
+    case "BLOCKED":
+      return "Refused by screening";
+    case "UNSCREENED":
+      return "Not screened — the risk service was unreachable";
+    default:
+      return fraudStatus;
+  }
+}
+
 function Attempts({ attempts, error }: { attempts: PaymentAttempt[] | null; error: string | null }) {
   if (error) {
     // Deliberately not an empty list. "Nothing was tried" and "could not ask" are different

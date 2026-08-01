@@ -17,6 +17,28 @@ services:
       timeout: 5s
       retries: 10
 
+  # Creates any database a service needs but does not have.
+  #
+  # The scripts under /docker-entrypoint-initdb.d only run on an empty data directory, so adding a
+  # service to that file does nothing for anyone whose volume already exists — their new service
+  # crash-loops on "database does not exist" while every other service is healthy, which points at
+  # the new service rather than at the volume. This runs the same file on every `up`; it is
+  # idempotent, so doing that costs nothing.
+  postgres-databases:
+    image: postgres:15-alpine
+    container_name: openpay-postgres-databases
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      PGPASSWORD: openpay
+    volumes:
+      - ./postgres/init:/init:ro
+    entrypoint:
+      - sh
+      - -c
+      - psql -h postgres -U openpay -d postgres -v ON_ERROR_STOP=1 -f /init/001-create-databases.sql
+    restart: "no"
+
   redis:
     image: redis:8-alpine
     container_name: openpay-redis

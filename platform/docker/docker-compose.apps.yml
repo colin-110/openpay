@@ -66,6 +66,7 @@ services:
     ports: ["8082:8082"]
     depends_on:
       postgres: {condition: service_healthy}
+      postgres-databases: {condition: service_completed_successfully}
     healthcheck:
       <<: *app-healthcheck
       test: ["CMD-SHELL", "curl -fsS http://localhost:8082/actuator/health || exit 1"]
@@ -85,6 +86,7 @@ services:
     ports: ["8081:8081"]
     depends_on:
       postgres: {condition: service_healthy}
+      postgres-databases: {condition: service_completed_successfully}
       redis: {condition: service_started}
       merchant-service: {condition: service_healthy}
     healthcheck:
@@ -106,6 +108,7 @@ services:
     ports: ["8083:8083"]
     depends_on:
       postgres: {condition: service_healthy}
+      postgres-databases: {condition: service_completed_successfully}
       kafka: {condition: service_healthy}
       auth-service: {condition: service_healthy}
       # Not strictly required — payment-service fails open and records the payment as UNSCREENED —
@@ -132,6 +135,7 @@ services:
     ports: ["8084:8084"]
     depends_on:
       postgres: {condition: service_healthy}
+      postgres-databases: {condition: service_completed_successfully}
       kafka: {condition: service_healthy}
     healthcheck:
       <<: *app-healthcheck
@@ -154,6 +158,7 @@ services:
     ports: ["8085:8085"]
     depends_on:
       postgres: {condition: service_healthy}
+      postgres-databases: {condition: service_completed_successfully}
       kafka: {condition: service_healthy}
     healthcheck:
       <<: *app-healthcheck
@@ -174,6 +179,7 @@ services:
     ports: ["8086:8086"]
     depends_on:
       postgres: {condition: service_healthy}
+      postgres-databases: {condition: service_completed_successfully}
       kafka: {condition: service_healthy}
     healthcheck:
       <<: *app-healthcheck
@@ -194,6 +200,7 @@ services:
     ports: ["8087:8087"]
     depends_on:
       postgres: {condition: service_healthy}
+      postgres-databases: {condition: service_completed_successfully}
       kafka: {condition: service_healthy}
     healthcheck:
       <<: *app-healthcheck
@@ -214,6 +221,7 @@ services:
     ports: ["8088:8088"]
     depends_on:
       postgres: {condition: service_healthy}
+      postgres-databases: {condition: service_completed_successfully}
       kafka: {condition: service_healthy}
       merchant-service: {condition: service_healthy}
     healthcheck:
@@ -235,6 +243,7 @@ services:
     ports: ["8089:8089"]
     depends_on:
       postgres: {condition: service_healthy}
+      postgres-databases: {condition: service_completed_successfully}
       kafka: {condition: service_healthy}
     healthcheck:
       <<: *app-healthcheck
