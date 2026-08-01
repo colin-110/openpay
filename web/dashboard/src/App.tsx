@@ -4,7 +4,9 @@ import { Login, Mark } from "./Login";
 import { Overview } from "./Overview";
 import { PaymentDrawer } from "./PaymentDrawer";
 import { Payments } from "./Payments";
+import { Developers } from "./Developers";
 import { Refunds } from "./Refunds";
+import { Settlements } from "./Settlements";
 import { shortId } from "./format";
 import { ToastProvider } from "./ui";
 import "./styles.css";
@@ -12,7 +14,7 @@ import "./styles.css";
 const SESSION_KEY = "openpay.session";
 const POLL_INTERVAL_MS = 5000;
 
-type View = "overview" | "payments" | "refunds";
+type View = "overview" | "payments" | "refunds" | "settlements" | "developers";
 
 const VIEWS: { id: View; label: string; title: string; subtitle: string }[] = [
   {
@@ -32,6 +34,18 @@ const VIEWS: { id: View; label: string; title: string; subtitle: string }[] = [
     label: "Refunds",
     title: "Refunds",
     subtitle: "Money returned to customers",
+  },
+  {
+    id: "settlements",
+    label: "Settlements",
+    title: "Settlements",
+    subtitle: "When the money reaches your bank, and what was deducted",
+  },
+  {
+    id: "developers",
+    label: "Developers",
+    title: "Developers",
+    subtitle: "Your integration, and every webhook we have sent you",
   },
 ];
 
@@ -198,6 +212,17 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
               onUnauthorized={onSignOut}
               onOpenPayment={openPayment}
             />
+          )}
+          {route.view === "settlements" && (
+            <Settlements
+              session={session}
+              tick={tick}
+              onUnauthorized={onSignOut}
+              onOpenPayment={openPayment}
+            />
+          )}
+          {route.view === "developers" && (
+            <Developers session={session} tick={tick} onUnauthorized={onSignOut} />
           )}
         </div>
       </main>

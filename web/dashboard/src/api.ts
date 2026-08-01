@@ -65,6 +65,42 @@ export type Refund = {
   updatedAt: string;
 };
 
+export type Settlement = {
+  id: string;
+  merchantId: string;
+  currency: string;
+  settlementDate: string;
+  grossAmount: number;
+  feeAmount: number;
+  netAmount: number;
+  itemCount: number;
+  status: string;
+  createdAt: string;
+};
+
+export type SettlementItem = {
+  paymentId: string;
+  grossAmount: number;
+  feeAmount: number;
+  netAmount: number;
+  capturedAt: string;
+};
+
+export type SettlementDetail = Settlement & { items: SettlementItem[] };
+
+export type Delivery = {
+  id: string;
+  merchantId: string;
+  eventType: string;
+  status: string;
+  attempts: number;
+  responseStatus: number | null;
+  lastError: string | null;
+  nextAttemptAt: string | null;
+  deliveredAt: string | null;
+  createdAt: string;
+};
+
 export type Page<T> = {
   items: T[];
   page: number;
@@ -170,6 +206,21 @@ export const api = {
 
   refundsFor: (token: string, paymentId: string) =>
     request<Refund[]>(`${BASE}/api/v1/refunds${query({ paymentId })}`, token),
+
+  settlements: (token: string, options: { page?: number; size?: number } = {}) =>
+    request<Page<Settlement>>(
+      `${BASE}/api/v1/settlements${query({ page: options.page ?? 0, size: options.size ?? 20 })}`,
+      token
+    ),
+
+  settlement: (token: string, id: string) =>
+    request<SettlementDetail>(`${BASE}/api/v1/settlements/${id}`, token),
+
+  deliveries: (token: string, options: { page?: number; size?: number } = {}) =>
+    request<Page<Delivery>>(
+      `${BASE}/api/v1/webhooks/deliveries${query({ page: options.page ?? 0, size: options.size ?? 20 })}`,
+      token
+    ),
 
   createRefund: (token: string, paymentId: string, amount: number | null, reason: string) =>
     request<Refund>(`${BASE}/api/v1/refunds`, token, {
