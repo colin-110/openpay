@@ -1,0 +1,1165 @@
+# The OpenPay services.
+#
+# Every one of them is the same shape, because they are configured identically: environment
+# variables from one ConfigMap and one Secret, actuator liveness and readiness probes, and a
+# non-root security context. The differences that do exist -- a database name, an extra secret --
+# are small and visible.
+#
+# Images are referenced as openpay/<service>:${TAG}. Set TAG with kustomize or your deployment
+# tool; there is deliberately no `latest` here, because a tag that moves makes a rollback a guess.
+#
+# Two things are worth reading rather than skimming:
+#
+#   * readiness hits /actuator/health/readiness, not /actuator/health. A service's aggregate health
+#     includes its dependencies, so using it would take a pod out of rotation because something
+#     downstream is unwell -- turning one service's outage into everyone's.
+#
+#   * every pod runs unprivileged with a read-only root filesystem. A payment service that gets
+#     compromised should not also be root, and should not be able to write itself a new binary.
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-service
+  namespace: openpay
+  labels:
+    app: gateway-service
+    app.kubernetes.io/part-of: openpay
+spec:
+  # The front door. Two replicas, because it is the one thing a merchant talks to directly and
+  # a rolling restart of a single replica is a visible outage.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gateway-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never fewer pods than requested during a deploy. Surge first, then retire the old
+      # one, so a rollout of a single-replica service is not a gap in service.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: gateway-service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: gateway-service
+          image: openpay/gateway-service:${TAG}
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - configMapRef: { name: openpay-config }
+            - secretRef: { name: openpay-secrets }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # The root filesystem is read-only and the JVM still needs somewhere to put
+            # temporary files. An emptyDir is that somewhere.
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            # Generous, and separate from liveness on purpose. A service applying Flyway
+            # migrations to a cold database takes far longer to start than it ever takes to
+            # answer once it is up; one probe for both would either kill it mid-migration or
+            # take a minute to notice it had hung.
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            # No CPU limit. Throttling a JVM under one shows up as latency with no other
+            # symptom; the request is what the scheduler actually needs, and memory is the
+            # resource where a limit genuinely protects the node.
+            limits: { memory: 1Gi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-service
+  namespace: openpay
+  labels:
+    app: gateway-service
+spec:
+  selector:
+    app: gateway-service
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: auth-service
+  namespace: openpay
+  labels:
+    app: auth-service
+    app.kubernetes.io/part-of: openpay
+spec:
+  # Two replicas: every API call on the platform validates a key through this service, so it is
+  # on the critical path of everything else.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: auth-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never fewer pods than requested during a deploy. Surge first, then retire the old
+      # one, so a rollout of a single-replica service is not a gap in service.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: auth-service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: auth-service
+          image: openpay/auth-service:${TAG}
+          ports:
+            - containerPort: 8081
+          envFrom:
+            - configMapRef: { name: openpay-config }
+            - secretRef: { name: openpay-secrets }
+          env:
+            - name: DB_NAME
+              value: openpay_auth
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # The root filesystem is read-only and the JVM still needs somewhere to put
+            # temporary files. An emptyDir is that somewhere.
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            # Generous, and separate from liveness on purpose. A service applying Flyway
+            # migrations to a cold database takes far longer to start than it ever takes to
+            # answer once it is up; one probe for both would either kill it mid-migration or
+            # take a minute to notice it had hung.
+            httpGet: { path: /actuator/health/liveness, port: 8081 }
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8081 }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8081 }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            # No CPU limit. Throttling a JVM under one shows up as latency with no other
+            # symptom; the request is what the scheduler actually needs, and memory is the
+            # resource where a limit genuinely protects the node.
+            limits: { memory: 1Gi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: openpay
+  labels:
+    app: auth-service
+spec:
+  selector:
+    app: auth-service
+  ports:
+    - port: 8081
+      targetPort: 8081
+      name: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: merchant-service
+  namespace: openpay
+  labels:
+    app: merchant-service
+    app.kubernetes.io/part-of: openpay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: merchant-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never fewer pods than requested during a deploy. Surge first, then retire the old
+      # one, so a rollout of a single-replica service is not a gap in service.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: merchant-service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: merchant-service
+          image: openpay/merchant-service:${TAG}
+          ports:
+            - containerPort: 8082
+          envFrom:
+            - configMapRef: { name: openpay-config }
+            - secretRef: { name: openpay-secrets }
+          env:
+            - name: DB_NAME
+              value: openpay_merchant
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # The root filesystem is read-only and the JVM still needs somewhere to put
+            # temporary files. An emptyDir is that somewhere.
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            # Generous, and separate from liveness on purpose. A service applying Flyway
+            # migrations to a cold database takes far longer to start than it ever takes to
+            # answer once it is up; one probe for both would either kill it mid-migration or
+            # take a minute to notice it had hung.
+            httpGet: { path: /actuator/health/liveness, port: 8082 }
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8082 }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8082 }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            # No CPU limit. Throttling a JVM under one shows up as latency with no other
+            # symptom; the request is what the scheduler actually needs, and memory is the
+            # resource where a limit genuinely protects the node.
+            limits: { memory: 1Gi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: merchant-service
+  namespace: openpay
+  labels:
+    app: merchant-service
+spec:
+  selector:
+    app: merchant-service
+  ports:
+    - port: 8082
+      targetPort: 8082
+      name: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-service
+  namespace: openpay
+  labels:
+    app: payment-service
+    app.kubernetes.io/part-of: openpay
+spec:
+  # The outbox relay claims rows with FOR UPDATE SKIP LOCKED, which is what makes a second
+  # replica divide the work rather than publish every event twice.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: payment-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never fewer pods than requested during a deploy. Surge first, then retire the old
+      # one, so a rollout of a single-replica service is not a gap in service.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: payment-service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: payment-service
+          image: openpay/payment-service:${TAG}
+          ports:
+            - containerPort: 8083
+          envFrom:
+            - configMapRef: { name: openpay-config }
+            - secretRef: { name: openpay-secrets }
+          env:
+            - name: DB_NAME
+              value: openpay_payment
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # The root filesystem is read-only and the JVM still needs somewhere to put
+            # temporary files. An emptyDir is that somewhere.
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            # Generous, and separate from liveness on purpose. A service applying Flyway
+            # migrations to a cold database takes far longer to start than it ever takes to
+            # answer once it is up; one probe for both would either kill it mid-migration or
+            # take a minute to notice it had hung.
+            httpGet: { path: /actuator/health/liveness, port: 8083 }
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8083 }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8083 }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            # No CPU limit. Throttling a JVM under one shows up as latency with no other
+            # symptom; the request is what the scheduler actually needs, and memory is the
+            # resource where a limit genuinely protects the node.
+            limits: { memory: 1Gi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-service
+  namespace: openpay
+  labels:
+    app: payment-service
+spec:
+  selector:
+    app: payment-service
+  ports:
+    - port: 8083
+      targetPort: 8083
+      name: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: webhook-service
+  namespace: openpay
+  labels:
+    app: webhook-service
+    app.kubernetes.io/part-of: openpay
+spec:
+  # The inbound trust boundary for acquirer callbacks. Modest here, but it is the one service an
+  # external party reaches directly, so it is the first that will need its own scaling.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webhook-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never fewer pods than requested during a deploy. Surge first, then retire the old
+      # one, so a rollout of a single-replica service is not a gap in service.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: webhook-service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: webhook-service
+          image: openpay/webhook-service:${TAG}
+          ports:
+            - containerPort: 8084
+          envFrom:
+            - configMapRef: { name: openpay-config }
+            - secretRef: { name: openpay-secrets }
+          env:
+            - name: DB_NAME
+              value: openpay_webhook
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # The root filesystem is read-only and the JVM still needs somewhere to put
+            # temporary files. An emptyDir is that somewhere.
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            # Generous, and separate from liveness on purpose. A service applying Flyway
+            # migrations to a cold database takes far longer to start than it ever takes to
+            # answer once it is up; one probe for both would either kill it mid-migration or
+            # take a minute to notice it had hung.
+            httpGet: { path: /actuator/health/liveness, port: 8084 }
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8084 }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8084 }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            # No CPU limit. Throttling a JVM under one shows up as latency with no other
+            # symptom; the request is what the scheduler actually needs, and memory is the
+            # resource where a limit genuinely protects the node.
+            limits: { memory: 1Gi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: webhook-service
+  namespace: openpay
+  labels:
+    app: webhook-service
+spec:
+  selector:
+    app: webhook-service
+  ports:
+    - port: 8084
+      targetPort: 8084
+      name: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: provider-router-service
+  namespace: openpay
+  labels:
+    app: provider-router-service
+    app.kubernetes.io/part-of: openpay
+spec:
+  # Deliberately one replica. Circuit breaker state is in memory per instance, so a second
+  # replica has its own view of which acquirers are unhealthy and has to learn it separately.
+  # Sharing that state is real work and has not been done.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: provider-router-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never fewer pods than requested during a deploy. Surge first, then retire the old
+      # one, so a rollout of a single-replica service is not a gap in service.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: provider-router-service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: provider-router-service
+          image: openpay/provider-router-service:${TAG}
+          ports:
+            - containerPort: 8085
+          envFrom:
+            - configMapRef: { name: openpay-config }
+            - secretRef: { name: openpay-secrets }
+          env:
+            - name: DB_NAME
+              value: openpay_router
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # The root filesystem is read-only and the JVM still needs somewhere to put
+            # temporary files. An emptyDir is that somewhere.
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            # Generous, and separate from liveness on purpose. A service applying Flyway
+            # migrations to a cold database takes far longer to start than it ever takes to
+            # answer once it is up; one probe for both would either kill it mid-migration or
+            # take a minute to notice it had hung.
+            httpGet: { path: /actuator/health/liveness, port: 8085 }
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8085 }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8085 }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            # No CPU limit. Throttling a JVM under one shows up as latency with no other
+            # symptom; the request is what the scheduler actually needs, and memory is the
+            # resource where a limit genuinely protects the node.
+            limits: { memory: 1Gi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: provider-router-service
+  namespace: openpay
+  labels:
+    app: provider-router-service
+spec:
+  selector:
+    app: provider-router-service
+  ports:
+    - port: 8085
+      targetPort: 8085
+      name: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ledger-service
+  namespace: openpay
+  labels:
+    app: ledger-service
+    app.kubernetes.io/part-of: openpay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ledger-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never fewer pods than requested during a deploy. Surge first, then retire the old
+      # one, so a rollout of a single-replica service is not a gap in service.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: ledger-service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ledger-service
+          image: openpay/ledger-service:${TAG}
+          ports:
+            - containerPort: 8086
+          envFrom:
+            - configMapRef: { name: openpay-config }
+            - secretRef: { name: openpay-secrets }
+          env:
+            - name: DB_NAME
+              value: openpay_ledger
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # The root filesystem is read-only and the JVM still needs somewhere to put
+            # temporary files. An emptyDir is that somewhere.
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            # Generous, and separate from liveness on purpose. A service applying Flyway
+            # migrations to a cold database takes far longer to start than it ever takes to
+            # answer once it is up; one probe for both would either kill it mid-migration or
+            # take a minute to notice it had hung.
+            httpGet: { path: /actuator/health/liveness, port: 8086 }
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8086 }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8086 }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            # No CPU limit. Throttling a JVM under one shows up as latency with no other
+            # symptom; the request is what the scheduler actually needs, and memory is the
+            # resource where a limit genuinely protects the node.
+            limits: { memory: 1Gi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ledger-service
+  namespace: openpay
+  labels:
+    app: ledger-service
+spec:
+  selector:
+    app: ledger-service
+  ports:
+    - port: 8086
+      targetPort: 8086
+      name: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: settlement-service
+  namespace: openpay
+  labels:
+    app: settlement-service
+    app.kubernetes.io/part-of: openpay
+spec:
+  # One replica: the settlement job is scheduled, and a second instance would run the same window
+  # concurrently. The unique constraint on (merchant, currency, date) stops that becoming two
+  # payouts, but relying on a constraint to catch a design mistake is not a plan.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: settlement-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never fewer pods than requested during a deploy. Surge first, then retire the old
+      # one, so a rollout of a single-replica service is not a gap in service.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: settlement-service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: settlement-service
+          image: openpay/settlement-service:${TAG}
+          ports:
+            - containerPort: 8087
+          envFrom:
+            - configMapRef: { name: openpay-config }
+            - secretRef: { name: openpay-secrets }
+          env:
+            - name: DB_NAME
+              value: openpay_settlement
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # The root filesystem is read-only and the JVM still needs somewhere to put
+            # temporary files. An emptyDir is that somewhere.
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            # Generous, and separate from liveness on purpose. A service applying Flyway
+            # migrations to a cold database takes far longer to start than it ever takes to
+            # answer once it is up; one probe for both would either kill it mid-migration or
+            # take a minute to notice it had hung.
+            httpGet: { path: /actuator/health/liveness, port: 8087 }
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8087 }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8087 }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            # No CPU limit. Throttling a JVM under one shows up as latency with no other
+            # symptom; the request is what the scheduler actually needs, and memory is the
+            # resource where a limit genuinely protects the node.
+            limits: { memory: 1Gi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: settlement-service
+  namespace: openpay
+  labels:
+    app: settlement-service
+spec:
+  selector:
+    app: settlement-service
+  ports:
+    - port: 8087
+      targetPort: 8087
+      name: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-service
+  namespace: openpay
+  labels:
+    app: notification-service
+    app.kubernetes.io/part-of: openpay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notification-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never fewer pods than requested during a deploy. Surge first, then retire the old
+      # one, so a rollout of a single-replica service is not a gap in service.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: notification-service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: notification-service
+          image: openpay/notification-service:${TAG}
+          ports:
+            - containerPort: 8088
+          envFrom:
+            - configMapRef: { name: openpay-config }
+            - secretRef: { name: openpay-secrets }
+          env:
+            - name: DB_NAME
+              value: openpay_notification
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # The root filesystem is read-only and the JVM still needs somewhere to put
+            # temporary files. An emptyDir is that somewhere.
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            # Generous, and separate from liveness on purpose. A service applying Flyway
+            # migrations to a cold database takes far longer to start than it ever takes to
+            # answer once it is up; one probe for both would either kill it mid-migration or
+            # take a minute to notice it had hung.
+            httpGet: { path: /actuator/health/liveness, port: 8088 }
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8088 }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8088 }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            # No CPU limit. Throttling a JVM under one shows up as latency with no other
+            # symptom; the request is what the scheduler actually needs, and memory is the
+            # resource where a limit genuinely protects the node.
+            limits: { memory: 1Gi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: notification-service
+  namespace: openpay
+  labels:
+    app: notification-service
+spec:
+  selector:
+    app: notification-service
+  ports:
+    - port: 8088
+      targetPort: 8088
+      name: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fraud-service
+  namespace: openpay
+  labels:
+    app: fraud-service
+    app.kubernetes.io/part-of: openpay
+spec:
+  # Two replicas: this sits in the write path of every payment, and payment-service fails open
+  # when it cannot be reached -- so an unavailable fraud-service means unscreened traffic.
+  replicas: 2
+  selector:
+    matchLabels:
+      app: fraud-service
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never fewer pods than requested during a deploy. Surge first, then retire the old
+      # one, so a rollout of a single-replica service is not a gap in service.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: fraud-service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: fraud-service
+          image: openpay/fraud-service:${TAG}
+          ports:
+            - containerPort: 8089
+          envFrom:
+            - configMapRef: { name: openpay-config }
+            - secretRef: { name: openpay-secrets }
+          env:
+            - name: DB_NAME
+              value: openpay_fraud
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # The root filesystem is read-only and the JVM still needs somewhere to put
+            # temporary files. An emptyDir is that somewhere.
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            # Generous, and separate from liveness on purpose. A service applying Flyway
+            # migrations to a cold database takes far longer to start than it ever takes to
+            # answer once it is up; one probe for both would either kill it mid-migration or
+            # take a minute to notice it had hung.
+            httpGet: { path: /actuator/health/liveness, port: 8089 }
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8089 }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8089 }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            # No CPU limit. Throttling a JVM under one shows up as latency with no other
+            # symptom; the request is what the scheduler actually needs, and memory is the
+            # resource where a limit genuinely protects the node.
+            limits: { memory: 1Gi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fraud-service
+  namespace: openpay
+  labels:
+    app: fraud-service
+spec:
+  selector:
+    app: fraud-service
+  ports:
+    - port: 8089
+      targetPort: 8089
+      name: http
+
+# Both simulated acquirers are the same image with different configuration. That is the point:
+# two independently misbehaving endpoints from one codebase, so failover has something real to
+# fail over between.
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-bank-a
+  namespace: openpay
+  labels:
+    app: mock-bank-a
+    app.kubernetes.io/part-of: openpay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-bank-a
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never fewer pods than requested during a deploy. Surge first, then retire the old
+      # one, so a rollout of a single-replica service is not a gap in service.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: mock-bank-a
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mock-bank-a
+          image: openpay/mock-bank-service:${TAG}
+          ports:
+            - containerPort: 9001
+          envFrom:
+            - configMapRef: { name: openpay-config }
+            - secretRef: { name: openpay-secrets }
+          env:
+            - name: BANK_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef: { name: openpay-secrets, key: MOCK_BANK_A_SECRET }
+            - name: BANK_NAME
+              value: "mock-bank-a"
+            - name: BANK_PORT
+              value: "9001"
+            - name: WEBHOOK_BASE_URL
+              value: "http://webhook-service:8084/internal/provider/webhooks"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # The root filesystem is read-only and the JVM still needs somewhere to put
+            # temporary files. An emptyDir is that somewhere.
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            # Generous, and separate from liveness on purpose. A service applying Flyway
+            # migrations to a cold database takes far longer to start than it ever takes to
+            # answer once it is up; one probe for both would either kill it mid-migration or
+            # take a minute to notice it had hung.
+            httpGet: { path: /actuator/health/liveness, port: 9001 }
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 9001 }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 9001 }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            # No CPU limit. Throttling a JVM under one shows up as latency with no other
+            # symptom; the request is what the scheduler actually needs, and memory is the
+            # resource where a limit genuinely protects the node.
+            limits: { memory: 1Gi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-bank-a
+  namespace: openpay
+  labels:
+    app: mock-bank-a
+spec:
+  selector:
+    app: mock-bank-a
+  ports:
+    - port: 9001
+      targetPort: 9001
+      name: http
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-bank-b
+  namespace: openpay
+  labels:
+    app: mock-bank-b
+    app.kubernetes.io/part-of: openpay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mock-bank-b
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Never fewer pods than requested during a deploy. Surge first, then retire the old
+      # one, so a rollout of a single-replica service is not a gap in service.
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app: mock-bank-b
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: mock-bank-b
+          image: openpay/mock-bank-service:${TAG}
+          ports:
+            - containerPort: 9002
+          envFrom:
+            - configMapRef: { name: openpay-config }
+            - secretRef: { name: openpay-secrets }
+          env:
+            - name: BANK_SIGNING_SECRET
+              valueFrom:
+                secretKeyRef: { name: openpay-secrets, key: MOCK_BANK_B_SECRET }
+            - name: BANK_NAME
+              value: "mock-bank-b"
+            - name: BANK_PORT
+              value: "9002"
+            - name: WEBHOOK_BASE_URL
+              value: "http://webhook-service:8084/internal/provider/webhooks"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            # The root filesystem is read-only and the JVM still needs somewhere to put
+            # temporary files. An emptyDir is that somewhere.
+            - name: tmp
+              mountPath: /tmp
+          startupProbe:
+            # Generous, and separate from liveness on purpose. A service applying Flyway
+            # migrations to a cold database takes far longer to start than it ever takes to
+            # answer once it is up; one probe for both would either kill it mid-migration or
+            # take a minute to notice it had hung.
+            httpGet: { path: /actuator/health/liveness, port: 9002 }
+            periodSeconds: 5
+            failureThreshold: 36
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 9002 }
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 9002 }
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            # No CPU limit. Throttling a JVM under one shows up as latency with no other
+            # symptom; the request is what the scheduler actually needs, and memory is the
+            # resource where a limit genuinely protects the node.
+            limits: { memory: 1Gi }
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-bank-b
+  namespace: openpay
+  labels:
+    app: mock-bank-b
+spec:
+  selector:
+    app: mock-bank-b
+  ports:
+    - port: 9002
+      targetPort: 9002
+      name: http

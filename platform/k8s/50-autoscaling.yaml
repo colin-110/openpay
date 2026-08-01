@@ -1,0 +1,160 @@
+# Horizontal scaling, and disruption budgets.
+#
+# Only the three services on the synchronous path of a merchant's request scale automatically. The
+# rest are event consumers, and adding replicas to a consumer does nothing until there are more
+# partitions to read — a fact an HPA cannot know, which is why one is not attached to them.
+#
+# provider-router-service is deliberately excluded: its circuit breaker state is per instance, so
+# scaling it out gives each replica its own opinion about which acquirers are healthy.
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: gateway-service
+  namespace: openpay
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: gateway-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # Slow to shrink. A gateway that scales down during a lull in a spiky workload spends the
+      # next spike cold, and a JVM that has just started is the slowest it will ever be.
+      stabilizationWindowSeconds: 300
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: auth-service
+  namespace: openpay
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: auth-service
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: payment-service
+  namespace: openpay
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: payment-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: fraud-service
+  namespace: openpay
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: fraud-service
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # Tighter than the others. This one sits inside payment creation, and payment-service
+          # fails open when it times out — so a slow fraud-service does not show up as errors, it
+          # shows up as unscreened payments.
+          averageUtilization: 60
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+
+# Disruption budgets, so a node drain cannot take a whole service down at once. Only for the
+# services that run more than one replica: a PDB on a single-replica Deployment either blocks
+# drains forever or permits the outage anyway, and neither is worth writing down.
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway-service
+  namespace: openpay
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: gateway-service
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: auth-service
+  namespace: openpay
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: auth-service
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: payment-service
+  namespace: openpay
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: payment-service
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: fraud-service
+  namespace: openpay
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: fraud-service

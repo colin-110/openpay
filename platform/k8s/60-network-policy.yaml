@@ -1,0 +1,96 @@
+# Default deny, then allow what the architecture actually says.
+#
+# Without this, a compromised mock-bank pod can open a connection straight to the payments database,
+# and none of the token tiers matter — they guard HTTP handlers, not sockets. "Internal" is a word
+# about intent; this is the control.
+#
+# Requires a CNI that enforces NetworkPolicy (Calico, Cilium, or similar). On a CNI that ignores
+# them these apply cleanly and do nothing, which is worth knowing before relying on them.
+
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: openpay
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+  # No rules: nothing may connect to anything until something below says so.
+
+---
+# The three services the ingress controller may reach. Everything else is cluster-internal.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-controller
+  namespace: openpay
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [gateway-service, auth-service, webhook-service]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - port: 8080
+        - port: 8081
+        - port: 8084
+
+---
+# Service-to-service HTTP. Any OpenPay pod may call any other OpenPay pod's HTTP port.
+#
+# Deliberately not tightened further. A finer policy would have to encode which service calls which,
+# and that list changes with every feature — a stale allow-list here fails as a mysterious timeout
+# in production, which is a worse failure than the one it prevents. The boundary that matters is
+# the one below: only the application may reach the datastores.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-service-to-service
+  namespace: openpay
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: NotIn
+        values: [postgres, redis, kafka]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+
+---
+# The datastores accept connections from application pods only.
+#
+# This is the rule the whole file exists for. mock-bank pods are excluded by name: they simulate an
+# external party, and an external party has no business reaching the payments database.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-datastore-access
+  namespace: openpay
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: [postgres, redis, kafka]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: NotIn
+                values: [mock-bank-a, mock-bank-b]
+      ports:
+        - port: 5432
+        - port: 6379
+        - port: 9092
+        - port: 9093

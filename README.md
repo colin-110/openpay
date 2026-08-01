@@ -922,6 +922,7 @@ libs/
 platform/
   docker/
   observability/
+  k8s/
 scripts/
 services/
   gateway-service/
@@ -941,7 +942,10 @@ web/
 
 - `services/` keeps deployable applications isolated.
 - `libs/` holds cross-cutting code that multiple services share.
-- `platform/` stores infrastructure assets instead of mixing them with app code.
+- `platform/` stores infrastructure assets instead of mixing them with app code:
+  `docker/` for local Compose, `observability/` for Prometheus, Grafana, Loki and Promtail
+  configuration, and `k8s/` for cluster manifests
+  (see [platform/k8s/README.md](platform/k8s/README.md)).
 - `web/` holds front-end applications, which are API clients rather than services.
 - `scripts/` holds the local run script and the acceptance suite.
 - `docs/` captures architecture decisions.
@@ -984,9 +988,10 @@ Delivered:
   deployment
 - provisioned Grafana dashboards over real business metrics, container logs in Loki, and a test
   that fails when a metric a dashboard queries stops being exported
+- Kubernetes manifests: probes split three ways, network policy that default-denies, and an
+  ingress that publishes three hosts and hides every operator surface
 
 Not yet built (see [docs/roadmap.md](docs/roadmap.md)):
 
 - refresh tokens: a session simply expires and you sign in again
-- Kubernetes manifests
 - any real money movement: the acquirers are simulated, so nothing leaves a database

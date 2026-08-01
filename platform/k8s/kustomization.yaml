@@ -1,0 +1,59 @@
+# Apply order matters: the namespace must exist before anything in it, and the ConfigMap and Secret
+# must exist before a pod that mounts them starts. Kustomize sorts by kind, which gets this right on
+# its own, and the numeric filenames keep it readable for anyone applying them by hand instead.
+#
+#   kubectl apply -k platform/k8s
+#
+# 11-secrets.example.yaml is deliberately not listed. It is a template full of placeholders; see the
+# comment at the top of it for how to create the real Secret.
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: openpay
+
+resources:
+  - 00-namespace.yaml
+  - 10-config.yaml
+  - 20-infrastructure.yaml
+  - 30-services.yaml
+  - 40-ingress.yaml
+  - 50-autoscaling.yaml
+  - 60-network-policy.yaml
+
+commonLabels:
+  app.kubernetes.io/part-of: openpay
+
+# The image tag is a build output, not something to edit by hand in twelve places.
+#
+# The manifests carry `openpay/<service>:${TAG}` as a readable placeholder; this block is what
+# actually sets the tag, because kustomize replaces whatever tag it finds. Change it here, or at
+# deploy time:
+#
+#   kustomize edit set image openpay/payment-service=openpay/payment-service:1.4.2
+#
+# There is no `latest` anywhere, on purpose: a tag that moves makes a rollback a guess about what
+# was running.
+images:
+  - name: openpay/gateway-service
+    newTag: 0.1.0
+  - name: openpay/auth-service
+    newTag: 0.1.0
+  - name: openpay/merchant-service
+    newTag: 0.1.0
+  - name: openpay/payment-service
+    newTag: 0.1.0
+  - name: openpay/webhook-service
+    newTag: 0.1.0
+  - name: openpay/provider-router-service
+    newTag: 0.1.0
+  - name: openpay/ledger-service
+    newTag: 0.1.0
+  - name: openpay/settlement-service
+    newTag: 0.1.0
+  - name: openpay/notification-service
+    newTag: 0.1.0
+  - name: openpay/fraud-service
+    newTag: 0.1.0
+  - name: openpay/mock-bank-service
+    newTag: 0.1.0

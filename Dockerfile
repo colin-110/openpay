@@ -15,6 +15,7 @@ COPY libs/common-observability/pom.xml libs/common-observability/
 COPY libs/common-security/pom.xml libs/common-security/
 COPY libs/common-kafka/pom.xml libs/common-kafka/
 COPY libs/common-outbox/pom.xml libs/common-outbox/
+COPY libs/common-audit/pom.xml libs/common-audit/
 COPY services/gateway-service/pom.xml services/gateway-service/
 COPY services/auth-service/pom.xml services/auth-service/
 COPY services/merchant-service/pom.xml services/merchant-service/
@@ -24,6 +25,7 @@ COPY services/webhook-service/pom.xml services/webhook-service/
 COPY services/ledger-service/pom.xml services/ledger-service/
 COPY services/settlement-service/pom.xml services/settlement-service/
 COPY services/notification-service/pom.xml services/notification-service/
+COPY services/fraud-service/pom.xml services/fraud-service/
 COPY services/mock-bank-service/pom.xml services/mock-bank-service/
 RUN mvn -B -q dependency:go-offline -DskipTests || true
 

@@ -1,0 +1,248 @@
+# PostgreSQL, Redis, and Kafka, sized for a demo cluster.
+#
+# Single replicas with modest volumes. That is a deliberate limit, not an oversight: a real
+# deployment uses a managed database and a managed broker, and pretending otherwise here would mean
+# shipping a StatefulSet that looks production-ready and is not. What these are for is making
+# `kubectl apply -k platform/k8s` produce a working platform on a laptop cluster.
+#
+# See platform/k8s/README.md for what would have to change before this went anywhere real.
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: openpay
+data:
+  # One database per service, because each service owns its schema. Runs once, on an empty volume.
+  001-create-databases.sql: |
+    CREATE DATABASE openpay_auth;
+    CREATE DATABASE openpay_merchant;
+    CREATE DATABASE openpay_payment;
+    CREATE DATABASE openpay_router;
+    CREATE DATABASE openpay_webhook;
+    CREATE DATABASE openpay_ledger;
+    CREATE DATABASE openpay_settlement;
+    CREATE DATABASE openpay_notification;
+    CREATE DATABASE openpay_fraud;
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: openpay
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: openpay
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                configMapKeyRef: { name: openpay-config, key: DB_USERNAME }
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: openpay-secrets, key: DB_PASSWORD }
+            - name: POSTGRES_DB
+              value: postgres
+            # The image refuses to initialise into a non-empty directory, and a mounted volume is
+            # never empty because of lost+found.
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER"]
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+      volumes:
+        - name: init
+          configMap:
+            name: postgres-init
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: openpay
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: openpay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:8-alpine
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }
+      # Redis backs the rate limiter and the login throttle, and both fail open without it. Losing
+      # this pod degrades throttling; it does not stop payments, so no persistent volume is
+      # attached and a restart simply starts the windows again.
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kafka
+  namespace: openpay
+spec:
+  clusterIP: None
+  selector:
+    app: kafka
+  ports:
+    - name: plaintext
+      port: 9092
+      targetPort: 9092
+    - name: controller
+      port: 9093
+      targetPort: 9093
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kafka
+  namespace: openpay
+spec:
+  serviceName: kafka
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kafka
+  template:
+    metadata:
+      labels:
+        app: kafka
+    spec:
+      containers:
+        - name: kafka
+          image: apache/kafka:4.0.0
+          ports:
+            - containerPort: 9092
+            - containerPort: 9093
+          env:
+            - name: KAFKA_NODE_ID
+              value: "1"
+            - name: KAFKA_PROCESS_ROLES
+              value: broker,controller
+            - name: KAFKA_LISTENERS
+              value: PLAINTEXT://:9092,CONTROLLER://:9093
+            # Advertised as the Service name, which is what every client inside the cluster
+            # resolves. A broker that advertises localhost works for exactly one connection and
+            # then hands every consumer an address it cannot reach.
+            - name: KAFKA_ADVERTISED_LISTENERS
+              value: PLAINTEXT://kafka:9092
+            - name: KAFKA_LISTENER_SECURITY_PROTOCOL_MAP
+              value: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+            - name: KAFKA_INTER_BROKER_LISTENER_NAME
+              value: PLAINTEXT
+            - name: KAFKA_CONTROLLER_LISTENER_NAMES
+              value: CONTROLLER
+            - name: KAFKA_CONTROLLER_QUORUM_VOTERS
+              value: 1@kafka-0.kafka:9093
+            # One broker, so nothing can be replicated. Every one of these is a "this is a demo"
+            # setting; a real cluster runs three brokers with a replication factor to match.
+            - name: KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR
+              value: "1"
+            - name: KAFKA_TRANSACTION_STATE_LOG_MIN_ISR
+              value: "1"
+            - name: KAFKA_LOG_DIRS
+              value: /var/lib/kafka/data
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/kafka
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 12
+          resources:
+            requests: { cpu: 200m, memory: 512Mi }
+            limits: { memory: 2Gi }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi

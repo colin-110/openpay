@@ -1,0 +1,37 @@
+# Everything that is not a secret.
+#
+# The services are configured entirely through environment variables, which is what lets the same
+# jar run on a laptop, in Compose, and here without a separate profile. This ConfigMap is the
+# Kubernetes half of that; 11-secrets.example.yaml is the other half.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openpay-config
+  namespace: openpay
+data:
+  DB_HOST: postgres
+  DB_PORT: "5432"
+  DB_USERNAME: openpay
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+
+  AUTH_SERVICE_BASE_URL: http://auth-service:8081
+  MERCHANT_SERVICE_BASE_URL: http://merchant-service:8082
+  PAYMENT_SERVICE_BASE_URL: http://payment-service:8083
+  PROVIDER_ROUTER_BASE_URL: http://provider-router-service:8085
+  SETTLEMENT_SERVICE_BASE_URL: http://settlement-service:8087
+  NOTIFICATION_SERVICE_BASE_URL: http://notification-service:8088
+  FRAUD_SERVICE_BASE_URL: http://fraud-service:8089
+
+  # Webhooks go to real merchant hosts here, so the loopback exemption stays off. Leaving it on
+  # would let a merchant aim the platform at addresses inside this cluster.
+  ALLOW_LOOPBACK_WEBHOOKS: "false"
+
+  # The browser origin the dashboard is served from. No default anywhere in this platform: an unset
+  # origin refuses every cross-origin request rather than trusting one nobody chose.
+  OPENPAY_DASHBOARD_ORIGINS: https://dashboard.openpay.example
+
+  MOCK_BANK_A_URL: http://mock-bank-a:9001
+  MOCK_BANK_B_URL: http://mock-bank-b:9002

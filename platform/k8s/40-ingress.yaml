@@ -1,0 +1,73 @@
+# What is reachable from outside the cluster, and nothing else.
+#
+# Three hosts, and the split matters more than the routing does:
+#
+#   api        -> gateway-service. Merchant traffic. Everything behind it is authenticated by an
+#                 API key or a dashboard session.
+#   auth       -> auth-service, and only /api/v1/auth/login. Login cannot go through the gateway
+#                 because the gateway authenticates every request it proxies, and a person signing
+#                 in has no credential yet.
+#   webhooks   -> webhook-service. Acquirer callbacks. Signature-verified, deduplicated, and the
+#                 only path an external party that is not a merchant can reach.
+#
+# Every other service is deliberately absent. The ledger, the review queue, settlement runs, the
+# routing table, the audit log, and dead-letter replay are all operator surfaces; they are reached
+# through the cluster (kubectl port-forward, or an internal-only ingress), not published to the
+# internet with a shared token in front of them.
+#
+# TLS is terminated here rather than in application code. The audit accepted that as the right
+# place for it; these annotations assume cert-manager, and the class assumes ingress-nginx.
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: openpay
+  namespace: openpay
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # The platform's own rate limiter is per API key and lives in the gateway. This one is per
+    # source address and sits in front of it: they catch different things, and neither replaces
+    # the other.
+    nginx.ingress.kubernetes.io/limit-rps: "50"
+    nginx.ingress.kubernetes.io/proxy-body-size: 1m
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.openpay.example
+        - auth.openpay.example
+        - webhooks.openpay.example
+      secretName: openpay-tls
+  rules:
+    - host: api.openpay.example
+      http:
+        paths:
+          - path: /api/v1
+            pathType: Prefix
+            backend:
+              service:
+                name: gateway-service
+                port: { number: 8080 }
+
+    - host: auth.openpay.example
+      http:
+        paths:
+          # Exactly this path. auth-service also issues API keys and creates dashboard users, and
+          # those live behind the admin token — but publishing the whole service would put them one
+          # guessed token away from the internet rather than inside the cluster.
+          - path: /api/v1/auth/login
+            pathType: Exact
+            backend:
+              service:
+                name: auth-service
+                port: { number: 8081 }
+
+    - host: webhooks.openpay.example
+      http:
+        paths:
+          - path: /internal/provider/webhooks
+            pathType: Prefix
+            backend:
+              service:
+                name: webhook-service
+                port: { number: 8084 }

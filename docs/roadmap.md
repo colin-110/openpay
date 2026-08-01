@@ -25,6 +25,7 @@ Built:
 - `provider_routing_rules` (phase 6), seeded from configuration once and authoritative after that
 - the observability stack (phase 11): provisioned Grafana dashboards, business metrics, and
   container logs shipped to Loki
+- Kubernetes manifests (phase 13) with probes, autoscaling, disruption budgets, and network policy
 
 Still open inside those phases:
 
