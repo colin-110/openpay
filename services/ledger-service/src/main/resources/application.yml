@@ -25,9 +25,11 @@ spring:
 
 openpay:
   security:
-    # The books are platform-operator data, not merchant-facing.
-    admin-token: ${OPENPAY_ADMIN_TOKEN:}
-    admin-paths:
+    # The books are platform-operator data, not merchant-facing. Read-only, so it sits on the ops
+    # tier rather than the admin tier: this credential can be handed to a finance dashboard without
+    # also handing it the power to onboard a merchant or mint an API key.
+    ops-token: ${OPENPAY_OPS_TOKEN:}
+    ops-paths:
       - /api/v1/ledger
 
 server:

@@ -148,4 +148,26 @@ public class SecurityAutoConfiguration {
         registration.addUrlPatterns("/*");
         return registration;
     }
+
+    /**
+     * Operator reporting and administration that does not mint a credential — see the tier
+     * breakdown on {@link AdminTokenFilter}. Guarded by its own secret so it is not the admin
+     * token that ends up embedded in a reporting dashboard or a cron job.
+     */
+    @Bean
+    public FilterRegistrationBean<Filter> opsTokenFilter(SecurityProperties properties, ObjectMapper objectMapper) {
+        if (properties.getOpsPaths().isEmpty()) {
+            return notRegistered();
+        }
+        FilterRegistrationBean<Filter> registration = new FilterRegistrationBean<>();
+        registration.setFilter(new AdminTokenFilter(
+                AdminTokenFilter.OPS_TOKEN_HEADER,
+                "openpay.security.ops-token",
+                properties.getOpsToken(),
+                properties.getOpsPaths(),
+                objectMapper));
+        registration.setOrder(SECURITY_FILTER_ORDER + 3);
+        registration.addUrlPatterns("/*");
+        return registration;
+    }
 }

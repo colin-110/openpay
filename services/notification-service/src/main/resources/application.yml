@@ -26,8 +26,10 @@ spring:
 openpay:
   notification:
     merchant-base-url: ${MERCHANT_SERVICE_BASE_URL:http://localhost:8082}
-    # Used to read a merchant's delivery configuration, which includes their signing secret.
-    admin-token: ${OPENPAY_ADMIN_TOKEN:}
+    # Used to read a merchant's delivery configuration, which includes their signing secret. The
+    # service token, not the admin token: this service makes outbound calls to merchant-controlled
+    # URLs, so it should hold as little platform-wide authority as possible.
+    internal-token: ${OPENPAY_INTERNAL_TOKEN:}
     # Delivering to loopback is refused unless this is on: in development the only reachable test
     # endpoint is on this machine, everywhere else it would mean the platform calling itself.
     allow-loopback-targets: ${ALLOW_LOOPBACK_WEBHOOKS:true}
@@ -46,8 +48,10 @@ openpay:
     auth-base-url: ${AUTH_SERVICE_BASE_URL:http://localhost:8081}
     api-key-paths:
       - /api/v1/webhooks
-    admin-token: ${OPENPAY_ADMIN_TOKEN:}
-    admin-paths:
+    # A read of delivery history, not an action that mints a credential, so it sits on the ops
+    # tier rather than the admin tier.
+    ops-token: ${OPENPAY_OPS_TOKEN:}
+    ops-paths:
       - /internal/webhooks
 
 server:

@@ -33,6 +33,20 @@ public class SecurityProperties {
     /** Request path prefixes that require the internal service token. */
     private List<String> internalPaths = new ArrayList<>();
 
+    /**
+     * Shared secret for platform-operator reporting and administration that does not mint a new
+     * credential: reading the ledger, running or completing a settlement window, viewing delivery
+     * history across merchants. Separate from {@link #adminToken}, which is reserved for actions
+     * that create a business identity or a credential capable of moving money on its own —
+     * onboarding a merchant, issuing an API key, rotating a webhook secret, creating a dashboard
+     * user. A token embedded in a reporting dashboard or a cron job is far more likely to leak than
+     * one used rarely by a human operator, so it should not be able to do those things.
+     */
+    private String opsToken = "";
+
+    /** Request path prefixes that require the ops token. */
+    private List<String> opsPaths = new ArrayList<>();
+
     /** Shared HS256 key for verifying dashboard sessions. Blank disables session auth. */
     private String jwtSecret = "";
 
@@ -101,6 +115,22 @@ public class SecurityProperties {
 
     public void setInternalPaths(List<String> internalPaths) {
         this.internalPaths = internalPaths;
+    }
+
+    public String getOpsToken() {
+        return opsToken;
+    }
+
+    public void setOpsToken(String opsToken) {
+        this.opsToken = opsToken;
+    }
+
+    public List<String> getOpsPaths() {
+        return opsPaths;
+    }
+
+    public void setOpsPaths(List<String> opsPaths) {
+        this.opsPaths = opsPaths;
     }
 
     public List<String> getAllowedOrigins() {

@@ -17,10 +17,21 @@ import org.springframework.web.filter.OncePerRequestFilter;
 /**
  * Guards endpoints behind a shared secret presented in a header.
  *
- * <p>Used twice with different secrets. {@code X-Admin-Token} guards platform-operator endpoints —
- * merchant onboarding, key issuance, the ledger. {@code X-Internal-Token} guards service-to-service
- * endpoints, and is a separate secret on purpose: a service that only needs to read one thing from
- * a peer should not have to hold the credential that opens everything else.
+ * <p>Used three times with three different secrets, each a distinct tier of authority so leaking
+ * one does not leak the others:
+ *
+ * <ul>
+ *   <li>{@code X-Admin-Token} — actions that create a business identity or a credential capable of
+ *       moving money on its own: onboarding a merchant, issuing an API key, rotating a webhook
+ *       secret, creating a dashboard user.
+ *   <li>{@code X-Ops-Token} — platform-operator reporting and administration that does not mint a
+ *       new credential: reading the ledger, closing a settlement window, viewing delivery history
+ *       across merchants. A token this narrow is the one safe to embed in a reporting dashboard or
+ *       a cron job.
+ *   <li>{@code X-Internal-Token} — service-to-service calls, the narrowest tier: a service that
+ *       only needs to read one thing from a peer should not have to hold the credential that opens
+ *       everything else.
+ * </ul>
  *
  * <p>If no token is configured the filter refuses every request rather than allowing them: an
  * unset secret must fail closed.
@@ -28,6 +39,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class AdminTokenFilter extends OncePerRequestFilter {
 
     public static final String ADMIN_TOKEN_HEADER = "X-Admin-Token";
+    public static final String OPS_TOKEN_HEADER = "X-Ops-Token";
     public static final String INTERNAL_TOKEN_HEADER = "X-Internal-Token";
 
     private static final Logger log = LoggerFactory.getLogger(AdminTokenFilter.class);

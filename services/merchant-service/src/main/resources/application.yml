@@ -18,10 +18,17 @@ openpay:
     # A deployment leaves this false so a merchant cannot aim the platform at its own network.
     allow-loopback-webhooks: ${ALLOW_LOOPBACK_WEBHOOKS:true}
   security:
-    # Merchant onboarding and lookup are platform-operator actions, not merchant-facing ones.
+    # Merchant onboarding and key-affecting actions are platform-operator actions, not
+    # merchant-facing ones.
     admin-token: ${OPENPAY_ADMIN_TOKEN:}
     admin-paths:
       - /api/v1/merchants
+    # notification-service reads a merchant's live webhook secret on every delivery attempt. A
+    # credential scoped to exactly that read, rather than the admin token, so the most externally
+    # exposed service does not also hold the keys to onboarding and key issuance.
+    internal-token: ${OPENPAY_INTERNAL_TOKEN:}
+    internal-paths:
+      - /internal/merchants
 
 server:
   port: 8082

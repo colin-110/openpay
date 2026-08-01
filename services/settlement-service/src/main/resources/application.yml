@@ -44,8 +44,11 @@ openpay:
     auth-base-url: ${AUTH_SERVICE_BASE_URL:http://localhost:8081}
     api-key-paths:
       - /api/v1/settlements
-    admin-token: ${OPENPAY_ADMIN_TOKEN:}
-    admin-paths:
+    # Closing a window or marking a payout complete does not mint a credential — it processes
+    # payments that were already captured and already owed — so it sits on the ops tier rather
+    # than the admin tier.
+    ops-token: ${OPENPAY_OPS_TOKEN:}
+    ops-paths:
       - /internal/settlements
 
 server:
