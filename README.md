@@ -232,14 +232,19 @@ Three sections:
 - **Overview** — captured volume, success rate, refunded value, and how many payments are still
   with an acquirer, over the most recent window of traffic. Figures state the window they cover
   rather than implying they cover everything.
-- **Payments** — the full list, filtered by status on the server and paged on the server. Searching
-  takes a whole payment ID, because an ID is a UUID and a substring search is not something the API
-  can honestly answer.
+- **Payments** — the full list, with the method each customer used, filtered by status on the server
+  and paged on the server. Searching takes a whole payment ID, because an ID is a UUID and a
+  substring search is not something the API can honestly answer.
 - **Refunds** — every refund the merchant has issued, newest first, filtered by status.
 
-Selecting a payment opens a detail drawer: summary, an activity timeline built from the timestamps
-the API actually returns, the refunds against it, and the refund action itself. The open payment is
-part of the URL (`#/payments/<id>`), so a link to one payment is a link somebody can send.
+Selecting a payment opens a detail drawer: summary, the acquirer attempts behind it, an activity
+timeline built from the timestamps the API actually returns, the refunds against it, and the refund
+action itself. The open payment is part of the URL (`#/payments/<id>`), so a link to one payment is
+a link somebody can send.
+
+The attempts section is fetched separately from the payment, so a router outage costs that panel
+one section instead of the whole drawer — and it says the attempts could not be read rather than
+showing an empty list.
 
 The console polls every five seconds, because a payment reaches `CAPTURED` on its own a few seconds
 after it is created. The **Live** toggle stops that, since a screen that reorders itself while you
@@ -273,13 +278,60 @@ The session lives in `sessionStorage` and is dropped on a `401`, so an expired t
 rather than leaving an empty table. Amounts are integer minor units end to end; only the display
 layer knows about decimal places.
 
+## Payment Methods
+
+A payment can say how it is being paid:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/payments -H "X-Api-Key: <API_KEY>" -H "Idempotency-Key: order-1002" -H "Content-Type: application/json" -d '{"amount":149900,"currency":"INR","paymentMethod":{"type":"upi","vpa":"colin.thomas@okhdfcbank","token":"tok_live_xyz"}}'
+```
+
+`type` is one of `card`, `upi`, `netbanking`, `wallet`. Everything else is optional, including the
+whole object — an integration that sends only an amount still works, and a payment with no method
+recorded reports that rather than guessing.
+
+**What is kept, and what is not.** `token` is the instrument reference the acquirer needs. It is
+accepted, used, and never written down: a card number, a CVV, or a reusable token has no business
+in a payment row, and the only reason to keep one would be to do something this platform does not
+do. What survives is the minimum needed to recognise a payment on a statement — a network and last
+four digits, or a VPA with its local part masked, so `colin.thomas@okhdfcbank` is stored as
+`co***@okhdfcbank`. The handle after the `@` names the bank, not the customer, so it is kept whole.
+
+## Acquirer Attempts
+
+A payment that succeeded on the second acquirer looks identical to one that succeeded on the first,
+until you ask:
+
+```bash
+curl http://localhost:8080/api/v1/payments/<PAYMENT_ID>/attempts -H "X-Api-Key: <API_KEY>"
+```
+
+```json
+[
+  {"attemptNo": 1, "provider": "mock-bank-a", "status": "FAILED", "providerReference": null, "failureReason": "mock-bank-a call failed"},
+  {"attemptNo": 2, "provider": "mock-bank-b", "status": "ACCEPTED", "providerReference": "mock-bank-b-cade6926", "failureReason": null}
+]
+```
+
+provider-router-service owns this data, so payment-service reads it over HTTP rather than keeping a
+second copy that could disagree with the first. It authorises before it asks: fetching the payment
+throws for a payment belonging to someone else, so the router is only ever queried about payments
+the caller can already see.
+
+When the router is unreachable the endpoint returns `503 attempts_unavailable`. That matters —
+"nothing was tried" and "could not ask" are different answers, and returning an empty list would
+quietly state the wrong one.
+
 ## Endpoints
 
 Merchant-facing, via the gateway on 8080, authenticated with either `X-Api-Key` or a dashboard
 session in `Authorization: Bearer`:
 
-- `POST /api/v1/payments` — create a payment. Requires `Idempotency-Key`.
+- `POST /api/v1/payments` — create a payment. Requires `Idempotency-Key`. Optionally carries a
+  `paymentMethod`.
 - `GET /api/v1/payments/{paymentId}`
+- `GET /api/v1/payments/{paymentId}/attempts` — which acquirers were tried, in order, and why each
+  attempt ended. `503` when provider-router-service cannot be reached, never an empty list.
 - `GET /api/v1/payments?page=0&size=20&status=CAPTURED` — `status` is optional.
 - `POST /api/v1/refunds` — refund a captured payment. Requires `Idempotency-Key`. Omit `amount`
   to refund everything still refundable.
@@ -629,6 +681,8 @@ Delivered:
 - the entire platform containerised and runnable with one command
 - human login with BCrypt password hashing and HS256 sessions, accepted anywhere an API key is
 - a merchant dashboard: sign in, watch payments settle, and issue refunds
+- payment methods captured without keeping anything worth stealing, and per-payment acquirer
+  attempt history
 - CI running unit and integration tests on JDK 21 and 25
 
 Not yet built (see [docs/roadmap.md](docs/roadmap.md)):
