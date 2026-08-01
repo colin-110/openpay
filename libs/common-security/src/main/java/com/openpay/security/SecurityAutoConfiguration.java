@@ -1,6 +1,8 @@
 package com.openpay.security;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.servlet.Filter;
+import java.util.List;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -22,6 +24,20 @@ public class SecurityAutoConfiguration {
     /** Runs just after the correlation-id filter so rejected requests still carry a correlation id. */
     private static final int SECURITY_FILTER_ORDER = Ordered.HIGHEST_PRECEDENCE + 10;
 
+    /**
+     * A registration for a filter this service has not been configured to use.
+     *
+     * <p>The filter itself is a pass-through rather than null: Spring asks every registration to
+     * describe itself at startup <em>before</em> it looks at the enabled flag, and a null filter
+     * there fails the whole web server rather than quietly skipping the registration.
+     */
+    private static FilterRegistrationBean<Filter> notRegistered() {
+        FilterRegistrationBean<Filter> registration = new FilterRegistrationBean<>();
+        registration.setFilter((request, response, chain) -> chain.doFilter(request, response));
+        registration.setEnabled(false);
+        return registration;
+    }
+
     @Bean
     @ConditionalOnMissingBean(AuthServiceClient.class)
     public AuthServiceClient authServiceClient(SecurityProperties properties) {
@@ -41,13 +57,13 @@ public class SecurityAutoConfiguration {
      * made to hold a signing key it never uses.
      */
     @Bean
-    public FilterRegistrationBean<JwtAuthenticationFilter> jwtAuthenticationFilter(
+    public FilterRegistrationBean<Filter> jwtAuthenticationFilter(
             SecurityProperties properties, ObjectMapper objectMapper) {
-        FilterRegistrationBean<JwtAuthenticationFilter> registration = new FilterRegistrationBean<>();
         if (properties.getJwtSecret() == null || properties.getJwtSecret().isBlank()) {
-            registration.setEnabled(false);
-            return registration;
+            return notRegistered();
         }
+
+        FilterRegistrationBean<Filter> registration = new FilterRegistrationBean<>();
         registration.setFilter(new JwtAuthenticationFilter(
                 properties.getJwtSecret(), properties.getApiKeyPaths(), objectMapper));
         // Ahead of the API key filter, which then sees an already-authenticated request.
