@@ -902,9 +902,18 @@ and the decision to try again belongs to whoever knows what was changed.
   the Flyway migrations, and let Hibernate's `ddl-auto: validate` check the entities against the
   real schema.
 
+- **Acceptance suite** (`scripts/e2e.sh`) — real HTTP against a running stack, covering the
+  behaviour no unit test can see: filters, routing, tokens, and the asynchronous flow end to end.
+- **Load and resilience** (`tests/performance/`, k6) — sustained write load, a callback spike, and
+  an acquirer taken out of rotation mid-run.
+
 The integration tests exist because mocked-repository tests cannot see schema mismatches. A `jsonb`
 column bound as `varchar`, and a `CHAR(3)` column mapped as varchar, both passed a fully green unit
 suite and failed at runtime.
+
+The load tests exist for the same reason one level up: `MetricsExposureIT` can prove a metric is
+exported, but only a real run at 200 requests a second shows whether the outbox relay keeps up with
+it.
 
 If Testcontainers reports "Could not find a valid Docker environment" on a recent Docker Desktop,
 the cause is API version negotiation, not a missing daemon. The root `pom.xml` pins
@@ -925,6 +934,8 @@ platform/
   k8s/
 scripts/
 services/
+tests/
+  performance/
   gateway-service/
   auth-service/
   merchant-service/
@@ -948,6 +959,8 @@ web/
   (see [platform/k8s/README.md](platform/k8s/README.md)).
 - `web/` holds front-end applications, which are API clients rather than services.
 - `scripts/` holds the local run script and the acceptance suite.
+- `tests/performance/` holds the k6 load and resilience scenarios
+  (see [tests/performance/README.md](tests/performance/README.md)).
 - `docs/` captures architecture decisions.
 
 ## Status
@@ -990,6 +1003,8 @@ Delivered:
   that fails when a metric a dashboard queries stops being exported
 - Kubernetes manifests: probes split three ways, network policy that default-denies, and an
   ingress that publishes three hosts and hides every operator surface
+- k6 load and resilience scenarios, including one that disables an acquirer mid-run and asserts
+  that acceptance does not move
 
 Not yet built (see [docs/roadmap.md](docs/roadmap.md)):
 

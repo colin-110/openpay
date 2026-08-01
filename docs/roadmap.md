@@ -26,6 +26,7 @@ Built:
 - the observability stack (phase 11): provisioned Grafana dashboards, business metrics, and
   container logs shipped to Loki
 - Kubernetes manifests (phase 13) with probes, autoscaling, disruption budgets, and network policy
+- k6 load and resilience scenarios (phase 14) in `tests/performance/`
 
 Still open inside those phases:
 
