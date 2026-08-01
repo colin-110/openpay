@@ -1,9 +1,7 @@
-package com.openpay.fraud.api;
+package com.openpay.router.api;
 
-import com.openpay.fraud.application.DecisionNotFoundException;
-import com.openpay.fraud.application.InvalidRuleException;
-import com.openpay.fraud.application.ReviewNotOpenException;
-import com.openpay.fraud.application.RuleNotFoundException;
+import com.openpay.router.application.InvalidRoutingRuleException;
+import com.openpay.router.application.RoutingRuleNotFoundException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import java.time.OffsetDateTime;
@@ -18,46 +16,28 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
+/**
+ * This service had no exception handler until the routing table gave it something to refuse.
+ *
+ * <p>Before it, a duplicate rule or an inverted amount band surfaced as a 500 — telling an operator
+ * the platform is broken when what they actually did was send a request it will not accept, which is
+ * the difference between "try again" and "fix your request".
+ */
 @RestControllerAdvice
 public class ApiExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(ApiExceptionHandler.class);
 
-    @ExceptionHandler(DecisionNotFoundException.class)
-    public ResponseEntity<ErrorResponse> handleDecisionNotFound(
-            DecisionNotFoundException exception, HttpServletRequest request) {
-        return build(HttpStatus.NOT_FOUND, "decision_not_found", exception.getMessage(), request);
+    @ExceptionHandler(RoutingRuleNotFoundException.class)
+    public ResponseEntity<ErrorResponse> handleNotFound(
+            RoutingRuleNotFoundException exception, HttpServletRequest request) {
+        return build(HttpStatus.NOT_FOUND, "routing_rule_not_found", exception.getMessage(), request);
     }
 
-    @ExceptionHandler(RuleNotFoundException.class)
-    public ResponseEntity<ErrorResponse> handleRuleNotFound(
-            RuleNotFoundException exception, HttpServletRequest request) {
-        return build(HttpStatus.NOT_FOUND, "rule_not_found", exception.getMessage(), request);
-    }
-
-    @ExceptionHandler(InvalidRuleException.class)
+    @ExceptionHandler(InvalidRoutingRuleException.class)
     public ResponseEntity<ErrorResponse> handleInvalidRule(
-            InvalidRuleException exception, HttpServletRequest request) {
-        return build(HttpStatus.BAD_REQUEST, "invalid_rule", exception.getMessage(), request);
-    }
-
-    /**
-     * Resolving a review that was never open, or was already closed. 409 rather than 400: the
-     * request was fine when the operator loaded the queue, and someone else got there first.
-     *
-     * <p>A dedicated type rather than IllegalStateException, so a genuine internal invariant
-     * failure is still a 500 instead of telling the caller somebody beat them to it.
-     */
-    @ExceptionHandler(ReviewNotOpenException.class)
-    public ResponseEntity<ErrorResponse> handleConflict(
-            ReviewNotOpenException exception, HttpServletRequest request) {
-        return build(HttpStatus.CONFLICT, "review_not_open", exception.getMessage(), request);
-    }
-
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<ErrorResponse> handleIllegalArgument(
-            IllegalArgumentException exception, HttpServletRequest request) {
-        return build(HttpStatus.BAD_REQUEST, "invalid_request", exception.getMessage(), request);
+            InvalidRoutingRuleException exception, HttpServletRequest request) {
+        return build(HttpStatus.BAD_REQUEST, "invalid_routing_rule", exception.getMessage(), request);
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -83,8 +63,8 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleUnexpected(Exception exception, HttpServletRequest request) {
-        // Spring's own MVC exceptions already carry the right status; flattening them to 500 would
-        // turn an unknown path into a fake server error.
+        // Spring's own MVC exceptions already carry the right status; flattening them here would
+        // turn an unknown path into a fabricated server error.
         if (exception instanceof org.springframework.web.ErrorResponse springError) {
             HttpStatusCode status = springError.getStatusCode();
             return build(status, status.is4xxClientError() ? "not_found" : "internal_error",

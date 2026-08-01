@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.openpay.events.OpenPayTopics;
 import com.openpay.fraud.application.FraudService;
 import com.openpay.fraud.application.InvalidRuleException;
+import com.openpay.fraud.application.ReviewNotOpenException;
 import com.openpay.fraud.application.ScreeningRequest;
 import com.openpay.fraud.domain.DecisionOutcome;
 import com.openpay.fraud.domain.FraudDecision;
@@ -130,7 +131,7 @@ class FraudScreeningIT {
         // A second resolution would publish a second release for a payment that has already moved on.
         assertThatThrownBy(() ->
                 fraudService.resolveReview(paymentId, DecisionOutcome.BLOCK, "second@openpay.test"))
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOf(ReviewNotOpenException.class);
     }
 
     @Test
@@ -140,7 +141,7 @@ class FraudScreeningIT {
 
         assertThatThrownBy(() ->
                 fraudService.resolveReview(paymentId, DecisionOutcome.BLOCK, "analyst@openpay.test"))
-                .isInstanceOf(IllegalStateException.class);
+                .isInstanceOf(ReviewNotOpenException.class);
     }
 
     @Test

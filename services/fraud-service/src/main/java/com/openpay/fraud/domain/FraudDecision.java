@@ -1,5 +1,6 @@
 package com.openpay.fraud.domain;
 
+import com.openpay.fraud.application.ReviewNotOpenException;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -84,18 +85,13 @@ public class FraudDecision {
     /**
      * Closes a review.
      *
-     * @throws IllegalStateException if the decision was never a review, or has already been closed.
+     * @throws ReviewNotOpenException if the decision was never a review, or has already been closed.
      *     Both are refused rather than tolerated: a second resolution would publish a second
      *     release event for a payment that has already moved on.
      */
     public void resolve(DecisionOutcome finalOutcome, String operator) {
-        if (outcome != DecisionOutcome.REVIEW) {
-            throw new IllegalStateException(
-                    "Decision for payment " + paymentId + " is " + outcome + ", not a review");
-        }
-        if (resolvedOutcome != null) {
-            throw new IllegalStateException(
-                    "Review for payment " + paymentId + " was already resolved as " + resolvedOutcome);
+        if (outcome != DecisionOutcome.REVIEW || resolvedOutcome != null) {
+            throw new ReviewNotOpenException(paymentId, outcome, resolvedOutcome);
         }
         if (!finalOutcome.isFinal()) {
             throw new IllegalArgumentException("A review must be resolved to ALLOW or BLOCK");
