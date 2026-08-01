@@ -1,25 +1,35 @@
 package com.openpay.settlement.api;
 
+import com.openpay.security.ApiKeyAuthenticationFilter;
+import com.openpay.security.ApiKeyPrincipal;
+import com.openpay.settlement.application.SettlementNotFoundException;
 import com.openpay.settlement.application.SettlementService;
 import com.openpay.settlement.domain.Settlement;
 import com.openpay.settlement.domain.SettlementItem;
-import java.time.LocalDate;
-import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+/**
+ * A merchant's own payouts.
+ *
+ * <p>Read-only, and scoped to the caller's merchant on every query. Closing a window and marking a
+ * payout complete are operator actions and live on {@code /internal/settlements} instead: a
+ * merchant should be able to see when it gets paid without being able to decide when.
+ */
 @RestController
 @RequestMapping("/api/v1/settlements")
 public class SettlementController {
+
+    private static final int MAX_PAGE_SIZE = 100;
 
     private final SettlementService settlementService;
 
@@ -27,31 +37,42 @@ public class SettlementController {
         this.settlementService = settlementService;
     }
 
+    @GetMapping
+    public Map<String, Object> list(
+            @RequestAttribute(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE) ApiKeyPrincipal principal,
+            @RequestParam(name = "page", defaultValue = "0") int page,
+            @RequestParam(name = "size", defaultValue = "20") int size) {
+
+        Pageable pageable = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), MAX_PAGE_SIZE));
+        var found = settlementService.listForMerchant(principal.merchantId(), pageable);
+
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("items", found.map(this::describe).getContent());
+        body.put("page", found.getNumber());
+        body.put("size", found.getSize());
+        body.put("totalItems", found.getTotalElements());
+        body.put("totalPages", found.getTotalPages());
+        return body;
+    }
+
     @GetMapping("/{settlementId}")
-    public Map<String, Object> get(@PathVariable("settlementId") UUID settlementId) {
+    public Map<String, Object> get(
+            @RequestAttribute(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE) ApiKeyPrincipal principal,
+            @PathVariable("settlementId") UUID settlementId) {
+
         Settlement settlement = settlementService.get(settlementId);
+        // Not-found rather than forbidden: another merchant's payout does not exist as far as this
+        // caller is concerned, and saying otherwise confirms it is real.
+        if (!settlement.getMerchantId().equals(principal.merchantId())) {
+            throw new SettlementNotFoundException(settlementId);
+        }
+
         Map<String, Object> body = describe(settlement);
         // The payments behind the payout, which is what makes a settlement auditable.
         body.put("items", settlementService.itemsFor(settlementId).stream()
                 .map(this::describeItem)
                 .toList());
         return body;
-    }
-
-    /** Triggers a run explicitly. Useful for a demo, and how an operator would force a window. */
-    @PostMapping("/run")
-    public List<Map<String, Object>> run(
-            @RequestParam(name = "date", required = false)
-            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate date) {
-        LocalDate settlementDate = date != null ? date : LocalDate.now(ZoneOffset.UTC);
-        return settlementService.runSettlement(settlementDate).stream()
-                .map(this::describe)
-                .toList();
-    }
-
-    @PostMapping("/{settlementId}/complete")
-    public Map<String, Object> complete(@PathVariable("settlementId") UUID settlementId) {
-        return describe(settlementService.complete(settlementId));
     }
 
     private Map<String, Object> describe(Settlement settlement) {

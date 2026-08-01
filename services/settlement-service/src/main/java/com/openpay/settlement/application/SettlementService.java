@@ -19,6 +19,8 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -160,6 +162,18 @@ public class SettlementService {
                 .orElseThrow(() -> new SettlementNotFoundException(settlementId));
         settlement.markCompleted();
         return settlementRepository.save(settlement);
+    }
+
+    /** A merchant's own payouts, newest window first. */
+    @Transactional(readOnly = true)
+    public Page<Settlement> listForMerchant(UUID merchantId, Pageable pageable) {
+        return settlementRepository.findByMerchantIdOrderBySettlementDateDesc(merchantId, pageable);
+    }
+
+    /** Every merchant's payouts. Operator-facing, and never reachable with a merchant credential. */
+    @Transactional(readOnly = true)
+    public Page<Settlement> listAll(Pageable pageable) {
+        return settlementRepository.findAllByOrderBySettlementDateDesc(pageable);
     }
 
     @Transactional(readOnly = true)

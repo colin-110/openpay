@@ -23,7 +23,9 @@ public class ProxyController {
     @RequestMapping({
             "/api/v1/payments/**", "/api/v1/payments",
             "/api/v1/refunds/**", "/api/v1/refunds",
-            "/api/v1/merchants/**", "/api/v1/merchants"})
+            "/api/v1/merchants/**", "/api/v1/merchants",
+            "/api/v1/settlements/**", "/api/v1/settlements",
+            "/api/v1/webhooks/**", "/api/v1/webhooks"})
     public ResponseEntity<byte[]> proxy(
             HttpServletRequest request, @RequestBody(required = false) byte[] body) {
 

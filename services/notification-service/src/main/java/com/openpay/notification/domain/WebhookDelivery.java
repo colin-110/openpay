@@ -118,6 +118,10 @@ public class WebhookDelivery {
         return responseStatus;
     }
 
+    public OffsetDateTime getCreatedAt() {
+        return createdAt;
+    }
+
     public OffsetDateTime getDeliveredAt() {
         return deliveredAt;
     }

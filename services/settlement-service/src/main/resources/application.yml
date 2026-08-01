@@ -38,10 +38,15 @@ openpay:
     scheduled: ${SETTLEMENT_SCHEDULED:true}
     cron: ${SETTLEMENT_CRON:0 0 2 * * *}
   security:
-    # Payouts are platform-operator data.
+    # A merchant reads its own payouts; only an operator closes a window or marks one complete.
+    # The two live on different prefixes so one authentication rule can cover each cleanly.
+    jwt-secret: ${OPENPAY_JWT_SECRET:}
+    auth-base-url: ${AUTH_SERVICE_BASE_URL:http://localhost:8081}
+    api-key-paths:
+      - /api/v1/settlements
     admin-token: ${OPENPAY_ADMIN_TOKEN:}
     admin-paths:
-      - /api/v1/settlements
+      - /internal/settlements
 
 server:
   port: 8087

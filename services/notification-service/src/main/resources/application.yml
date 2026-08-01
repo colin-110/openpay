@@ -37,10 +37,15 @@ openpay:
     batch-size: 50
     poll-interval-ms: 1000
   security:
-    # Delivery history is operator data, not merchant-facing.
+    # A merchant sees its own delivery history, scoped by its credential. The cross-merchant view
+    # is operator-only and sits on /internal, where a query parameter cannot widen the scope.
+    jwt-secret: ${OPENPAY_JWT_SECRET:}
+    auth-base-url: ${AUTH_SERVICE_BASE_URL:http://localhost:8081}
+    api-key-paths:
+      - /api/v1/webhooks
     admin-token: ${OPENPAY_ADMIN_TOKEN:}
     admin-paths:
-      - /api/v1/webhooks
+      - /internal/webhooks
 
 server:
   port: 8088

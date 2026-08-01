@@ -1,18 +1,24 @@
 package com.openpay.notification.api;
 
-import com.openpay.notification.domain.WebhookDelivery;
 import com.openpay.notification.domain.WebhookDeliveryRepository;
+import com.openpay.security.ApiKeyAuthenticationFilter;
+import com.openpay.security.ApiKeyPrincipal;
 import java.util.LinkedHashMap;
-import java.util.List;
 import java.util.Map;
-import java.util.UUID;
+import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestAttribute;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-/** Operational visibility: what was sent, what failed, and why. */
+/**
+ * What the platform sent to this merchant, what failed, and why.
+ *
+ * <p>Scope comes from the credential and cannot be overridden by a parameter. The operator view
+ * that looks across merchants lives on {@code /internal/webhooks} instead.
+ */
 @RestController
 @RequestMapping("/api/v1/webhooks")
 public class DeliveryController {
@@ -26,32 +32,24 @@ public class DeliveryController {
     }
 
     @GetMapping("/deliveries")
-    public List<Map<String, Object>> deliveries(
-            @RequestParam(name = "merchantId", required = false) UUID merchantId,
+    public Map<String, Object> deliveries(
+            @RequestAttribute(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE) ApiKeyPrincipal principal,
             @RequestParam(name = "page", defaultValue = "0") int page,
             @RequestParam(name = "size", defaultValue = "20") int size) {
 
         PageRequest pageable = PageRequest.of(
                 Math.max(page, 0), Math.min(Math.max(size, 1), MAX_PAGE_SIZE));
 
-        return (merchantId == null
-                ? deliveryRepository.findAllByOrderByCreatedAtDesc(pageable)
-                : deliveryRepository.findByMerchantIdOrderByCreatedAtDesc(merchantId, pageable))
-                .map(this::describe)
-                .getContent();
-    }
+        Page<Map<String, Object>> found = deliveryRepository
+                .findByMerchantIdOrderByCreatedAtDesc(principal.merchantId(), pageable)
+                .map(DeliveryView::describe);
 
-    private Map<String, Object> describe(WebhookDelivery delivery) {
-        Map<String, Object> row = new LinkedHashMap<>();
-        row.put("id", delivery.getId());
-        row.put("merchantId", delivery.getMerchantId());
-        row.put("eventType", delivery.getEventType());
-        row.put("status", delivery.getStatus());
-        row.put("attempts", delivery.getAttempts());
-        row.put("responseStatus", delivery.getResponseStatus());
-        row.put("lastError", delivery.getLastError());
-        row.put("nextAttemptAt", delivery.getNextAttemptAt());
-        row.put("deliveredAt", delivery.getDeliveredAt());
-        return row;
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("items", found.getContent());
+        body.put("page", found.getNumber());
+        body.put("size", found.getSize());
+        body.put("totalItems", found.getTotalElements());
+        body.put("totalPages", found.getTotalPages());
+        return body;
     }
 }

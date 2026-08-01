@@ -15,6 +15,8 @@ openpay:
     api-key-paths:
       - /api/v1/payments
       - /api/v1/refunds
+      - /api/v1/settlements
+      - /api/v1/webhooks
       - /api/v1/protected
   gateway:
     connect-timeout: 2s
@@ -27,6 +29,12 @@ openpay:
         target: ${PAYMENT_SERVICE_BASE_URL:http://localhost:8083}
       - path-prefix: /api/v1/merchants
         target: ${MERCHANT_SERVICE_BASE_URL:http://localhost:8082}
+      # A merchant's own payouts and its delivery history: read-only, and owned by the services
+      # that compute them.
+      - path-prefix: /api/v1/settlements
+        target: ${SETTLEMENT_SERVICE_BASE_URL:http://localhost:8087}
+      - path-prefix: /api/v1/webhooks
+        target: ${NOTIFICATION_SERVICE_BASE_URL:http://localhost:8088}
 
 server:
   port: 8080
