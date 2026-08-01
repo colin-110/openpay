@@ -13,6 +13,7 @@ import com.openpay.events.EventCodec;
 import com.openpay.events.OpenPayTopics;
 import com.openpay.router.domain.ProviderTransaction;
 import com.openpay.router.domain.ProviderTransactionRepository;
+import com.openpay.router.domain.RoutingRule;
 import com.openpay.router.infrastructure.ProviderClient;
 import com.openpay.router.infrastructure.ProviderUnavailableException;
 import java.time.Duration;
@@ -44,6 +45,9 @@ class RoutingServiceTest {
     @Mock
     private KafkaTemplate<String, String> kafkaTemplate;
 
+    @Mock
+    private RoutingRuleService routingRuleService;
+
     private RoutingService routingService;
 
     @BeforeEach
@@ -51,8 +55,25 @@ class RoutingServiceTest {
         when(transactionRepository.saveAndFlush(any(ProviderTransaction.class)))
                 .thenAnswer(invocation -> invocation.getArgument(0));
         when(transactionRepository.existsByPaymentId(any(UUID.class))).thenReturn(false);
+        // Candidates come from the routing table now. Stubbed here rather than seeded into a
+        // database, because these tests are about failover and the breaker, not about which rows
+        // match — that is RoutingRuleServiceIT's job.
+        when(routingRuleService.candidatesFor(any(), anyString(), anyLong())).thenReturn(rules());
+        when(routingRuleService.listRules()).thenReturn(rules());
         routingService = new RoutingService(
-                properties(), transactionRepository, providerClient, kafkaTemplate, new EventCodec());
+                properties(), routingRuleService, transactionRepository, providerClient,
+                kafkaTemplate, new EventCodec());
+    }
+
+    @Test
+    void failsThePaymentWhenNoRuleMatchesIt() {
+        when(routingRuleService.candidatesFor(any(), anyString(), anyLong())).thenReturn(List.of());
+
+        routingService.route(PAYMENT_ID, MERCHANT_ID, 10_000L, "USD", "corr-1");
+
+        // A payment nothing can route must still reach a terminal state, or it hangs forever.
+        verify(providerClient, never()).dispatch(anyString(), anyString(), any(), anyLong(), anyString());
+        assertThat(publishedTopics()).contains(OpenPayTopics.PROVIDER_CALLBACK_RECEIVED);
     }
 
     @Test
@@ -138,22 +159,17 @@ class RoutingServiceTest {
         return topicCaptor.getAllValues();
     }
 
+    /** Only the breaker settings now; providers live in the routing table. */
     private RouterProperties properties() {
         RouterProperties properties = new RouterProperties();
         properties.setFailureThreshold(2);
         properties.setBreakerOpenDuration(Duration.ofSeconds(30));
-
-        RouterProperties.Provider a = new RouterProperties.Provider();
-        a.setName("bank-a");
-        a.setBaseUrl("http://bank-a.test");
-        a.setPriority(10);
-
-        RouterProperties.Provider b = new RouterProperties.Provider();
-        b.setName("bank-b");
-        b.setBaseUrl("http://bank-b.test");
-        b.setPriority(20);
-
-        properties.setProviders(List.of(a, b));
         return properties;
+    }
+
+    private List<RoutingRule> rules() {
+        return List.of(
+                new RoutingRule("bank-a", "http://bank-a.test", 10, null, null, null, null),
+                new RoutingRule("bank-b", "http://bank-b.test", 20, null, null, null, null));
     }
 }

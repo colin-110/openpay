@@ -384,6 +384,31 @@ if [ -n "${FRAUD_URL:-}" ]; then
   check "the released payment is routed after the review closes" ALLOWED "$released"
 fi
 
+if [ -n "${ROUTER_URL:-}" ]; then
+  echo "== Routing rules =="
+  # Editing the routing table decides where every payment goes, so it sits behind the admin token
+  # rather than the ops token that covers the rest of this service.
+  check "the routing table refuses an unauthenticated caller" 401 \
+    "$(code "$ROUTER_URL/internal/routing-rules")"
+  check "the routing table refuses the service token" 401 \
+    "$(code "$ROUTER_URL/internal/routing-rules" -H "$INTERNAL_HEADER")"
+  check "an administrator can read the routing table" 200 \
+    "$(code "$ROUTER_URL/internal/routing-rules" -H "$ADMIN_HEADER")"
+  # Seeded from configuration on first start, so an existing deployment routes as it always did.
+  check "the table was seeded with both acquirers" 2 \
+    "$(body "$ROUTER_URL/internal/routing-rules" -H "$ADMIN_HEADER" \
+       | "$PY" -c 'import sys,json;r=json.load(sys.stdin);print(len({x["providerName"] for x in r}))')"
+  check "resolving shows what a payment would be tried against" mock-bank-a \
+    "$(body "$ROUTER_URL/internal/routing-rules/resolve?merchantId=$MID&currency=INR&amount=10000" \
+       -H "$ADMIN_HEADER" | "$PY" -c 'import sys,json;r=json.load(sys.stdin);print(r[0]["providerName"] if r else "none")')"
+  check "two rules with the same scope are refused" 400 \
+    "$(code -X POST "$ROUTER_URL/internal/routing-rules" -H "$ADMIN_HEADER" -H "$JSON" \
+       -d '{"providerName":"mock-bank-a","baseUrl":"http://mock-bank-a:9001","priority":99,"merchantId":null,"currency":null,"minAmount":null,"maxAmount":null}')"
+  check "an inverted amount band is refused" 400 \
+    "$(code -X POST "$ROUTER_URL/internal/routing-rules" -H "$ADMIN_HEADER" -H "$JSON" \
+       -d "{\"providerName\":\"mock-bank-a\",\"baseUrl\":\"http://mock-bank-a:9001\",\"priority\":50,\"merchantId\":\"$MID\",\"currency\":null,\"minAmount\":10000,\"maxAmount\":100}")"
+fi
+
 echo "== Dead letter replay =="
 # Replaying an event mints no credential, so it sits with the ledger on the ops token. The topic
 # list is an allowlist: replay publishes to a topic derived from the request, and accepting an

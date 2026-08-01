@@ -417,6 +417,15 @@ anything in the review queue:
 - `POST /internal/fraud/rules`
 - `POST /internal/fraud/rules/{ruleId}/enable` and `/disable`
 
+Routing rules, also `X-Admin-Token`, for the same kind of reason — editing one decides where every
+payment on the platform goes, including to a base URL of the editor's choosing:
+
+- `GET /internal/routing-rules` — the whole table, in evaluation order.
+- `GET /internal/routing-rules/resolve?merchantId=&currency=&amount=` — what a hypothetical payment
+  would be tried against. The cheapest way to check a change before making it.
+- `POST /internal/routing-rules`
+- `POST /internal/routing-rules/{ruleId}/enable`, `/disable`, and `/priority?priority=`
+
 Every service exposes `/actuator/health`, `/actuator/info`, and `/actuator/prometheus`.
 
 ## Idempotency
@@ -584,6 +593,46 @@ would be the softest place on the platform to steal one from.
 The log is read on the **ops** tier rather than the admin tier, even though most entries are about
 admin actions: investigating an incident should not require holding the credential that could cause
 one. There is no write endpoint at all.
+
+## Routing Rules
+
+Which acquirer gets a payment lives in `provider_routing_rules`, not in `application.yml`. It used
+to be configuration, which meant taking a misbehaving acquirer out of rotation required a
+deployment — a slow answer to an acquirer having a bad afternoon, and the whole point of having two
+is to be able to move.
+
+A rule names a provider, a base URL, and a priority, and can be narrowed three ways: by merchant, by
+currency, and by amount band. All three are nullable, and null means "no opinion" rather than
+"never", so the general case — one rule per acquirer, applying to everything — is what a plain
+deployment has.
+
+**A merchant's own rules replace the general ones rather than merging with them.** Merging was the
+obvious alternative and it is quietly wrong: an operator who pins one merchant to one acquirer
+usually means *and not the other one*, and a merged list would fail over to exactly the acquirer
+they were steering away from. The cost is that a merchant rule must name every acquirer that
+merchant may use — which is the more honest thing to have to write down.
+
+Disabling is not deleting, and it is scoped carefully:
+
+- Disabling a rule stops **new payments** going to that acquirer.
+- It does **not** stop refunds. A refund goes back to whoever holds the money, so `baseUrlFor`
+  resolves disabled rules too. Otherwise taking an acquirer out of rotation would strand every
+  refund against the payments it already took.
+- Disabling a merchant's only override drops them back to the platform defaults rather than taking
+  them offline. Switching a rule off should never be the thing that stops a merchant trading.
+
+Amount bands are half-open — `[min, max)` — so `0–10000` and `10000–null` cover everything exactly
+once, with no gap and no double-match at the boundary.
+
+The table is seeded from `openpay.router.providers` the first time the service starts, so an
+existing deployment comes up routing exactly as it did before. Only when the table is empty: after
+that the table is the source of truth, and re-applying configuration on every boot would silently
+undo an operator's decision to take an acquirer out of rotation — which is the single most likely
+thing to be sitting in this table at 3am.
+
+The table is read on every payment rather than cached. It is one indexed query against a handful of
+rows, next to an HTTP call to a bank, and a cache would mean an operator taking an acquirer out of
+rotation had to wait for a TTL to find out whether it had worked.
 
 ## Risk Screening
 
@@ -869,6 +918,8 @@ Delivered:
   credential
 - dead-letter inspection and replay, so a stuck message is an operator action rather than a console
   producer and a guess
+- routing rules in a table, so taking an acquirer out of rotation is a request rather than a
+  deployment
 
 Not yet built (see [docs/roadmap.md](docs/roadmap.md)):
 

@@ -7,9 +7,9 @@ import com.openpay.events.payload.ProviderCallbackReceived;
 import com.openpay.events.payload.ProviderDispatched;
 import com.openpay.router.domain.ProviderTransaction;
 import com.openpay.router.domain.ProviderTransactionRepository;
+import com.openpay.router.domain.RoutingRule;
 import com.openpay.router.infrastructure.ProviderClient;
 import com.openpay.router.infrastructure.ProviderUnavailableException;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -22,9 +22,11 @@ import org.springframework.stereotype.Service;
 /**
  * Chooses an acquirer for each payment and fails over when one will not take it.
  *
- * <p>Providers are tried in priority order, skipping any whose circuit breaker is open. Each
- * attempt is recorded before the call is made, so a payment that ends up on the second acquirer
- * still shows what was tried first and why it was abandoned.
+ * <p>Candidates come from the {@code provider_routing_rules} table, which is what makes taking an
+ * acquirer out of rotation an operator action rather than a deployment. They are tried in priority
+ * order, skipping any whose circuit breaker is open. Each attempt is recorded before the call is
+ * made, so a payment that ends up on the second acquirer still shows what was tried first and why
+ * it was abandoned.
  */
 @Service
 public class RoutingService {
@@ -32,6 +34,7 @@ public class RoutingService {
     private static final Logger log = LoggerFactory.getLogger(RoutingService.class);
 
     private final RouterProperties properties;
+    private final RoutingRuleService routingRuleService;
     private final ProviderTransactionRepository transactionRepository;
     private final ProviderClient providerClient;
     private final KafkaTemplate<String, String> kafkaTemplate;
@@ -40,11 +43,13 @@ public class RoutingService {
 
     public RoutingService(
             RouterProperties properties,
+            RoutingRuleService routingRuleService,
             ProviderTransactionRepository transactionRepository,
             ProviderClient providerClient,
             KafkaTemplate<String, String> kafkaTemplate,
             EventCodec eventCodec) {
         this.properties = properties;
+        this.routingRuleService = routingRuleService;
         this.transactionRepository = transactionRepository;
         this.providerClient = providerClient;
         this.kafkaTemplate = kafkaTemplate;
@@ -58,41 +63,40 @@ public class RoutingService {
             return;
         }
 
-        List<RouterProperties.Provider> candidates = properties.getProviders().stream()
-                .filter(RouterProperties.Provider::isEnabled)
-                .sorted(Comparator.comparingInt(RouterProperties.Provider::getPriority))
-                .toList();
+        List<RoutingRule> candidates = routingRuleService.candidatesFor(merchantId, currency, amount);
 
         if (candidates.isEmpty()) {
-            failPayment(paymentId, merchantId, "no providers configured", correlationId);
+            // Distinguished from "every acquirer refused it": no rule matched at all, which is a
+            // configuration problem and not an acquirer problem, and the two want different people.
+            failPayment(paymentId, merchantId, "no routing rule matches this payment", correlationId);
             return;
         }
 
         int attemptNo = 0;
-        for (RouterProperties.Provider provider : candidates) {
-            CircuitBreaker breaker = breakerFor(provider.getName());
+        for (RoutingRule rule : candidates) {
+            CircuitBreaker breaker = breakerFor(rule.getProviderName());
             if (!breaker.allowsRequest()) {
                 log.warn("Skipping {} for payment {}: circuit breaker is {}",
-                        provider.getName(), paymentId, breaker.state());
+                        rule.getProviderName(), paymentId, breaker.state());
                 continue;
             }
 
             attemptNo++;
             ProviderTransaction attempt = transactionRepository.saveAndFlush(new ProviderTransaction(
-                    paymentId, merchantId, provider.getName(), attemptNo, amount, currency));
+                    paymentId, merchantId, rule.getProviderName(), attemptNo, amount, currency));
 
             try {
                 String providerReference = providerClient.dispatch(
-                        provider.getName(), provider.getBaseUrl(), paymentId, amount, currency);
+                        rule.getProviderName(), rule.getBaseUrl(), paymentId, amount, currency);
 
                 attempt.markAccepted(providerReference);
                 transactionRepository.save(attempt);
                 breaker.recordSuccess();
 
-                publishDispatched(paymentId, merchantId, provider.getName(),
+                publishDispatched(paymentId, merchantId, rule.getProviderName(),
                         providerReference, attemptNo, correlationId);
                 log.info("Payment {} dispatched to {} as {} on attempt {}",
-                        paymentId, provider.getName(), providerReference, attemptNo);
+                        paymentId, rule.getProviderName(), providerReference, attemptNo);
                 return;
 
             } catch (ProviderUnavailableException exception) {
@@ -100,7 +104,7 @@ public class RoutingService {
                 transactionRepository.save(attempt);
                 breaker.recordFailure();
                 log.warn("Attempt {} on {} failed for payment {} ({} consecutive failures), trying next",
-                        attemptNo, provider.getName(), paymentId, breaker.consecutiveFailures());
+                        attemptNo, rule.getProviderName(), paymentId, breaker.consecutiveFailures());
             }
         }
 
@@ -143,11 +147,19 @@ public class RoutingService {
                 name, properties.getFailureThreshold(), properties.getBreakerOpenDuration()));
     }
 
-    /** Exposed for the admin endpoint and tests. */
+    /**
+     * Exposed for the admin endpoint and tests.
+     *
+     * <p>Keyed off the rules rather than the configuration, so an acquirer added to the table after
+     * startup shows its breaker state without a restart. Distinct providers only: the same acquirer
+     * can appear in several rules and has one breaker.
+     */
     public Map<String, CircuitBreaker.State> breakerStates() {
         Map<String, CircuitBreaker.State> states = new java.util.LinkedHashMap<>();
-        properties.getProviders().forEach(provider ->
-                states.put(provider.getName(), breakerFor(provider.getName()).state()));
+        routingRuleService.listRules().stream()
+                .map(RoutingRule::getProviderName)
+                .distinct()
+                .forEach(name -> states.put(name, breakerFor(name).state()));
         return states;
     }
 }

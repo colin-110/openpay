@@ -22,10 +22,10 @@ Built:
 - `audit_logs` (phase 2) in auth-service and merchant-service, written in their own transaction so
   a refused action is still recorded
 - dead-letter peek, replay, and discard (phase 7) on every consuming service
+- `provider_routing_rules` (phase 6), seeded from configuration once and authoritative after that
 
 Still open inside those phases:
 
-- Phase 6: routing rules are static configuration, not a `provider_routing_rules` table
 - Phase 8: payouts are batched and clear the ledger payable, but no money is actually sent
   anywhere; there is no payout rail
 - Phase 10: complete for webhooks. Email notification is not built; delivery is HTTP only.

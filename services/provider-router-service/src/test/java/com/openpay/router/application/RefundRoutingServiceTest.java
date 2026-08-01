@@ -46,12 +46,31 @@ class RefundRoutingServiceTest {
     @Mock
     private KafkaTemplate<String, String> kafkaTemplate;
 
+    @Mock
+    private RoutingRuleService routingRuleService;
+
     private RefundRoutingService service;
 
     @BeforeEach
     void setUp() {
+        when(routingRuleService.baseUrlFor("bank-a")).thenReturn(Optional.of("http://bank-a.test"));
+        when(routingRuleService.baseUrlFor("bank-b")).thenReturn(Optional.of("http://bank-b.test"));
+        when(routingRuleService.baseUrlFor("bank-retired")).thenReturn(Optional.empty());
         service = new RefundRoutingService(
-                properties(), transactionRepository, providerClient, kafkaTemplate, new EventCodec());
+                routingRuleService, transactionRepository, providerClient, kafkaTemplate, new EventCodec());
+    }
+
+    @Test
+    void refundsStillReachAnAcquirerThatHasBeenTakenOutOfRotation() {
+        // baseUrlFor resolves disabled rules too. Disabling a rule stops new payments going to an
+        // acquirer; it must not strand every refund against the payments it already took.
+        acceptedOn("bank-a", "bank-a-ref-1");
+
+        service.routeRefund(REFUND_ID, PAYMENT_ID, 5_000, "USD", "corr-1");
+
+        verify(providerClient).dispatchRefund(
+                eq("bank-a"), eq("http://bank-a.test"), eq(REFUND_ID), eq(PAYMENT_ID),
+                eq(5_000L), eq("USD"), eq("bank-a-ref-1"));
     }
 
     @Test
@@ -82,7 +101,7 @@ class RefundRoutingServiceTest {
     }
 
     @Test
-    void failsWhenTheOriginalAcquirerIsNoLongerConfigured() {
+    void failsWhenTheOriginalAcquirerIsNotInTheRoutingTableAtAll() {
         acceptedOn("bank-retired", "old-ref");
 
         service.routeRefund(REFUND_ID, PAYMENT_ID, 5_000, "USD", "corr-1");
@@ -119,22 +138,4 @@ class RefundRoutingServiceTest {
         return topic.getValue();
     }
 
-    private RouterProperties properties() {
-        RouterProperties properties = new RouterProperties();
-        properties.setFailureThreshold(3);
-        properties.setBreakerOpenDuration(Duration.ofSeconds(30));
-
-        RouterProperties.Provider a = new RouterProperties.Provider();
-        a.setName("bank-a");
-        a.setBaseUrl("http://bank-a.test");
-        a.setPriority(10);
-
-        RouterProperties.Provider b = new RouterProperties.Provider();
-        b.setName("bank-b");
-        b.setBaseUrl("http://bank-b.test");
-        b.setPriority(20);
-
-        properties.setProviders(List.of(a, b));
-        return properties;
-    }
 }

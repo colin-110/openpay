@@ -29,19 +29,19 @@ public class RefundRoutingService {
     private static final Logger log = LoggerFactory.getLogger(RefundRoutingService.class);
     private static final String ACCEPTED = "ACCEPTED";
 
-    private final RouterProperties properties;
+    private final RoutingRuleService routingRuleService;
     private final ProviderTransactionRepository transactionRepository;
     private final ProviderClient providerClient;
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final EventCodec eventCodec;
 
     public RefundRoutingService(
-            RouterProperties properties,
+            RoutingRuleService routingRuleService,
             ProviderTransactionRepository transactionRepository,
             ProviderClient providerClient,
             KafkaTemplate<String, String> kafkaTemplate,
             EventCodec eventCodec) {
-        this.properties = properties;
+        this.routingRuleService = routingRuleService;
         this.transactionRepository = transactionRepository;
         this.providerClient = providerClient;
         this.kafkaTemplate = kafkaTemplate;
@@ -62,29 +62,29 @@ public class RefundRoutingService {
         }
 
         ProviderTransaction original = accepted.get();
-        Optional<RouterProperties.Provider> provider = properties.getProviders().stream()
-                .filter(candidate -> candidate.getName().equals(original.getProviderName()))
-                .findFirst();
+        String providerName = original.getProviderName();
+        // Disabled rules still resolve. Taking an acquirer out of rotation stops new payments
+        // going to it; it must not strand every refund against the payments it already took.
+        Optional<String> baseUrl = routingRuleService.baseUrlFor(providerName);
 
-        if (provider.isEmpty()) {
-            // The acquirer that took the payment is no longer configured. Failing over is not an
-            // option, so the refund fails loudly rather than going somewhere wrong.
-            failRefund(refundId, paymentId, original.getProviderName(),
-                    "provider " + original.getProviderName() + " is no longer configured", correlationId);
+        if (baseUrl.isEmpty()) {
+            // The acquirer that took the payment is not in the routing table at all. Failing over
+            // is not an option — a refund goes back to whoever holds the money — so this fails
+            // loudly rather than going somewhere wrong.
+            failRefund(refundId, paymentId, providerName,
+                    "provider " + providerName + " is no longer in the routing table", correlationId);
             return;
         }
 
         try {
             providerClient.dispatchRefund(
-                    provider.get().getName(), provider.get().getBaseUrl(), refundId, paymentId,
+                    providerName, baseUrl.get(), refundId, paymentId,
                     amount, currency, original.getProviderReference());
             log.info("Refund {} dispatched to {} against {}",
-                    refundId, provider.get().getName(), original.getProviderReference());
+                    refundId, providerName, original.getProviderReference());
         } catch (ProviderUnavailableException exception) {
-            log.warn("Refund {} could not be dispatched to {}",
-                    refundId, provider.get().getName(), exception);
-            failRefund(refundId, paymentId, provider.get().getName(),
-                    exception.getMessage(), correlationId);
+            log.warn("Refund {} could not be dispatched to {}", refundId, providerName, exception);
+            failRefund(refundId, paymentId, providerName, exception.getMessage(), correlationId);
         }
     }
 

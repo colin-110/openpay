@@ -42,6 +42,13 @@ openpay:
     internal-token: ${OPENPAY_INTERNAL_TOKEN:}
     internal-paths:
       - /internal/router
+    # Editing the routing table decides where every payment on the platform goes — it can send all
+    # traffic to one acquirer, or to a base URL of the editor's choosing. Closer in authority to
+    # issuing a credential than to reading a report, so it sits behind the admin token, and on its
+    # own prefix so it is not also covered by the service-token rule above.
+    admin-token: ${OPENPAY_ADMIN_TOKEN:}
+    admin-paths:
+      - /internal/routing-rules
     # Replaying a dead letter puts a message back into the payment flow. It mints no credential,
     # so it sits with the ledger and settlement runs on the ops tier rather than the admin tier.
     ops-token: ${OPENPAY_OPS_TOKEN:}
