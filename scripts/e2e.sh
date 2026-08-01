@@ -24,6 +24,7 @@ MERCHANT_URL="${MERCHANT_URL:-http://localhost:8082}"
 PAYMENT_URL="${PAYMENT_URL:-http://localhost:8083}"
 # Set to empty to skip the asynchronous provider-flow checks.
 ROUTER_URL="${ROUTER_URL-http://localhost:8085}"
+SETTLEMENT_URL="${SETTLEMENT_URL-http://localhost:8087}"
 WEBHOOK_URL="${WEBHOOK_URL-http://localhost:8084}"
 ADMIN_TOKEN="${OPENPAY_ADMIN_TOKEN:-}"
 
@@ -253,6 +254,28 @@ check "webhook URL on a private range is refused" 400 \
 check "a public https webhook URL is accepted" 201 \
   "$(code -X POST "$MERCHANT_URL/api/v1/merchants" -H "$ADMIN_HEADER" -H "$JSON" \
      -d "{\"merchantCode\":\"$SUFFIX-ssrf3\",\"legalName\":\"S\",\"webhookUrl\":\"https://example.com/hook\",\"defaultCurrency\":\"INR\"}")"
+
+echo "== Merchant-facing reads =="
+# Settlements and delivery history are scoped by the credential, and the operator actions that
+# decide when money moves sit on /internal where a merchant key cannot reach them.
+check "settlements require a credential" 401 "$(code "$GATEWAY_URL/api/v1/settlements")"
+check "a merchant can read its own settlements" 200 \
+  "$(code "$GATEWAY_URL/api/v1/settlements" -H "X-Api-Key: $KEY")"
+check "delivery history requires a credential" 401 "$(code "$GATEWAY_URL/api/v1/webhooks/deliveries")"
+check "a merchant can read its own delivery history" 200 \
+  "$(code "$GATEWAY_URL/api/v1/webhooks/deliveries" -H "X-Api-Key: $KEY")"
+check "a read-only key can read settlements" 200 \
+  "$(code "$GATEWAY_URL/api/v1/settlements" -H "X-Api-Key: $READ_KEY")"
+
+if [ -n "${SETTLEMENT_URL:-}" ]; then
+  check "closing a window needs the admin token" 401 \
+    "$(code -X POST "$SETTLEMENT_URL/internal/settlements/run")"
+  check "an operator can close a window" 200 \
+    "$(code -X POST "$SETTLEMENT_URL/internal/settlements/run" -H "$ADMIN_HEADER")"
+  check "a merchant sees only its own payouts" "$MID" \
+    "$(body "$GATEWAY_URL/api/v1/settlements" -H "X-Api-Key: $KEY" \
+       | "$PY" -c 'import sys,json;i=json.load(sys.stdin)["items"];print(i[0]["merchantId"] if i else "none")')"
+fi
 
 echo "== Gateway routing =="
 # A catch-all exception handler must not turn Spring's own 404 into a fabricated 500.

@@ -26,7 +26,7 @@ events atomically with its own writes).
 
 ## Credentials
 
-Three kinds of caller, three kinds of credential:
+Four kinds of caller, four kinds of credential:
 
 - **Merchant API key** (`X-Api-Key`) — for payment traffic. Issued by auth-service, presented by
   merchants. Merchant identity is derived from the validated key and never read from a
@@ -35,9 +35,16 @@ Three kinds of caller, three kinds of credential:
   `POST /api/v1/auth/login`, accepted on exactly the same paths as an API key. Downstream code
   never learns which of the two was used: a payment read is scoped to a merchant either way.
 - **Admin token** (`X-Admin-Token`) — for platform-operator actions: onboarding merchants,
-  issuing API keys, and creating dashboard users.
+  issuing API keys, creating dashboard users, and closing settlement windows.
+- **Service token** (`X-Internal-Token`) — for service-to-service calls. Separate from the admin
+  token on purpose: a service that reads one thing from a peer should not have to hold the
+  credential that opens everything else.
 
-Neither the admin token nor the JWT secret has a default value. A shipped default would be a
+A credential also carries an **authority** — a key's scope (`payments:read` / `payments:write`) or
+a session's role (`MERCHANT_ADMIN` / `MERCHANT_VIEWER`) — and it is enforced. Read-only credentials
+can see payments but cannot take one or refund one.
+
+None of the admin token, the service token, or the JWT secret has a default value. A shipped default would be a
 publicly known secret, so admin endpoints fail closed until `OPENPAY_ADMIN_TOKEN` is set, and
 auth-service refuses to start unless `OPENPAY_JWT_SECRET` is at least 32 bytes.
 
@@ -184,11 +191,11 @@ Kill `mock-bank-a` and create a payment. The router records a failed attempt aga
 B, and after three consecutive failures stops calling A at all:
 
 ```bash
-curl http://localhost:8085/internal/router/providers
+curl http://localhost:8085/internal/router/providers -H "X-Internal-Token: dev-internal-token"
 ```
 
 ```bash
-curl http://localhost:8085/internal/router/payments/<PAYMENT_ID>/attempts
+curl "http://localhost:8080/api/v1/payments/<PAYMENT_ID>/attempts" -H "X-Api-Key: <API_KEY>"
 ```
 
 Each acquirer can also be made to misbehave on purpose with `BANK_DECLINE_RATE`,
@@ -236,6 +243,11 @@ Three sections:
   and paged on the server. Searching takes a whole payment ID, because an ID is a UUID and a
   substring search is not something the API can honestly answer.
 - **Refunds** — every refund the merchant has issued, newest first, filtered by status.
+- **Settlements** — payouts, with gross, fee and net, and the payments inside each one. Opening a
+  row expands into its line items: a payout is only trustworthy if you can see what it is made of.
+- **Developers** — the integration details, the events the platform sends, and the delivery log.
+  "The webhook never arrived" is the most common integration complaint, and the answer is almost
+  always the response code and error recorded here.
 
 Selecting a payment opens a detail drawer: summary, the acquirer attempts behind it, an activity
 timeline built from the timestamps the API actually returns, the refunds against it, and the refund
@@ -340,6 +352,10 @@ session in `Authorization: Bearer`:
 - `GET /api/v1/refunds?page=0&size=20&status=SUCCEEDED` — every refund the merchant has made,
   newest first. Separate from the by-payment listing because the two answer different questions
   and page differently.
+- `GET /api/v1/settlements?page=0&size=20` — the merchant's own payouts, newest window first.
+- `GET /api/v1/settlements/{settlementId}` — a payout and the payments inside it.
+- `GET /api/v1/webhooks/deliveries?page=0&size=20` — what the platform sent this merchant, what
+  failed, and why. Scope comes from the credential and cannot be widened by a parameter.
 
 Platform-operator, authenticated with `X-Admin-Token`:
 
@@ -364,11 +380,12 @@ Internal, not exposed through the gateway:
   attempt ended.
 - `GET /api/v1/ledger/accounts/{accountCode}/balance` — derived from the journal, admin-gated.
 - `GET /api/v1/ledger/entries?referenceId={paymentId}` — every transaction and both sides of each.
-- `GET /api/v1/settlements/{settlementId}` — a payout and the payments inside it.
-- `POST /api/v1/settlements/run` — close a settlement window explicitly.
+- `GET /internal/settlements` — every merchant's payouts.
+- `POST /internal/settlements/run` — close a settlement window explicitly.
+- `POST /internal/settlements/{settlementId}/complete` — mark a payout paid.
 - `GET /api/v1/merchants/{merchantId}/webhook-config` — delivery URL and signing secret.
 - `POST /api/v1/merchants/{merchantId}/webhook-secret` — rotate the signing secret.
-- `GET /api/v1/webhooks/deliveries` — what was sent, what failed, and why.
+- `GET /internal/webhooks/deliveries?merchantId=` — delivery history across merchants.
 
 Every service exposes `/actuator/health`, `/actuator/info`, and `/actuator/prometheus`.
 
@@ -550,11 +567,11 @@ payout of gross 50000, fee 1000, net 49000 — after which the merchant's payabl
 and the fee appeared in platform revenue.
 
 ```bash
-curl -X POST http://localhost:8087/api/v1/settlements/run -H "X-Admin-Token: dev-admin-token"
+curl -X POST http://localhost:8087/internal/settlements/run -H "X-Admin-Token: dev-admin-token"
 ```
 
 ```bash
-curl http://localhost:8087/api/v1/settlements/<SETTLEMENT_ID> -H "X-Admin-Token: dev-admin-token"
+curl http://localhost:8080/api/v1/settlements/<SETTLEMENT_ID> -H "X-Api-Key: <API_KEY>"
 ```
 
 ## Merchant Webhooks
@@ -595,7 +612,7 @@ Failed deliveries are retried on exponential backoff up to a cap, then marked `A
 than deleted: a merchant who never got told has to stay findable.
 
 ```bash
-curl "http://localhost:8088/api/v1/webhooks/deliveries?merchantId=<ID>" -H "X-Admin-Token: dev-admin-token"
+curl "http://localhost:8080/api/v1/webhooks/deliveries" -H "X-Api-Key: <API_KEY>"
 ```
 
 ## Event Delivery
@@ -683,6 +700,9 @@ Delivered:
 - a merchant dashboard: sign in, watch payments settle, and issue refunds
 - payment methods captured without keeping anything worth stealing, and per-payment acquirer
   attempt history
+- credential authority actually enforced: a read-only key or viewer session can read but not move
+  money (see [docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md))
+- merchant-facing settlements and webhook delivery history, split from the operator views
 - CI running unit and integration tests on JDK 21 and 25
 
 Not yet built (see [docs/roadmap.md](docs/roadmap.md)):
