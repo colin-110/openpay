@@ -12,13 +12,17 @@ import org.springframework.web.client.RestClient;
  * on the next attempt instead of after a cache expiry. If merchant-service is unreachable the
  * delivery simply fails and retries, which is the behaviour we already need for a merchant whose
  * own endpoint is down.
+ *
+ * <p>Authenticated with the service token, not the admin token. This is the service that makes
+ * arbitrary outbound HTTP calls to merchant-controlled URLs, so it is the last place that should
+ * hold a credential that also onboards merchants and issues API keys.
  */
 public class MerchantConfigClient {
 
-    private static final String ADMIN_TOKEN_HEADER = "X-Admin-Token";
+    private static final String INTERNAL_TOKEN_HEADER = "X-Internal-Token";
 
     private final RestClient restClient;
-    private final String adminToken;
+    private final String internalToken;
 
     public MerchantConfigClient(NotificationProperties properties) {
         SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
@@ -28,13 +32,13 @@ public class MerchantConfigClient {
                 .baseUrl(properties.getMerchantBaseUrl())
                 .requestFactory(factory)
                 .build();
-        this.adminToken = properties.getAdminToken();
+        this.internalToken = properties.getInternalToken();
     }
 
     public MerchantWebhookConfig fetch(UUID merchantId) {
         return restClient.get()
-                .uri("/api/v1/merchants/{merchantId}/webhook-config", merchantId)
-                .header(ADMIN_TOKEN_HEADER, adminToken)
+                .uri("/internal/merchants/{merchantId}/webhook-config", merchantId)
+                .header(INTERNAL_TOKEN_HEADER, internalToken)
                 .retrieve()
                 .body(MerchantWebhookConfig.class);
     }

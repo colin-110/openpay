@@ -41,12 +41,6 @@ public class MerchantController {
         return merchantService.getMerchant(merchantId);
     }
 
-    /** Internal: carries a live signing secret, so it is admin-gated like everything else here. */
-    @GetMapping("/{merchantId}/webhook-config")
-    public WebhookConfigResponse webhookConfig(@PathVariable("merchantId") UUID merchantId) {
-        return merchantService.getWebhookConfig(merchantId);
-    }
-
     @PostMapping("/{merchantId}/webhook-secret")
     public WebhookConfigResponse rotateWebhookSecret(@PathVariable("merchantId") UUID merchantId) {
         return merchantService.rotateWebhookSecret(merchantId);

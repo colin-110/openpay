@@ -8,8 +8,12 @@ public class NotificationProperties {
 
     private String merchantBaseUrl = "http://localhost:8082";
 
-    /** Shared platform secret, used to read a merchant's delivery configuration. */
-    private String adminToken = "";
+    /**
+     * Service-to-service secret, used to read a merchant's delivery configuration. Not the
+     * platform admin token: this service makes outbound calls to merchant-controlled URLs, so it
+     * should hold as little platform-wide authority as possible.
+     */
+    private String internalToken = "";
 
     /**
      * Attempts before a delivery is abandoned. Merchants' endpoints go down for hours, so this is
@@ -37,12 +41,12 @@ public class NotificationProperties {
         this.merchantBaseUrl = merchantBaseUrl;
     }
 
-    public String getAdminToken() {
-        return adminToken;
+    public String getInternalToken() {
+        return internalToken;
     }
 
-    public void setAdminToken(String adminToken) {
-        this.adminToken = adminToken;
+    public void setInternalToken(String internalToken) {
+        this.internalToken = internalToken;
     }
 
     public int getMaxAttempts() {
