@@ -16,6 +16,7 @@ architecture, distributed systems patterns, and production engineering practices
 | `ledger-service` | 8086 | `openpay_ledger` | Double-entry journal. Append-only, enforced by the database. |
 | `settlement-service` | 8087 | `openpay_settlement` | Accrues payables on capture and batches them into merchant payouts. |
 | `notification-service` | 8088 | `openpay_notification` | Delivers signed webhooks to merchants, with retries and a delivery log. |
+| `fraud-service` | 8089 | `openpay_fraud` | Screens payments against rules held in a table, and owns the review queue. |
 | `mock-bank-service` | 9001 / 9002 | — | Simulated acquirers. One codebase, run twice as `mock-bank-a` and `mock-bank-b`. |
 
 Shared code lives in `libs/`: `common-observability` (correlation IDs), `common-security`
@@ -113,7 +114,7 @@ containerised stack and the Maven workflow below coexist without reconfiguration
 
 ### 5. Or run services from Maven against Dockerised infrastructure (Windows)
 
-Eleven processes in eleven terminals is enough friction to stop anyone actually running this, so
+Twelve processes in twelve terminals is enough friction to stop anyone actually running this, so
 there is a helper. It checks that infrastructure is up, launches each service in its own window,
 and waits until all of them report healthy:
 
@@ -175,6 +176,10 @@ export MOCK_BANK_B_SECRET=bank-b-secret
 
 ```bash
 ./mvnw -pl services/settlement-service -am spring-boot:run
+```
+
+```bash
+./mvnw -pl services/fraud-service -am spring-boot:run
 ```
 
 The two acquirers are the same module run twice with different configuration:
@@ -396,6 +401,17 @@ Operator reporting and administration, authenticated with `X-Ops-Token`:
 - `GET /internal/webhooks/deliveries?merchantId=` — delivery history across merchants.
 - `GET /api/v1/ledger/entries?referenceId={paymentId}` — every transaction and both sides of each.
 - `GET /api/v1/ledger/accounts/{accountCode}/balance` — derived from the journal.
+- `GET /internal/fraud/reviews?merchantId=` — payments held by screening, oldest first.
+- `POST /internal/fraud/reviews/{paymentId}/resolve` — release or refuse a held payment.
+- `GET /internal/fraud/decisions/{paymentId}` — why one payment was judged the way it was.
+
+Risk rules, authenticated with `X-Admin-Token` rather than the ops token, because someone who can
+edit a rule can lower a threshold, let one payment through, and raise it again without leaving
+anything in the review queue:
+
+- `GET /internal/fraud/rules` — every rule, disabled ones included, in evaluation order.
+- `POST /internal/fraud/rules`
+- `POST /internal/fraud/rules/{ruleId}/enable` and `/disable`
 
 Every service exposes `/actuator/health`, `/actuator/info`, and `/actuator/prometheus`.
 
@@ -415,6 +431,10 @@ Creating a payment returns immediately with `CREATED`. Everything after that hap
 
 ```text
 POST /api/v1/payments
+  └─> risk screening, synchronously, before anything is written
+        ├─ BLOCK  ──> 422, nothing persisted
+        ├─ REVIEW ──> payment stored as HELD, no event published, nothing routed
+        └─ ALLOW  ──> continue
   └─> payment row + outbox row committed in ONE transaction
         └─> relay publishes payment.created.v1
               └─> provider-router picks an acquirer by priority, skipping any
@@ -528,6 +548,71 @@ settle                              payout gross 70000  <- deficit absorbed
 A negative payable is a receivable, not a bug: the merchant was paid for money they have since
 given back. Paying out a negative amount is meaningless, and zeroing it would quietly write off
 money owed, so the items stay pending and reduce the next payout instead.
+
+## Risk Screening
+
+Every payment is screened before it is written, by a synchronous call to fraud-service. The gate
+returns one of three answers and payment-service acts on each differently:
+
+| Answer | What the merchant sees | What the platform does |
+| --- | --- | --- |
+| `ALLOW` | `201 Created` | Publishes `payment.created.v1`; routing proceeds |
+| `REVIEW` | `201 Created`, `fraudStatus: HELD` | Persists the payment and publishes **nothing** |
+| `BLOCK` | `422 payment_blocked` | Persists nothing at all |
+
+A held payment is the interesting case. Withholding `payment.created.v1` is what stops it: routing
+is driven entirely by that event, so a payment nobody has announced has not been offered to any
+acquirer. When an operator closes the review, fraud-service publishes `fraud.check-completed.v1`,
+payment-service consumes it, and the withheld event is published then — routing starts exactly as
+it would have. A refused review fails the payment through the same transition path as any other
+failure, so the ledger and the merchant's webhooks see a shape they already understand.
+
+Releasing through an event rather than a callback is deliberate: an operator's decision survives
+payment-service being down at the moment they click the button, and is retried until it lands.
+
+### Rules are data
+
+Rules live in `fraud_rules`, not in code. Risk thresholds are exactly the thing that needs changing
+at 2am during a card-testing run, and a threshold you cannot change without a deployment is a
+threshold you will not change.
+
+Three rule types, each evaluable from one indexed query — the constraint that keeps the gate fast
+enough to sit in the write path:
+
+- `AMOUNT_OVER` — amount above a threshold, in minor units. Requires a currency: 5,000,000 paise
+  and 5,000,000 cents are not the same policy, and the API refuses a rule that conflates them.
+- `VELOCITY_COUNT` — more than N payments from one merchant inside a window.
+- `REPEATED_AMOUNT` — more than N payments *of the same amount* inside a window. That is the card
+  testing signature: the instrument varies, the amount does not.
+
+Evaluation is first match in priority order, not most-severe-wins. Most-severe would make the
+policy invisible — you could no longer tell what a payment would do without simulating every rule.
+First match means the table reads top to bottom, and the cost of a bad ordering is a `BLOCK` rule
+shadowed by a `REVIEW` rule, which `GET /internal/fraud/rules` shows you.
+
+Rules are disabled, never deleted. A deleted rule takes with it the only explanation for every
+decision that cites it, which is also why `fraud_decisions` stores the rule's name rather than a
+foreign key to it.
+
+### When screening is down
+
+payment-service fails **open** by default, and records the payment as `UNSCREENED` rather than
+`ALLOWED`. Failing closed would mean one unhealthy risk service stops every merchant on the
+platform from taking money — an outage caused by the thing meant to prevent losses. Failing open is
+a bounded, insurable cost, and the distinct status means the window is visible afterwards instead
+of being indistinguishable from a clean pass. Set `FRAUD_FAIL_OPEN=false` to stop taking payments
+instead.
+
+### The review queue
+
+`GET /internal/fraud/reviews` returns open reviews oldest first. Oldest first because a queue
+worked newest-first starves its tail, and the payment at the tail is somebody's customer waiting at
+a checkout. `openpay_fraud_open_reviews` is exported as a gauge for exactly that reason: the
+question worth alerting on is how many are waiting right now.
+
+Resolving a review records who did it, and keeps the original judgement alongside the resolution.
+How a payment was first judged and what an operator decided about it are two different facts, and
+overwriting the first with the second destroys the only record that a review ever happened.
 
 ## Settlement
 
@@ -674,6 +759,7 @@ services/
   ledger-service/
   settlement-service/
   notification-service/
+  fraud-service/
   mock-bank-service/
 web/
   dashboard/
@@ -714,12 +800,12 @@ Delivered:
   money (see [docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md))
 - merchant-facing settlements and webhook delivery history, split from the operator views
 - CI running unit and integration tests on JDK 21 and 25
+- rule-based risk screening in the payment write path, with a review queue and a release that
+  survives payment-service being down
 
 Not yet built (see [docs/roadmap.md](docs/roadmap.md)):
 
-- audit logs, and roles that actually restrict anything — `MERCHANT_VIEWER` is recorded but not
-  yet enforced
+- audit logs
 - refresh tokens: a session simply expires and you sign in again
-- fraud screening
 - Kubernetes manifests
 - any real money movement: the acquirers are simulated, so nothing leaves a database

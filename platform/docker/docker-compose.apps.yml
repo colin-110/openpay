@@ -42,6 +42,7 @@ x-service-defaults: &service-defaults
     PROVIDER_ROUTER_BASE_URL: http://provider-router-service:8085
     SETTLEMENT_SERVICE_BASE_URL: http://settlement-service:8087
     NOTIFICATION_SERVICE_BASE_URL: http://notification-service:8088
+    FRAUD_SERVICE_BASE_URL: http://fraud-service:8089
 
 x-healthcheck: &app-healthcheck
   interval: 10s
@@ -107,6 +108,9 @@ services:
       postgres: {condition: service_healthy}
       kafka: {condition: service_healthy}
       auth-service: {condition: service_healthy}
+      # Not strictly required — payment-service fails open and records the payment as UNSCREENED —
+      # but a stack that comes up with a window of unscreened traffic is a bad default for a demo.
+      fraud-service: {condition: service_healthy}
     healthcheck:
       <<: *app-healthcheck
       test: ["CMD-SHELL", "curl -fsS http://localhost:8083/actuator/health || exit 1"]
@@ -215,6 +219,26 @@ services:
     healthcheck:
       <<: *app-healthcheck
       test: ["CMD-SHELL", "curl -fsS http://localhost:8088/actuator/health || exit 1"]
+
+  fraud-service:
+    <<: *service-defaults
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        MODULE: services/fraud-service
+        ARTIFACT: fraud-service
+    container_name: openpay-fraud-service
+    environment:
+      <<: *common-env
+      DB_NAME: openpay_fraud
+    ports: ["8089:8089"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      kafka: {condition: service_healthy}
+    healthcheck:
+      <<: *app-healthcheck
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8089/actuator/health || exit 1"]
 
   gateway-service:
     <<: *service-defaults

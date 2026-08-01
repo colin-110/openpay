@@ -17,11 +17,12 @@ Built:
 - `provider-router-service` (phase 6) with priority routing, failover, and a circuit breaker
 - `webhook-service` (phase 10's inbound half) with HMAC verification and deduplication
 - transactional outbox and Kafka event backbone (the core of phase 7)
+- `fraud-service` (phase 9) gating the payment write path, with database-held rules and a
+  review queue
 
 Still open inside those phases:
 
-- Phase 2: `users`, `audit_logs`, and `POST /api/v1/auth/login`
-- Phase 3: `POST /api/v1/refunds`
+- Phase 2: `audit_logs`
 - Phase 6: routing rules are static configuration, not a `provider_routing_rules` table
 - Phase 7: DLQ topics exist, but there is no replay tool; messages land there and must be
   re-published by hand

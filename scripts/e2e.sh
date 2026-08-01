@@ -26,6 +26,7 @@ PAYMENT_URL="${PAYMENT_URL:-http://localhost:8083}"
 ROUTER_URL="${ROUTER_URL-http://localhost:8085}"
 SETTLEMENT_URL="${SETTLEMENT_URL-http://localhost:8087}"
 WEBHOOK_URL="${WEBHOOK_URL-http://localhost:8084}"
+FRAUD_URL="${FRAUD_URL-http://localhost:8089}"
 ADMIN_TOKEN="${OPENPAY_ADMIN_TOKEN:-}"
 
 if [ -z "$ADMIN_TOKEN" ]; then
@@ -81,6 +82,7 @@ echo "Merchant $MERCHANT_URL"
 echo "Payment  $PAYMENT_URL"
 echo "Router   ${ROUTER_URL:-<skipped>}"
 echo "Webhook  ${WEBHOOK_URL:-<skipped>}"
+echo "Fraud    ${FRAUD_URL:-<skipped>}"
 echo
 
 echo "== Admin gating =="
@@ -332,6 +334,55 @@ check "cross-merchant delivery history refuses the admin token" 401 \
   "$(code "http://localhost:8088/internal/webhooks/deliveries" -H "$ADMIN_HEADER")"
 check "cross-merchant delivery history accepts the ops token" 200 \
   "$(code "http://localhost:8088/internal/webhooks/deliveries" -H "$OPS_HEADER")"
+
+if [ -n "${FRAUD_URL:-}" ]; then
+  echo "== Risk screening =="
+  # Three tiers on one service, because the three things it does carry three different authorities.
+  check "the gate refuses an unauthenticated caller" 401 \
+    "$(code -X POST "$FRAUD_URL/internal/fraud/checks" -H "$JSON" \
+       -d "{\"paymentId\":\"$PID\",\"merchantId\":\"$MID\",\"amount\":100,\"currency\":\"INR\"}")"
+  check "the review queue refuses the admin token" 401 \
+    "$(code "$FRAUD_URL/internal/fraud/reviews" -H "$ADMIN_HEADER")"
+  check "the review queue accepts the ops token" 200 \
+    "$(code "$FRAUD_URL/internal/fraud/reviews" -H "$OPS_HEADER")"
+  # Editing a rule is standing policy, so it sits with the credential-minting actions.
+  check "rule editing refuses the ops token" 401 \
+    "$(code "$FRAUD_URL/internal/fraud/rules" -H "$OPS_HEADER")"
+  check "rule editing accepts the admin token" 200 \
+    "$(code "$FRAUD_URL/internal/fraud/rules" -H "$ADMIN_HEADER")"
+  check "a velocity rule with no window is refused" 400 \
+    "$(code -X POST "$FRAUD_URL/internal/fraud/rules" -H "$ADMIN_HEADER" -H "$JSON" \
+       -d "{\"name\":\"$SUFFIX-nowindow\",\"ruleType\":\"VELOCITY_COUNT\",\"threshold\":5,\"windowSeconds\":null,\"currency\":null,\"action\":\"REVIEW\",\"priority\":99}")"
+
+  # The gate in the payment path, end to end. The seeded rules block anything over 5,00,000 rupees
+  # and hold anything over 50,000 for review.
+  check "a payment over the block threshold is refused" 422 \
+    "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" \
+       -H "Idempotency-Key: $SUFFIX-blocked" -H "$JSON" -d '{"amount":90000000,"currency":"INR"}')"
+
+  HELD_ID=$(body -X POST "$GATEWAY_URL/api/v1/payments" -H "$KEY_HEADER" \
+    -H "Idempotency-Key: $SUFFIX-held" -H "$JSON" -d '{"amount":9000000,"currency":"INR"}' | jget id)
+  check "a payment over the review threshold is held" HELD \
+    "$(body "$GATEWAY_URL/api/v1/payments/$HELD_ID" -H "$KEY_HEADER" | jget fraudStatus)"
+  # Held means held: nothing was published, so no acquirer has seen it and it stays CREATED.
+  check "a held payment is not routed" CREATED \
+    "$(body "$GATEWAY_URL/api/v1/payments/$HELD_ID" -H "$KEY_HEADER" | jget status)"
+
+  check "an operator can release it" 200 \
+    "$(code -X POST "$FRAUD_URL/internal/fraud/reviews/$HELD_ID/resolve" -H "$OPS_HEADER" -H "$JSON" \
+       -d '{"outcome":"ALLOW","resolvedBy":"e2e"}')"
+  check "resolving the same review twice is refused" 409 \
+    "$(code -X POST "$FRAUD_URL/internal/fraud/reviews/$HELD_ID/resolve" -H "$OPS_HEADER" -H "$JSON" \
+       -d '{"outcome":"BLOCK","resolvedBy":"e2e"}')"
+
+  released=""
+  for _ in $(seq 1 40); do
+    released=$(body "$GATEWAY_URL/api/v1/payments/$HELD_ID" -H "$KEY_HEADER" | jget fraudStatus)
+    [ "$released" = "ALLOWED" ] && break
+    sleep 1
+  done
+  check "the released payment is routed after the review closes" ALLOWED "$released"
+fi
 
 echo "== Gateway routing =="
 # A catch-all exception handler must not turn Spring's own 404 into a fabricated 500.

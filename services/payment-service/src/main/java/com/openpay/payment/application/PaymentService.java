@@ -10,12 +10,15 @@ import com.openpay.payment.api.PagedResponse;
 import com.openpay.payment.api.PaymentMethodRequest;
 import com.openpay.payment.api.PaymentMethodView;
 import com.openpay.payment.api.PaymentResponse;
+import com.openpay.payment.domain.FraudStatus;
 import com.openpay.payment.domain.Payment;
 import com.openpay.payment.domain.PaymentEvent;
 import com.openpay.payment.domain.PaymentEventRepository;
 import com.openpay.payment.domain.PaymentMethod;
 import com.openpay.payment.domain.PaymentRepository;
 import com.openpay.payment.domain.PaymentStatus;
+import com.openpay.payment.infrastructure.FraudScreeningClient;
+import com.openpay.payment.infrastructure.FraudScreeningClient.ScreeningOutcome;
 import com.openpay.outbox.OutboxWriter;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -42,16 +45,19 @@ public class PaymentService {
     private final PaymentEventRepository paymentEventRepository;
     private final OutboxWriter outboxWriter;
     private final ObjectMapper objectMapper;
+    private final FraudScreeningClient fraudScreeningClient;
 
     public PaymentService(
             PaymentRepository paymentRepository,
             PaymentEventRepository paymentEventRepository,
             OutboxWriter outboxWriter,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            FraudScreeningClient fraudScreeningClient) {
         this.paymentRepository = paymentRepository;
         this.paymentEventRepository = paymentEventRepository;
         this.outboxWriter = outboxWriter;
         this.objectMapper = objectMapper;
+        this.fraudScreeningClient = fraudScreeningClient;
     }
 
     @Transactional
@@ -61,27 +67,56 @@ public class PaymentService {
 
         Optional<Payment> existing = paymentRepository.findByMerchantIdAndIdempotencyKey(merchantId, idempotencyKey);
         if (existing.isPresent()) {
+            // A replay is answered from what was stored. Screening is not re-run: the first
+            // decision is the decision, and fraud-service would return it unchanged anyway.
             return new PaymentResult(replay(existing.get(), idempotencyKey, fingerprint), false);
+        }
+
+        // The id is minted here rather than by the database so screening can be keyed on it before
+        // anything is written. That is what makes the gate idempotent across a retried creation.
+        UUID paymentId = UUID.randomUUID();
+        PaymentMethod method = toPaymentMethod(request.paymentMethod());
+        ScreeningOutcome screening = fraudScreeningClient.screen(
+                paymentId,
+                merchantId,
+                request.amount(),
+                request.currency().toUpperCase(),
+                method == null ? null : method.getType());
+
+        if (screening.status() == FraudStatus.BLOCKED) {
+            // Nothing is persisted. A refused payment is not a payment that happened, and storing
+            // one would put a FAILED row in every merchant's list for traffic they never took.
+            // The decision itself is recorded — in fraud-service, which owns it.
+            log.info("Refusing payment for merchantId={} on rule '{}'", merchantId, screening.ruleName());
+            throw new PaymentBlockedException(screening.ruleName());
         }
 
         try {
             Payment payment = paymentRepository.saveAndFlush(new Payment(
-                    UUID.randomUUID(),
+                    paymentId,
                     merchantId,
                     idempotencyKey,
                     fingerprint,
                     request.amount(),
                     request.currency(),
-                    toPaymentMethod(request.paymentMethod())));
+                    method,
+                    screening.status()));
 
             recordEvent(payment, "PAYMENT_CREATED");
 
-            // Same transaction as the payment row: the event cannot escape without the payment,
-            // and the payment cannot commit without the event.
-            outboxWriter.append(AGGREGATE_TYPE, OpenPayTopics.PAYMENT_CREATED, payment.getId(), new PaymentCreated(
-                    payment.getId(), payment.getMerchantId(), payment.getAmount(), payment.getCurrency()));
+            if (payment.isHeld()) {
+                // Deliberately no PAYMENT_CREATED event. Publishing it is what starts routing, and
+                // a payment held for review must not reach an acquirer. The release path is
+                // FraudDecisionListener, driven by fraud.check-completed.v1.
+                log.info("Holding payment id={} for review on rule '{}'", paymentId, screening.ruleName());
+            } else {
+                // Same transaction as the payment row: the event cannot escape without the payment,
+                // and the payment cannot commit without the event.
+                outboxWriter.append(AGGREGATE_TYPE, OpenPayTopics.PAYMENT_CREATED, payment.getId(), new PaymentCreated(
+                        payment.getId(), payment.getMerchantId(), payment.getAmount(), payment.getCurrency()));
+                log.info("Created payment id={} merchantId={}", payment.getId(), merchantId);
+            }
 
-            log.info("Created payment id={} merchantId={}", payment.getId(), merchantId);
             return new PaymentResult(toResponse(payment), true);
         } catch (DataIntegrityViolationException exception) {
             // A concurrent request won the unique constraint on (merchant_id, idempotency_key).
@@ -155,6 +190,60 @@ public class PaymentService {
         return true;
     }
 
+    /**
+     * Applies a screening outcome that arrived after the payment was created.
+     *
+     * <p>The only thing that releases a held payment. An {@code ALLOW} publishes the
+     * {@code PAYMENT_CREATED} event that creation withheld, so routing starts exactly as it would
+     * have; a {@code BLOCK} fails the payment.
+     *
+     * <p>Tolerant of redelivery, like the other consumers: {@code fraud.check-completed.v1} carries
+     * every decision, including the ones creation already acted on, so most deliveries here are
+     * about payments that were never held. Those are a no-op rather than an error.
+     *
+     * @return true if the payment actually moved
+     */
+    @Transactional
+    public boolean applyScreeningOutcome(UUID paymentId, boolean allowed, String reason) {
+        Payment payment = paymentRepository.findById(paymentId).orElse(null);
+        if (payment == null) {
+            // A blocked payment was never persisted, so its completion event refers to nothing.
+            // Expected, not an error.
+            log.debug("Screening outcome for unknown payment {}, nothing to release", paymentId);
+            return false;
+        }
+        if (!payment.isHeld()) {
+            log.debug("Payment {} is {}, not held; ignoring screening outcome",
+                    paymentId, payment.getFraudStatus());
+            return false;
+        }
+
+        payment.resolveScreening(allowed ? FraudStatus.ALLOWED : FraudStatus.BLOCKED);
+
+        if (allowed) {
+            recordEvent(payment, "PAYMENT_RELEASED");
+            outboxWriter.append(AGGREGATE_TYPE, OpenPayTopics.PAYMENT_CREATED, payment.getId(), new PaymentCreated(
+                    payment.getId(), payment.getMerchantId(), payment.getAmount(), payment.getCurrency()));
+            log.info("Released payment {} after review; routing will now start", paymentId);
+        } else {
+            // Goes through the same transition path as any other failure, so the ledger and the
+            // merchant's webhooks see a refused payment in the shape they already understand.
+            PaymentStatus current = payment.getStatus();
+            payment.transitionTo(PaymentStatus.FAILED);
+            recordEvent(payment, "PAYMENT_FAILED");
+            outboxWriter.append(AGGREGATE_TYPE, OpenPayTopics.PAYMENT_STATUS_UPDATED, payment.getId(),
+                    new PaymentStatusUpdated(
+                            payment.getId(),
+                            payment.getMerchantId(),
+                            current.name(),
+                            PaymentStatus.FAILED.name(),
+                            payment.getAmount(),
+                            payment.getCurrency()));
+            log.info("Failed payment {} after review: {}", paymentId, reason);
+        }
+        return true;
+    }
+
     private PaymentResponse replay(Payment stored, String idempotencyKey, String fingerprint) {
         if (stored.getRequestFingerprint() != null && !stored.getRequestFingerprint().equals(fingerprint)) {
             throw new IdempotencyKeyConflictException(idempotencyKey);
@@ -222,6 +311,7 @@ public class PaymentService {
                                 method.getLast4(),
                                 method.getVpa(),
                                 method.getBank()),
+                payment.getFraudStatus(),
                 payment.getCreatedAt(),
                 payment.getUpdatedAt());
     }

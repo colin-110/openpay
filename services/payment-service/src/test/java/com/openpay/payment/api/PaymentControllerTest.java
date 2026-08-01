@@ -17,6 +17,7 @@ import com.openpay.payment.application.PaymentResult;
 import com.openpay.payment.infrastructure.AttemptsUnavailableException;
 import com.openpay.payment.infrastructure.ProviderRouterClient;
 import com.openpay.payment.application.PaymentService;
+import com.openpay.payment.domain.FraudStatus;
 import com.openpay.payment.domain.PaymentStatus;
 import com.openpay.security.ApiKeyAuthenticationFilter;
 import com.openpay.security.ApiKeyPrincipal;
@@ -257,6 +258,7 @@ class PaymentControllerTest {
                 10_000L,
                 "USD",
                 null,
+                FraudStatus.ALLOWED,
                 OffsetDateTime.now(),
                 OffsetDateTime.now());
     }

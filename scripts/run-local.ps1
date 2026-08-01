@@ -37,7 +37,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$ports = @(8080, 8081, 8082, 8083, 8084, 8085, 8086, 8087, 8088, 9001, 9002)
+$ports = @(8080, 8081, 8082, 8083, 8084, 8085, 8086, 8087, 8088, 8089, 9001, 9002)
 
 if ($Stop) {
     foreach ($port in $ports) {
@@ -79,6 +79,7 @@ $services = @(
     @{ Name = "ledger";   Module = "services/ledger-service";   Env = @{} },
     @{ Name = "settlement"; Module = "services/settlement-service"; Env = @{} },
     @{ Name = "notification"; Module = "services/notification-service"; Env = @{} },
+    @{ Name = "fraud";    Module = "services/fraud-service";    Env = @{} },
     @{ Name = "gateway";  Module = "services/gateway-service";  Env = @{} },
     @{ Name = "bank-a";   Module = "services/mock-bank-service";
        Env = @{ BANK_NAME = "mock-bank-a"; BANK_PORT = "9001"; BANK_SIGNING_SECRET = $BankASecret } },

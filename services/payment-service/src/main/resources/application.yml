@@ -35,6 +35,13 @@ openpay:
     # Read-only, and only when a merchant opens one payment: the router owns its attempt history
     # and this service asks rather than keeping a second copy of it.
     base-url: ${PROVIDER_ROUTER_BASE_URL:http://localhost:8085}
+  fraud:
+    base-url: ${FRAUD_SERVICE_BASE_URL:http://localhost:8089}
+    # What to do when screening cannot be reached. Open by default: refusing every payment on the
+    # platform because the risk service is unhealthy is a larger, self-inflicted outage than the
+    # losses it would prevent. Payments that go through this way are recorded as UNSCREENED rather
+    # than ALLOWED, so the window is visible afterwards. Set false to stop taking payments instead.
+    fail-open: ${FRAUD_FAIL_OPEN:true}
   outbox:
     relay-enabled: true
     poll-interval-ms: 500

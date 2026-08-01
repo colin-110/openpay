@@ -47,6 +47,10 @@ public class Payment {
     @Embedded
     private PaymentMethod paymentMethod;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "fraud_status", nullable = false, length = 20)
+    private FraudStatus fraudStatus;
+
     @Version
     @Column(nullable = false)
     private Integer version;
@@ -68,7 +72,8 @@ public class Payment {
             String requestFingerprint,
             Long amount,
             String currency,
-            PaymentMethod paymentMethod) {
+            PaymentMethod paymentMethod,
+            FraudStatus fraudStatus) {
         this.id = id;
         this.merchantId = merchantId;
         this.idempotencyKey = idempotencyKey;
@@ -79,6 +84,7 @@ public class Payment {
         // rather than a row of blanks pretending to be a method.
         this.paymentMethod = paymentMethod == null || paymentMethod.isEmpty() ? null : paymentMethod;
         this.status = PaymentStatus.CREATED;
+        this.fraudStatus = fraudStatus;
         this.createdAt = OffsetDateTime.now();
         this.updatedAt = this.createdAt;
     }
@@ -113,6 +119,28 @@ public class Payment {
 
     public PaymentStatus getStatus() {
         return status;
+    }
+
+    public FraudStatus getFraudStatus() {
+        return fraudStatus;
+    }
+
+    /** True while the payment is waiting on a human and has not been announced for routing. */
+    public boolean isHeld() {
+        return fraudStatus == FraudStatus.HELD;
+    }
+
+    /**
+     * Records the outcome of screening after the fact — when a review is closed, which is the only
+     * time a payment's fraud status changes after creation.
+     */
+    public void resolveScreening(FraudStatus resolved) {
+        if (fraudStatus != FraudStatus.HELD) {
+            throw new IllegalStateException(
+                    "Payment " + id + " is " + fraudStatus + ", not held for review");
+        }
+        this.fraudStatus = resolved;
+        this.updatedAt = OffsetDateTime.now();
     }
 
     public Integer getVersion() {

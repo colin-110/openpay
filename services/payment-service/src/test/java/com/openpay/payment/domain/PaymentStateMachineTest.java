@@ -104,6 +104,7 @@ class PaymentStateMachineTest {
 
     private Payment payment() {
         return new Payment(
-                UUID.randomUUID(), UUID.randomUUID(), "key-1", "fingerprint", 1_000L, "USD", null);
+                UUID.randomUUID(), UUID.randomUUID(), "key-1", "fingerprint", 1_000L, "USD",
+                null, FraudStatus.ALLOWED);
     }
 }

@@ -1,6 +1,9 @@
 package com.openpay.payment;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.when;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.openpay.payment.api.CreatePaymentRequest;
@@ -8,6 +11,9 @@ import com.openpay.payment.api.CreateRefundRequest;
 import com.openpay.payment.api.RefundResponse;
 import com.openpay.payment.application.IdempotencyKeyConflictException;
 import com.openpay.payment.application.PaymentService;
+import com.openpay.payment.domain.FraudStatus;
+import com.openpay.payment.infrastructure.FraudScreeningClient;
+import com.openpay.payment.infrastructure.FraudScreeningClient.ScreeningOutcome;
 import com.openpay.payment.application.RefundNotAllowedException;
 import com.openpay.payment.application.RefundResult;
 import com.openpay.payment.application.RefundService;
@@ -15,10 +21,12 @@ import com.openpay.payment.domain.PaymentStatus;
 import com.openpay.payment.domain.RefundStatus;
 import com.openpay.outbox.OutboxRepository;
 import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -33,6 +41,16 @@ class RefundIT {
     @Container
     @ServiceConnection
     static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:15-alpine");
+
+    /** Stubbed so these tests exercise refunds, not the screening fallback. */
+    @MockitoBean
+    private FraudScreeningClient fraudScreeningClient;
+
+    @BeforeEach
+    void screeningAllowsEverything() {
+        when(fraudScreeningClient.screen(any(), any(), anyLong(), any(), any()))
+                .thenReturn(new ScreeningOutcome(FraudStatus.ALLOWED, null, null));
+    }
 
     @Autowired
     private PaymentService paymentService;

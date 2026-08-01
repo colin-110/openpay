@@ -56,3 +56,8 @@ scrape_configs:
     metrics_path: /actuator/prometheus
     static_configs:
       - targets: ["host.docker.internal:8088"]
+
+  - job_name: fraud-service
+    metrics_path: /actuator/prometheus
+    static_configs:
+      - targets: ["host.docker.internal:8089"]

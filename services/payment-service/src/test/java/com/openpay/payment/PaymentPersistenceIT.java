@@ -2,6 +2,9 @@ package com.openpay.payment;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -13,21 +16,27 @@ import com.openpay.payment.api.PaymentResponse;
 import com.openpay.payment.application.IdempotencyKeyConflictException;
 import com.openpay.payment.application.PaymentResult;
 import com.openpay.payment.application.PaymentService;
+import com.openpay.payment.domain.FraudStatus;
 import com.openpay.payment.domain.Payment;
 import com.openpay.payment.domain.PaymentEvent;
 import com.openpay.payment.domain.PaymentEventRepository;
 import com.openpay.payment.domain.PaymentRepository;
 import com.openpay.payment.domain.PaymentStatus;
+import com.openpay.payment.infrastructure.FraudScreeningClient;
+import com.openpay.payment.infrastructure.FraudScreeningClient.ScreeningOutcome;
 import com.openpay.outbox.OutboxEvent;
 import com.openpay.outbox.OutboxRepository;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.data.domain.PageRequest;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -54,6 +63,14 @@ class PaymentPersistenceIT {
     @ServiceConnection
     static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:15-alpine");
 
+    /**
+     * Stubbed rather than left to fail open against a fraud-service that is not running. Relying on
+     * a connection being refused would make these tests assert the fallback instead of the write
+     * path they exist to cover.
+     */
+    @MockitoBean
+    private FraudScreeningClient fraudScreeningClient;
+
     @Autowired
     private PaymentService paymentService;
 
@@ -65,6 +82,57 @@ class PaymentPersistenceIT {
 
     @Autowired
     private OutboxRepository outboxRepository;
+
+    @BeforeEach
+    void screeningAllowsEverythingUnlessATestSaysOtherwise() {
+        when(fraudScreeningClient.screen(any(), any(), anyLong(), any(), any()))
+                .thenReturn(new ScreeningOutcome(FraudStatus.ALLOWED, null, null));
+    }
+
+    @Test
+    void aHeldPaymentSurvivesARoundTripAndIsReleasedByAReview() {
+        UUID merchantId = UUID.randomUUID();
+        when(fraudScreeningClient.screen(any(), any(), anyLong(), any(), any()))
+                .thenReturn(new ScreeningOutcome(FraudStatus.HELD, "high-value-payment", "too big"));
+
+        UUID paymentId = paymentService.createPayment(
+                merchantId, "it-held-1", new CreatePaymentRequest(90_000_00L, "INR", null)).payment().id();
+
+        Payment stored = paymentRepository.findById(paymentId).orElseThrow();
+        assertThat(stored.getFraudStatus()).isEqualTo(FraudStatus.HELD);
+        assertThat(routingEventsFor(paymentId)).isEmpty();
+
+        assertThat(paymentService.applyScreeningOutcome(paymentId, true, null)).isTrue();
+
+        // The event creation withheld is published now, and only now.
+        assertThat(paymentRepository.findById(paymentId).orElseThrow().getFraudStatus())
+                .isEqualTo(FraudStatus.ALLOWED);
+        assertThat(routingEventsFor(paymentId)).hasSize(1);
+    }
+
+    @Test
+    void aReviewedBlockFailsThePaymentWithoutEverRoutingIt() {
+        UUID merchantId = UUID.randomUUID();
+        when(fraudScreeningClient.screen(any(), any(), anyLong(), any(), any()))
+                .thenReturn(new ScreeningOutcome(FraudStatus.HELD, "high-value-payment", "too big"));
+
+        UUID paymentId = paymentService.createPayment(
+                merchantId, "it-held-2", new CreatePaymentRequest(90_000_00L, "INR", null)).payment().id();
+
+        paymentService.applyScreeningOutcome(paymentId, false, "operator said no");
+
+        Payment stored = paymentRepository.findById(paymentId).orElseThrow();
+        assertThat(stored.getStatus()).isEqualTo(PaymentStatus.FAILED);
+        assertThat(stored.getFraudStatus()).isEqualTo(FraudStatus.BLOCKED);
+        assertThat(routingEventsFor(paymentId)).isEmpty();
+    }
+
+    private List<OutboxEvent> routingEventsFor(UUID paymentId) {
+        return outboxRepository.findAll().stream()
+                .filter(event -> event.getTopic().equals(OpenPayTopics.PAYMENT_CREATED))
+                .filter(event -> event.getAggregateId().equals(paymentId.toString()))
+                .toList();
+    }
 
     @Test
     void persistsAPaymentAndItsJsonbEvent() throws Exception {

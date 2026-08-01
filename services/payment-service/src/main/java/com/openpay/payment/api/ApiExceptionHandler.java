@@ -1,11 +1,13 @@
 package com.openpay.payment.api;
 
 import com.openpay.payment.application.IdempotencyKeyConflictException;
+import com.openpay.payment.application.PaymentBlockedException;
 import com.openpay.payment.application.PaymentNotFoundException;
 import com.openpay.payment.application.RefundNotAllowedException;
 import com.openpay.payment.application.RefundNotFoundException;
 import com.openpay.payment.domain.InvalidPaymentTransitionException;
 import com.openpay.payment.infrastructure.AttemptsUnavailableException;
+import com.openpay.payment.infrastructure.ScreeningUnavailableException;
 import com.openpay.security.InsufficientAuthorityException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
@@ -63,6 +65,23 @@ public class ApiExceptionHandler {
         // 503 rather than an empty list. "No attempts recorded" and "could not ask" are different
         // answers, and a payments console showing the first when it means the second is misleading.
         return build(HttpStatus.SERVICE_UNAVAILABLE, "attempts_unavailable", exception.getMessage(), request);
+    }
+
+    @ExceptionHandler(PaymentBlockedException.class)
+    public ResponseEntity<ErrorResponse> handlePaymentBlocked(
+            PaymentBlockedException exception, HttpServletRequest request) {
+        // 422 rather than 403: the credential was fine and the request was well formed. This
+        // particular payment is the thing being refused.
+        log.info("Refused a payment on risk rule '{}'", exception.getRuleName());
+        return build(HttpStatus.UNPROCESSABLE_ENTITY, "payment_blocked", exception.getMessage(), request);
+    }
+
+    @ExceptionHandler(ScreeningUnavailableException.class)
+    public ResponseEntity<ErrorResponse> handleScreeningUnavailable(
+            ScreeningUnavailableException exception, HttpServletRequest request) {
+        // Only reachable when the deployment has chosen to fail closed. 503 with a retryable
+        // meaning, because the payment may well be fine once screening is back.
+        return build(HttpStatus.SERVICE_UNAVAILABLE, "screening_unavailable", exception.getMessage(), request);
     }
 
     @ExceptionHandler(IdempotencyKeyConflictException.class)

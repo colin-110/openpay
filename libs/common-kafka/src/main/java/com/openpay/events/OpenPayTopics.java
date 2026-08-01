@@ -32,6 +32,18 @@ public final class OpenPayTopics {
     /** A provider reported the outcome of a refund. Keyed by refund id. */
     public static final String REFUND_CALLBACK_RECEIVED = "refund.callback-received.v1";
 
+    /** A payment was screened for risk. Keyed by payment id. */
+    public static final String FRAUD_CHECK_REQUESTED = "fraud.check-requested.v1";
+
+    /**
+     * Screening reached a final answer for a payment. Keyed by payment id.
+     *
+     * <p>Published for every decision, including the ones the caller already received synchronously.
+     * A held payment is released by this event and nothing else, so the topic is the single
+     * mechanism rather than a special case bolted onto the review queue.
+     */
+    public static final String FRAUD_CHECK_COMPLETED = "fraud.check-completed.v1";
+
     private OpenPayTopics() {
     }
 }
