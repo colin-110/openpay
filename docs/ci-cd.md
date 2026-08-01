@@ -47,7 +47,7 @@ a syntax error in it is a gap in coverage that looks like a passing build.
 
 ### `images`
 
-Twelve container images to GHCR, **on pushes to `main` only**. Building them on every pull request
+Eleven container images to GHCR, **on pushes to `main` only**. Building them on every pull request
 costs minutes and produces artifacts nobody deploys.
 
 Tagged with the commit SHA, never `latest`. A tag that moves makes a rollback a guess about what was

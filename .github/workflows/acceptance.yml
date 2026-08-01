@@ -2,7 +2,7 @@ name: Acceptance
 
 # The full platform, running, exercised over real HTTP.
 #
-# Separate from the CI pipeline because it costs minutes rather than seconds: it builds twelve
+# Separate from the CI pipeline because it costs minutes rather than seconds: it builds eleven
 # images, starts them with their infrastructure, waits for every health check, and then runs the
 # acceptance suite against the result. That is too slow to sit in front of every pull request, and
 # too valuable to skip — it is the only thing here that tests the filters, the token tiers, and the

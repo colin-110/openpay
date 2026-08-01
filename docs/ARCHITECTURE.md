@@ -16,7 +16,7 @@ Diagrams for all of this live in [docs/diagrams/](diagrams/), and the decisions 
 
 ## 1. The shape of the system
 
-Twelve processes, ten databases, one Kafka cluster. Every service owns its schema outright; no
+Twelve processes, nine databases, one Kafka cluster. Every service owns its schema outright; no
 service reads another's tables. Anything one service needs from another it gets over HTTP (when it
 needs an answer now) or from Kafka (when it needs to know something happened).
 

@@ -20,7 +20,7 @@ flowchart TB
         end
 
         subgraph apps["docker-compose.apps.yml — services"]
-            services["11 services<br/>:8080-:8089, :9001, :9002"]
+            services["12 processes<br/>:8080-:8089, :9001, :9002"]
         end
 
         maven["…or the same services<br/>from Maven, on the host"]

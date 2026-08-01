@@ -10,7 +10,7 @@ flowchart TB
     acquirer["Acquiring bank<br/><i>simulated as mock-bank-a / -b</i>"]
 
     subgraph openpay["OpenPay"]
-        platform["Payment platform<br/><i>11 services</i>"]
+        platform["Payment platform<br/><i>11 services, 12 processes</i>"]
     end
 
     merchant -->|"POST /api/v1/payments<br/>X-Api-Key"| platform
