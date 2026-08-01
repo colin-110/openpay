@@ -2,6 +2,7 @@ package com.openpay.auth.api;
 
 import com.openpay.auth.application.ApiKeyService;
 import com.openpay.auth.application.UserService;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.net.URI;
 import org.springframework.http.ResponseEntity;
@@ -35,8 +36,29 @@ public class AuthController {
 
     /** Human login. Public by design: it is how a session begins. */
     @PostMapping("/auth/login")
-    public LoginResponse login(@Valid @RequestBody LoginRequest request) {
-        return userService.login(request);
+    public LoginResponse login(@Valid @RequestBody LoginRequest request, HttpServletRequest httpRequest) {
+        return userService.login(request, sourceIp(httpRequest));
+    }
+
+    /**
+     * The caller's address, for the per-source half of the login throttle.
+     *
+     * <p>Reads {@code X-Forwarded-For} because in every real deployment this sits behind a proxy
+     * and the socket address would otherwise be the proxy's, collapsing every user in the world
+     * into one bucket. Only the first hop is taken — the rest of the header is client-supplied and
+     * trivially forged.
+     *
+     * <p>The header itself is forgeable when nothing strips it at the edge, which is a real
+     * weakness of this budget: an attacker can rotate the value and get a fresh source bucket each
+     * time. It is a defence in depth on top of the per-account budget, not a substitute for it,
+     * and the ingress is the right place to make the header trustworthy.
+     */
+    private String sourceIp(HttpServletRequest request) {
+        String forwarded = request.getHeader("X-Forwarded-For");
+        if (forwarded != null && !forwarded.isBlank()) {
+            return forwarded.split(",")[0].trim();
+        }
+        return request.getRemoteAddr();
     }
 
     /** Creating a dashboard user is a platform-operator action, like issuing an API key. */

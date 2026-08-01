@@ -11,6 +11,10 @@ spring:
       ddl-auto: validate
   flyway:
     enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
 
 openpay:
   merchant:
@@ -22,8 +26,10 @@ openpay:
     issuer: openpay
   security:
     # Login is called by the dashboard directly rather than through the gateway, so this service
-    # answers cross-origin requests too.
-    allowed-origins: ${OPENPAY_DASHBOARD_ORIGINS:http://localhost:5173}
+    # answers cross-origin requests too. Empty by default, so a deployment that forgets to name
+    # its origin answers none at all rather than silently trusting a developer's laptop.
+    # scripts/run-local.ps1 sets it for local work.
+    allowed-origins: ${OPENPAY_DASHBOARD_ORIGINS:}
     # Issuing a credential is a platform-operator action. Empty by default: a shipped default
     # would be a publicly known secret, so admin paths fail closed until this is set.
     admin-token: ${OPENPAY_ADMIN_TOKEN:}
@@ -35,6 +41,13 @@ openpay:
   auth:
     max-failed-validations: 20
     failed-validation-window: PT1M
+    # Two budgets on login. Per-account is tight, because a person retrying their own password a
+    # dozen times in fifteen minutes has already stopped guessing. Per-source is much looser: a
+    # shared office IP or a NAT gateway legitimately produces many failures from many people, and
+    # setting it near the per-account number would lock out a whole building.
+    max-failed-logins: ${MAX_FAILED_LOGINS:10}
+    max-failed-logins-per-source: ${MAX_FAILED_LOGINS_PER_SOURCE:50}
+    failed-login-window: ${FAILED_LOGIN_WINDOW:PT15M}
     last-used-refresh-interval: PT5M
 
 server:
@@ -50,6 +63,12 @@ management:
     health:
       probes:
         enabled: true
+  health:
+    # The attempt limiter fails open on a Redis outage rather than blocking logins, so losing
+    # Redis degrades throttling, not the ability to sign in. Reporting auth-service as DOWN for
+    # that would be a false alarm.
+    redis:
+      enabled: false
 
 logging:
   pattern:

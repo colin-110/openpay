@@ -10,11 +10,13 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.util.HexFormat;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,17 +34,23 @@ public class ApiKeyService {
     private final MerchantServiceClient merchantServiceClient;
     private final ApiKeyUsageTracker usageTracker;
     private final ValidationAttemptLimiter attemptLimiter;
+    private final int maxFailedValidations;
+    private final Duration failedValidationWindow;
     private final SecureRandom secureRandom = new SecureRandom();
 
     public ApiKeyService(
             ApiKeyRepository apiKeyRepository,
             MerchantServiceClient merchantServiceClient,
             ApiKeyUsageTracker usageTracker,
-            ValidationAttemptLimiter attemptLimiter) {
+            ValidationAttemptLimiter attemptLimiter,
+            @Value("${openpay.auth.max-failed-validations:20}") int maxFailedValidations,
+            @Value("${openpay.auth.failed-validation-window:PT1M}") Duration failedValidationWindow) {
         this.apiKeyRepository = apiKeyRepository;
         this.merchantServiceClient = merchantServiceClient;
         this.usageTracker = usageTracker;
         this.attemptLimiter = attemptLimiter;
+        this.maxFailedValidations = maxFailedValidations;
+        this.failedValidationWindow = failedValidationWindow;
     }
 
     @Transactional
@@ -87,11 +95,11 @@ public class ApiKeyService {
     @Transactional(readOnly = true)
     public ValidateApiKeyResponse validateKey(String apiKey) {
         String keyPrefix = extractPrefix(apiKey);
-        attemptLimiter.checkAllowed(keyPrefix);
+        attemptLimiter.checkAllowed(keyPrefix, maxFailedValidations);
 
         ApiKey entity = apiKeyRepository.findByKeyPrefix(keyPrefix).orElse(null);
         if (entity == null || !constantTimeEquals(entity.getKeyHash(), hash(apiKey))) {
-            attemptLimiter.recordFailure(keyPrefix);
+            attemptLimiter.recordFailure(keyPrefix, failedValidationWindow);
             // Same message whether the prefix is unknown or the secret is wrong: distinguishing
             // them would tell an attacker when they have found a real prefix.
             throw new InvalidApiKeyException("API key is invalid");

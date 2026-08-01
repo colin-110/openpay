@@ -3,6 +3,10 @@ package com.openpay.auth.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -38,17 +42,24 @@ class ApiKeyServiceTest {
     @Mock
     private ApiKeyUsageTracker usageTracker;
 
+    private final ValidationAttemptLimiter attemptLimiter = mock(ValidationAttemptLimiter.class);
+
     private ApiKeyService apiKeyService;
 
     @BeforeEach
     void setUp() {
         when(merchantServiceClient.merchantExists(any(UUID.class))).thenReturn(true);
         when(apiKeyRepository.save(any(ApiKey.class))).thenAnswer(i -> withTimestamps(i.getArgument(0)));
+        // The limiter is stubbed rather than real: its counting is tested against Redis in
+        // ValidationAttemptLimiterTest, and wiring that in here would make every case in this
+        // class depend on infrastructure it is not about.
         apiKeyService = new ApiKeyService(
                 apiKeyRepository,
                 merchantServiceClient,
                 usageTracker,
-                new ValidationAttemptLimiter(3, Duration.ofMinutes(1)));
+                attemptLimiter,
+                3,
+                Duration.ofMinutes(1));
     }
 
     @Test
@@ -114,17 +125,42 @@ class ApiKeyServiceTest {
     }
 
     @Test
-    void throttlesRepeatedFailuresAgainstTheSamePrefix() {
+    void chargesAFailedValidationAgainstThePrefixsBudget() {
         CreateApiKeyResponse created = issueKey();
         when(apiKeyRepository.findByKeyPrefix(created.keyPrefix())).thenReturn(Optional.of(storedFor(created)));
 
-        for (int attempt = 0; attempt < 3; attempt++) {
-            assertThatThrownBy(() -> apiKeyService.validateKey(created.keyPrefix() + ".wrong"))
-                    .isInstanceOf(InvalidApiKeyException.class);
-        }
+        assertThatThrownBy(() -> apiKeyService.validateKey(created.keyPrefix() + ".wrong"))
+                .isInstanceOf(InvalidApiKeyException.class);
+
+        verify(attemptLimiter).checkAllowed(created.keyPrefix(), 3);
+        verify(attemptLimiter).recordFailure(created.keyPrefix(), Duration.ofMinutes(1));
+    }
+
+    @Test
+    void clearsThePrefixsBudgetOnceAKeyValidates() {
+        CreateApiKeyResponse created = issueKey();
+        when(apiKeyRepository.findByKeyPrefix(created.keyPrefix())).thenReturn(Optional.of(storedFor(created)));
+
+        apiKeyService.validateKey(created.apiKey());
+
+        verify(attemptLimiter).recordSuccess(created.keyPrefix());
+        verify(attemptLimiter, never()).recordFailure(anyString(), any());
+    }
+
+    @Test
+    void refusesOutrightOnceTheLimiterSaysTheBudgetIsSpent() {
+        // The counting itself is ValidationAttemptLimiter's job and is tested there. What matters
+        // here is that the service asks first and does not swallow the answer — a throttled caller
+        // must never reach the key lookup at all.
+        CreateApiKeyResponse created = issueKey();
+        doThrow(new TooManyAttemptsException("Too many failed authentication attempts. Try again later."))
+                .when(attemptLimiter)
+                .checkAllowed(anyString(), anyInt());
 
         assertThatThrownBy(() -> apiKeyService.validateKey(created.keyPrefix() + ".wrong"))
                 .isInstanceOf(TooManyAttemptsException.class);
+
+        verify(apiKeyRepository, never()).findByKeyPrefix(anyString());
     }
 
     private CreateApiKeyResponse issueKey() {

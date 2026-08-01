@@ -20,9 +20,11 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import org.testcontainers.utility.DockerImageName;
 
 @SpringBootTest(properties = "openpay.jwt.secret=test-secret-that-is-long-enough-for-hs256")
 @Testcontainers
@@ -31,6 +33,16 @@ class UserLoginIT {
     @Container
     @ServiceConnection
     static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:15-alpine");
+
+    /**
+     * A real Redis, because the attempt limiter fails open when it cannot reach one. Without this
+     * container these tests would pass by taking the failure path, and a bug that broke throttling
+     * outright would still look green.
+     */
+    @Container
+    @ServiceConnection(name = "redis")
+    static GenericContainer<?> redis =
+            new GenericContainer<>(DockerImageName.parse("redis:8-alpine")).withExposedPorts(6379);
 
     @Autowired
     private UserService userService;
@@ -52,7 +64,7 @@ class UserLoginIT {
         String email = unique("owner");
         userService.createUser(new CreateUserRequest(merchantId, email, "correct-horse-battery", "MERCHANT_ADMIN"));
 
-        LoginResponse response = userService.login(new LoginRequest(email, "correct-horse-battery"));
+        LoginResponse response = userService.login(new LoginRequest(email, "correct-horse-battery"), "203.0.113.10");
 
         assertThat(response.token()).isNotBlank();
         assertThat(response.merchantId()).isEqualTo(merchantId);
@@ -76,7 +88,7 @@ class UserLoginIT {
         userService.createUser(
                 new CreateUserRequest(UUID.randomUUID(), email, "correct-horse-battery", "MERCHANT_ADMIN"));
 
-        assertThatThrownBy(() -> userService.login(new LoginRequest(email, "not-the-password")))
+        assertThatThrownBy(() -> userService.login(new LoginRequest(email, "not-the-password"), "203.0.113.10"))
                 .isInstanceOf(InvalidCredentialsException.class);
     }
 
@@ -84,7 +96,7 @@ class UserLoginIT {
     void anUnknownEmailFailsTheSameWayAsAWrongPassword() {
         // Identical exception and message: distinguishing them turns login into a way to discover
         // who has an account.
-        assertThatThrownBy(() -> userService.login(new LoginRequest(unique("ghost"), "anything-at-all")))
+        assertThatThrownBy(() -> userService.login(new LoginRequest(unique("ghost"), "anything-at-all"), "203.0.113.10"))
                 .isInstanceOf(InvalidCredentialsException.class)
                 .hasMessageContaining("Email or password is incorrect");
     }
@@ -96,7 +108,7 @@ class UserLoginIT {
         userService.createUser(new CreateUserRequest(merchantId, email, "correct-horse-battery", "MERCHANT_ADMIN"));
 
         LoginResponse response =
-                userService.login(new LoginRequest(email.toUpperCase(), "correct-horse-battery"));
+                userService.login(new LoginRequest(email.toUpperCase(), "correct-horse-battery"), "203.0.113.10");
 
         assertThat(response.merchantId()).isEqualTo(merchantId);
     }
@@ -129,7 +141,7 @@ class UserLoginIT {
                 new CreateUserRequest(UUID.randomUUID(), email, "correct-horse-battery", "MERCHANT_ADMIN"));
         assertThat(userRepository.findByEmail(email).orElseThrow().getLastLoginAt()).isNull();
 
-        userService.login(new LoginRequest(email, "correct-horse-battery"));
+        userService.login(new LoginRequest(email, "correct-horse-battery"), "203.0.113.10");
 
         assertThat(userRepository.findByEmail(email).orElseThrow().getLastLoginAt()).isNotNull();
     }

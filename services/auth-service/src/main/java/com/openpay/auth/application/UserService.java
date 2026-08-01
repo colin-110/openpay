@@ -7,11 +7,13 @@ import com.openpay.auth.api.UserResponse;
 import com.openpay.auth.domain.User;
 import com.openpay.auth.domain.UserRepository;
 import com.openpay.auth.infrastructure.MerchantServiceClient;
+import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -34,17 +36,26 @@ public class UserService {
     private final MerchantServiceClient merchantServiceClient;
     private final JwtIssuer jwtIssuer;
     private final ValidationAttemptLimiter attemptLimiter;
+    private final int maxFailedLogins;
+    private final int maxFailedLoginsPerSource;
+    private final Duration failedLoginWindow;
     private final BCryptPasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
     public UserService(
             UserRepository userRepository,
             MerchantServiceClient merchantServiceClient,
             JwtIssuer jwtIssuer,
-            ValidationAttemptLimiter attemptLimiter) {
+            ValidationAttemptLimiter attemptLimiter,
+            @Value("${openpay.auth.max-failed-logins:10}") int maxFailedLogins,
+            @Value("${openpay.auth.max-failed-logins-per-source:50}") int maxFailedLoginsPerSource,
+            @Value("${openpay.auth.failed-login-window:PT15M}") Duration failedLoginWindow) {
         this.userRepository = userRepository;
         this.merchantServiceClient = merchantServiceClient;
         this.jwtIssuer = jwtIssuer;
         this.attemptLimiter = attemptLimiter;
+        this.maxFailedLogins = maxFailedLogins;
+        this.maxFailedLoginsPerSource = maxFailedLoginsPerSource;
+        this.failedLoginWindow = failedLoginWindow;
     }
 
     @Transactional
@@ -67,9 +78,18 @@ public class UserService {
     }
 
     @Transactional
-    public LoginResponse login(LoginRequest request) {
+    public LoginResponse login(LoginRequest request, String sourceIp) {
         String email = request.email().trim().toLowerCase();
-        attemptLimiter.checkAllowed("login:" + email);
+        String emailBucket = "login:" + email;
+        String sourceBucket = "login-src:" + sourceIp;
+
+        // Two budgets, because one alone is wrong in a different direction each way. Counting only
+        // by email means anyone who knows an address can lock that person out by failing on
+        // purpose. Counting only by source means an attacker spreading guesses across many
+        // accounts from one host never trips anything. The source budget is much looser, since a
+        // shared office IP or a NAT gateway legitimately produces many failures from many people.
+        attemptLimiter.checkAllowed(emailBucket, maxFailedLogins);
+        attemptLimiter.checkAllowed(sourceBucket, maxFailedLoginsPerSource);
 
         Optional<User> found = userRepository.findByEmail(email);
 
@@ -78,13 +98,17 @@ public class UserService {
         boolean passwordMatches = passwordEncoder.matches(request.password(), hash);
 
         if (found.isEmpty() || !passwordMatches || !found.get().isActive()) {
-            attemptLimiter.recordFailure("login:" + email);
+            attemptLimiter.recordFailure(emailBucket, failedLoginWindow);
+            attemptLimiter.recordFailure(sourceBucket, failedLoginWindow);
             log.warn("Failed login attempt for {}", email);
             throw new InvalidCredentialsException();
         }
 
         User user = found.get();
-        attemptLimiter.recordSuccess("login:" + email);
+        // Only the account's own budget is cleared. The source budget deliberately survives a
+        // success, or an attacker with one valid account of their own would reset it at will and
+        // guess against everyone else for free.
+        attemptLimiter.recordSuccess(emailBucket);
         user.recordLogin();
 
         JwtIssuer.IssuedToken issued =
