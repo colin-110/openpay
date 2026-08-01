@@ -2,6 +2,7 @@ package com.openpay.payment.api;
 
 import com.openpay.payment.application.PaymentResult;
 import com.openpay.payment.application.PaymentService;
+import com.openpay.payment.domain.PaymentStatus;
 import com.openpay.security.ApiKeyAuthenticationFilter;
 import com.openpay.security.ApiKeyPrincipal;
 import jakarta.validation.Valid;
@@ -68,8 +69,9 @@ public class PaymentController {
     public PagedResponse<PaymentResponse> listPayments(
             @RequestAttribute(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE) ApiKeyPrincipal principal,
             @RequestParam(name = "page", defaultValue = "0") int page,
-            @RequestParam(name = "size", defaultValue = "20") int size) {
+            @RequestParam(name = "size", defaultValue = "20") int size,
+            @RequestParam(name = "status", required = false) PaymentStatus status) {
         Pageable pageable = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), MAX_PAGE_SIZE));
-        return paymentService.listPayments(principal.merchantId(), pageable);
+        return paymentService.listPayments(principal.merchantId(), status, pageable);
     }
 }

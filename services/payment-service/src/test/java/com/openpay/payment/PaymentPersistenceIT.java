@@ -231,10 +231,23 @@ class PaymentPersistenceIT {
         paymentService.createPayment(
                 UUID.randomUUID(), "it-list-3", new CreatePaymentRequest(300L, "USD"));
 
-        var page = paymentService.listPayments(merchantId, PageRequest.of(0, 10));
+        var page = paymentService.listPayments(merchantId, null, PageRequest.of(0, 10));
 
         assertThat(page.totalItems()).isEqualTo(2);
         assertThat(page.items()).extracting(PaymentResponse::amount)
                 .allSatisfy(amount -> assertThat(amount).isLessThan(300L));
+    }
+
+    @Test
+    void listingCanBeNarrowedToOneStatus() {
+        UUID merchantId = UUID.randomUUID();
+        paymentService.createPayment(merchantId, "it-status-1", new CreatePaymentRequest(100L, "INR"));
+        paymentService.createPayment(merchantId, "it-status-2", new CreatePaymentRequest(200L, "INR"));
+
+        var created = paymentService.listPayments(merchantId, PaymentStatus.CREATED, PageRequest.of(0, 10));
+        var captured = paymentService.listPayments(merchantId, PaymentStatus.CAPTURED, PageRequest.of(0, 10));
+
+        assertThat(created.totalItems()).isEqualTo(2);
+        assertThat(captured.totalItems()).isZero();
     }
 }

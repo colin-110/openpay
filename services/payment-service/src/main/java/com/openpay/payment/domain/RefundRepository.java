@@ -3,6 +3,8 @@ package com.openpay.payment.domain;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -16,6 +18,11 @@ public interface RefundRepository extends JpaRepository<Refund, UUID> {
     Optional<Refund> findByIdAndMerchantId(UUID id, UUID merchantId);
 
     List<Refund> findByPaymentIdOrderByCreatedAtAsc(UUID paymentId);
+
+    Page<Refund> findByMerchantIdOrderByCreatedAtDesc(UUID merchantId, Pageable pageable);
+
+    Page<Refund> findByMerchantIdAndStatusOrderByCreatedAtDesc(
+            UUID merchantId, RefundStatus status, Pageable pageable);
 
     /**
      * What a payment has already committed to refunding.

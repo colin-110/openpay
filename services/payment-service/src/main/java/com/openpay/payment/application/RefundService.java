@@ -4,6 +4,7 @@ import com.openpay.events.OpenPayTopics;
 import com.openpay.events.payload.RefundCreated;
 import com.openpay.outbox.OutboxWriter;
 import com.openpay.payment.api.CreateRefundRequest;
+import com.openpay.payment.api.PagedResponse;
 import com.openpay.payment.api.RefundResponse;
 import com.openpay.payment.domain.Payment;
 import com.openpay.payment.domain.PaymentRepository;
@@ -21,6 +22,8 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -153,6 +156,18 @@ public class RefundService {
         return refundRepository.findByPaymentIdOrderByCreatedAtAsc(paymentId).stream()
                 .map(this::toResponse)
                 .toList();
+    }
+
+    /** Every refund this merchant has made, newest first, regardless of which payment it was for. */
+    @Transactional(readOnly = true)
+    public PagedResponse<RefundResponse> listRefunds(UUID merchantId, RefundStatus status, Pageable pageable) {
+        Page<RefundResponse> page = (status == null
+                        ? refundRepository.findByMerchantIdOrderByCreatedAtDesc(merchantId, pageable)
+                        : refundRepository.findByMerchantIdAndStatusOrderByCreatedAtDesc(
+                                merchantId, status, pageable))
+                .map(this::toResponse);
+        return new PagedResponse<>(
+                page.getContent(), page.getNumber(), page.getSize(), page.getTotalElements(), page.getTotalPages());
     }
 
     /**

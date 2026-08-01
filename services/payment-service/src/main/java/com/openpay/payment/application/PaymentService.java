@@ -97,9 +97,11 @@ public class PaymentService {
     }
 
     @Transactional(readOnly = true)
-    public PagedResponse<PaymentResponse> listPayments(UUID merchantId, Pageable pageable) {
-        Page<PaymentResponse> page = paymentRepository
-                .findByMerchantIdOrderByCreatedAtDesc(merchantId, pageable)
+    public PagedResponse<PaymentResponse> listPayments(UUID merchantId, PaymentStatus status, Pageable pageable) {
+        Page<PaymentResponse> page = (status == null
+                        ? paymentRepository.findByMerchantIdOrderByCreatedAtDesc(merchantId, pageable)
+                        : paymentRepository.findByMerchantIdAndStatusOrderByCreatedAtDesc(
+                                merchantId, status, pageable))
                 .map(this::toResponse);
         return new PagedResponse<>(
                 page.getContent(), page.getNumber(), page.getSize(), page.getTotalElements(), page.getTotalPages());
