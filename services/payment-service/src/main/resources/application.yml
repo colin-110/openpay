@@ -31,6 +31,10 @@ spring:
       accept-float-as-int: false
 
 openpay:
+  router:
+    # Read-only, and only when a merchant opens one payment: the router owns its attempt history
+    # and this service asks rather than keeping a second copy of it.
+    base-url: ${PROVIDER_ROUTER_BASE_URL:http://localhost:8085}
   outbox:
     relay-enabled: true
     poll-interval-ms: 500

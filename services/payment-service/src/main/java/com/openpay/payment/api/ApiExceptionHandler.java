@@ -5,6 +5,7 @@ import com.openpay.payment.application.PaymentNotFoundException;
 import com.openpay.payment.application.RefundNotAllowedException;
 import com.openpay.payment.application.RefundNotFoundException;
 import com.openpay.payment.domain.InvalidPaymentTransitionException;
+import com.openpay.payment.infrastructure.AttemptsUnavailableException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import java.time.OffsetDateTime;
@@ -43,6 +44,14 @@ public class ApiExceptionHandler {
         // 422 rather than 400: the request is well formed, but the payment's state or remaining
         // refundable balance will not permit it.
         return build(HttpStatus.UNPROCESSABLE_ENTITY, "refund_not_allowed", exception.getMessage(), request);
+    }
+
+    @ExceptionHandler(AttemptsUnavailableException.class)
+    public ResponseEntity<ErrorResponse> handleAttemptsUnavailable(
+            AttemptsUnavailableException exception, HttpServletRequest request) {
+        // 503 rather than an empty list. "No attempts recorded" and "could not ask" are different
+        // answers, and a payments console showing the first when it means the second is misleading.
+        return build(HttpStatus.SERVICE_UNAVAILABLE, "attempts_unavailable", exception.getMessage(), request);
     }
 
     @ExceptionHandler(IdempotencyKeyConflictException.class)

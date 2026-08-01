@@ -2,6 +2,7 @@ package com.openpay.payment.api;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -13,11 +14,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openpay.payment.application.IdempotencyKeyConflictException;
 import com.openpay.payment.application.PaymentNotFoundException;
 import com.openpay.payment.application.PaymentResult;
+import com.openpay.payment.infrastructure.AttemptsUnavailableException;
+import com.openpay.payment.infrastructure.ProviderRouterClient;
 import com.openpay.payment.application.PaymentService;
 import com.openpay.payment.domain.PaymentStatus;
 import com.openpay.security.ApiKeyAuthenticationFilter;
 import com.openpay.security.ApiKeyPrincipal;
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -47,6 +51,50 @@ class PaymentControllerTest {
     @MockBean
     private PaymentService paymentService;
 
+    @MockBean
+    private ProviderRouterClient providerRouterClient;
+
+    @Test
+    void attemptsAreScopedToTheMerchantThatOwnsThePayment() throws Exception {
+        UUID paymentId = UUID.randomUUID();
+        when(paymentService.getPayment(eq(MERCHANT_ID), eq(paymentId)))
+                .thenThrow(new PaymentNotFoundException(paymentId));
+
+        mockMvc.perform(authenticated(get("/api/v1/payments/" + paymentId + "/attempts")))
+                .andExpect(status().isNotFound());
+
+        // The router is never asked about a payment the caller cannot already see.
+        verifyNoInteractions(providerRouterClient);
+    }
+
+    @Test
+    void attemptsReport503WhenTheRouterCannotBeReached() throws Exception {
+        UUID paymentId = UUID.randomUUID();
+        when(paymentService.getPayment(eq(MERCHANT_ID), eq(paymentId))).thenReturn(response(paymentId));
+        when(providerRouterClient.attemptsFor(eq(paymentId)))
+                .thenThrow(new AttemptsUnavailableException(new RuntimeException("connect timed out")));
+
+        // Not an empty list: "nothing was tried" and "could not ask" are different answers.
+        mockMvc.perform(authenticated(get("/api/v1/payments/" + paymentId + "/attempts")))
+                .andExpect(status().isServiceUnavailable())
+                .andExpect(jsonPath("$.code").value("attempts_unavailable"));
+    }
+
+    @Test
+    void attemptsListWhatWasTried() throws Exception {
+        UUID paymentId = UUID.randomUUID();
+        when(paymentService.getPayment(eq(MERCHANT_ID), eq(paymentId))).thenReturn(response(paymentId));
+        when(providerRouterClient.attemptsFor(eq(paymentId))).thenReturn(List.of(
+                new PaymentAttemptView(1, "mock-bank-a", "FAILED", null, "provider unavailable"),
+                new PaymentAttemptView(2, "mock-bank-b", "ACCEPTED", "ref-9", null)));
+
+        mockMvc.perform(authenticated(get("/api/v1/payments/" + paymentId + "/attempts")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].provider").value("mock-bank-a"))
+                .andExpect(jsonPath("$[0].failureReason").value("provider unavailable"))
+                .andExpect(jsonPath("$[1].provider").value("mock-bank-b"));
+    }
+
     @Test
     void createReturns201WithLocationForANewPayment() throws Exception {
         UUID paymentId = UUID.randomUUID();
@@ -57,7 +105,7 @@ class PaymentControllerTest {
                         .header("Idempotency-Key", "key-123")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(
-                                new CreatePaymentRequest(10_000L, "USD"))))
+                                new CreatePaymentRequest(10_000L, "USD", null))))
                 .andExpect(status().isCreated())
                 .andExpect(header().string("Location", "http://localhost/api/v1/payments/" + paymentId))
                 .andExpect(jsonPath("$.status").value("CREATED"));
@@ -73,7 +121,7 @@ class PaymentControllerTest {
                         .header("Idempotency-Key", "key-123")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(
-                                new CreatePaymentRequest(10_000L, "USD"))))
+                                new CreatePaymentRequest(10_000L, "USD", null))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.id").value(paymentId.toString()));
     }
@@ -87,7 +135,7 @@ class PaymentControllerTest {
                         .header("Idempotency-Key", "key-123")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(
-                                new CreatePaymentRequest(99_900L, "USD"))))
+                                new CreatePaymentRequest(99_900L, "USD", null))))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("idempotency_key_reused"));
     }
@@ -97,7 +145,7 @@ class PaymentControllerTest {
         mockMvc.perform(authenticated(post("/api/v1/payments"))
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(
-                                new CreatePaymentRequest(10_000L, "USD"))))
+                                new CreatePaymentRequest(10_000L, "USD", null))))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("missing_header"));
     }
@@ -169,6 +217,7 @@ class PaymentControllerTest {
                 PaymentStatus.CREATED,
                 10_000L,
                 "USD",
+                null,
                 OffsetDateTime.now(),
                 OffsetDateTime.now());
     }

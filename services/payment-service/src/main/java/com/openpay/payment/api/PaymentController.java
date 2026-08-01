@@ -3,12 +3,14 @@ package com.openpay.payment.api;
 import com.openpay.payment.application.PaymentResult;
 import com.openpay.payment.application.PaymentService;
 import com.openpay.payment.domain.PaymentStatus;
+import com.openpay.payment.infrastructure.ProviderRouterClient;
 import com.openpay.security.ApiKeyAuthenticationFilter;
 import com.openpay.security.ApiKeyPrincipal;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import java.net.URI;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -33,9 +35,11 @@ public class PaymentController {
     private static final int MAX_PAGE_SIZE = 100;
 
     private final PaymentService paymentService;
+    private final ProviderRouterClient providerRouterClient;
 
-    public PaymentController(PaymentService paymentService) {
+    public PaymentController(PaymentService paymentService, ProviderRouterClient providerRouterClient) {
         this.paymentService = paymentService;
+        this.providerRouterClient = providerRouterClient;
     }
 
     @PostMapping
@@ -63,6 +67,20 @@ public class PaymentController {
             @RequestAttribute(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE) ApiKeyPrincipal principal,
             @PathVariable("paymentId") UUID paymentId) {
         return paymentService.getPayment(principal.merchantId(), paymentId);
+    }
+
+    /**
+     * What was tried at the acquirers for this payment, in order.
+     *
+     * <p>Fetching the payment first is the authorisation check: it throws for a payment belonging
+     * to someone else, so the router is only ever asked about payments this caller can already see.
+     */
+    @GetMapping("/{paymentId}/attempts")
+    public List<PaymentAttemptView> attempts(
+            @RequestAttribute(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE) ApiKeyPrincipal principal,
+            @PathVariable("paymentId") UUID paymentId) {
+        paymentService.getPayment(principal.merchantId(), paymentId);
+        return providerRouterClient.attemptsFor(paymentId);
     }
 
     @GetMapping

@@ -23,6 +23,7 @@ x-service-defaults: &service-defaults
     AUTH_SERVICE_BASE_URL: http://auth-service:8081
     MERCHANT_SERVICE_BASE_URL: http://merchant-service:8082
     PAYMENT_SERVICE_BASE_URL: http://payment-service:8083
+    PROVIDER_ROUTER_BASE_URL: http://provider-router-service:8085
 
 x-healthcheck: &app-healthcheck
   interval: 10s
