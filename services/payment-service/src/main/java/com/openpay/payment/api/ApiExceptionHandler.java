@@ -6,6 +6,7 @@ import com.openpay.payment.application.RefundNotAllowedException;
 import com.openpay.payment.application.RefundNotFoundException;
 import com.openpay.payment.domain.InvalidPaymentTransitionException;
 import com.openpay.payment.infrastructure.AttemptsUnavailableException;
+import com.openpay.security.InsufficientAuthorityException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import java.time.OffsetDateTime;
@@ -44,6 +45,16 @@ public class ApiExceptionHandler {
         // 422 rather than 400: the request is well formed, but the payment's state or remaining
         // refundable balance will not permit it.
         return build(HttpStatus.UNPROCESSABLE_ENTITY, "refund_not_allowed", exception.getMessage(), request);
+    }
+
+    @ExceptionHandler(InsufficientAuthorityException.class)
+    public ResponseEntity<ErrorResponse> handleInsufficientAuthority(
+            InsufficientAuthorityException exception, HttpServletRequest request) {
+        // 403, not 401. The credential is valid; it simply does not carry this authority, and
+        // inviting the caller to retry with the same key forever helps nobody.
+        log.warn("Refused {} for a credential with authority '{}'",
+                request.getRequestURI(), exception.getAuthority());
+        return build(HttpStatus.FORBIDDEN, "insufficient_authority", exception.getMessage(), request);
     }
 
     @ExceptionHandler(AttemptsUnavailableException.class)

@@ -119,6 +119,25 @@ public class SecurityAutoConfiguration {
         return registration;
     }
 
+    /** Service-to-service endpoints, guarded by a secret that is not the platform admin token. */
+    @Bean
+    public FilterRegistrationBean<Filter> internalTokenFilter(
+            SecurityProperties properties, ObjectMapper objectMapper) {
+        if (properties.getInternalPaths().isEmpty()) {
+            return notRegistered();
+        }
+        FilterRegistrationBean<Filter> registration = new FilterRegistrationBean<>();
+        registration.setFilter(new AdminTokenFilter(
+                AdminTokenFilter.INTERNAL_TOKEN_HEADER,
+                "openpay.security.internal-token",
+                properties.getInternalToken(),
+                properties.getInternalPaths(),
+                objectMapper));
+        registration.setOrder(SECURITY_FILTER_ORDER + 2);
+        registration.addUrlPatterns("/*");
+        return registration;
+    }
+
     @Bean
     public FilterRegistrationBean<AdminTokenFilter> adminTokenFilter(
             SecurityProperties properties, ObjectMapper objectMapper) {

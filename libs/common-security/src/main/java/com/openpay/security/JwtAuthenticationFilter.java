@@ -33,6 +33,7 @@ import org.springframework.web.filter.OncePerRequestFilter;
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private static final String AUTHORIZATION_HEADER = "Authorization";
+    private static final String EXPECTED_ISSUER = "openpay";
     private static final String BEARER_PREFIX = "Bearer ";
 
     private static final Logger log = LoggerFactory.getLogger(JwtAuthenticationFilter.class);
@@ -66,6 +67,9 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
         try {
             Claims claims = Jwts.parser()
                     .verifyWith(key)
+                    // Matters the moment this signing key is shared with anything else: without
+                    // it, a token minted for another audience verifies happily here.
+                    .requireIssuer(EXPECTED_ISSUER)
                     .build()
                     .parseSignedClaims(header.substring(BEARER_PREFIX.length()).trim())
                     .getPayload();

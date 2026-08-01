@@ -45,6 +45,9 @@ public class RefundController {
             @RequestHeader("Idempotency-Key") @NotBlank @Size(max = 255) String idempotencyKey,
             @Valid @RequestBody CreateRefundRequest request) {
 
+        // The one endpoint that sends money out of the business. Read-only credentials stop here.
+        principal.requireWrite("issue refunds");
+
         RefundResult result = refundService.createRefund(principal.merchantId(), idempotencyKey, request);
 
         if (!result.created()) {

@@ -19,6 +19,6 @@ public class ProtectedPingController {
         return Map.of(
                 "status", "authenticated",
                 "merchantId", principal.merchantId().toString(),
-                "scope", principal.scope() == null ? "" : principal.scope());
+                "scope", principal.authority() == null ? "" : principal.authority());
     }
 }

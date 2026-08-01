@@ -23,6 +23,16 @@ public class SecurityProperties {
      */
     private String adminToken = "";
 
+    /**
+     * Shared secret for service-to-service calls, presented as {@code X-Internal-Token}. Separate
+     * from the admin token so a service that reads one thing from a peer does not have to hold the
+     * credential that opens merchant onboarding, key issuance, and the ledger.
+     */
+    private String internalToken = "";
+
+    /** Request path prefixes that require the internal service token. */
+    private List<String> internalPaths = new ArrayList<>();
+
     /** Shared HS256 key for verifying dashboard sessions. Blank disables session auth. */
     private String jwtSecret = "";
 
@@ -75,6 +85,22 @@ public class SecurityProperties {
 
     public void setJwtSecret(String jwtSecret) {
         this.jwtSecret = jwtSecret;
+    }
+
+    public String getInternalToken() {
+        return internalToken;
+    }
+
+    public void setInternalToken(String internalToken) {
+        this.internalToken = internalToken;
+    }
+
+    public List<String> getInternalPaths() {
+        return internalPaths;
+    }
+
+    public void setInternalPaths(List<String> internalPaths) {
+        this.internalPaths = internalPaths;
     }
 
     public List<String> getAllowedOrigins() {

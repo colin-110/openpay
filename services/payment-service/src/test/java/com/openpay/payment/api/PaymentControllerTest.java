@@ -55,6 +55,45 @@ class PaymentControllerTest {
     private ProviderRouterClient providerRouterClient;
 
     @Test
+    void aReadOnlyCredentialCannotCreateAPayment() throws Exception {
+        mockMvc.perform(post("/api/v1/payments")
+                        .requestAttr(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE,
+                                new ApiKeyPrincipal(MERCHANT_ID, "payments:read"))
+                        .header("Idempotency-Key", "key-123")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(
+                                new CreatePaymentRequest(10_000L, "INR", null))))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value("insufficient_authority"));
+
+        // Refused before the service is reached, so nothing was written and then rolled back.
+        verifyNoInteractions(paymentService);
+    }
+
+    @Test
+    void aViewerSessionCannotCreateAPayment() throws Exception {
+        mockMvc.perform(post("/api/v1/payments")
+                        .requestAttr(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE,
+                                new ApiKeyPrincipal(MERCHANT_ID, "MERCHANT_VIEWER"))
+                        .header("Idempotency-Key", "key-123")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(
+                                new CreatePaymentRequest(10_000L, "INR", null))))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void aReadOnlyCredentialCanStillReadPayments() throws Exception {
+        UUID paymentId = UUID.randomUUID();
+        when(paymentService.getPayment(eq(MERCHANT_ID), eq(paymentId))).thenReturn(response(paymentId));
+
+        mockMvc.perform(get("/api/v1/payments/" + paymentId)
+                        .requestAttr(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE,
+                                new ApiKeyPrincipal(MERCHANT_ID, "payments:read")))
+                .andExpect(status().isOk());
+    }
+
+    @Test
     void attemptsAreScopedToTheMerchantThatOwnsThePayment() throws Exception {
         UUID paymentId = UUID.randomUUID();
         when(paymentService.getPayment(eq(MERCHANT_ID), eq(paymentId)))
@@ -71,7 +110,7 @@ class PaymentControllerTest {
     void attemptsReport503WhenTheRouterCannotBeReached() throws Exception {
         UUID paymentId = UUID.randomUUID();
         when(paymentService.getPayment(eq(MERCHANT_ID), eq(paymentId))).thenReturn(response(paymentId));
-        when(providerRouterClient.attemptsFor(eq(paymentId)))
+        when(providerRouterClient.attemptsFor(eq(paymentId), eq(MERCHANT_ID)))
                 .thenThrow(new AttemptsUnavailableException(new RuntimeException("connect timed out")));
 
         // Not an empty list: "nothing was tried" and "could not ask" are different answers.
@@ -84,7 +123,7 @@ class PaymentControllerTest {
     void attemptsListWhatWasTried() throws Exception {
         UUID paymentId = UUID.randomUUID();
         when(paymentService.getPayment(eq(MERCHANT_ID), eq(paymentId))).thenReturn(response(paymentId));
-        when(providerRouterClient.attemptsFor(eq(paymentId))).thenReturn(List.of(
+        when(providerRouterClient.attemptsFor(eq(paymentId), eq(MERCHANT_ID))).thenReturn(List.of(
                 new PaymentAttemptView(1, "mock-bank-a", "FAILED", null, "provider unavailable"),
                 new PaymentAttemptView(2, "mock-bank-b", "ACCEPTED", "ref-9", null)));
 

@@ -48,6 +48,9 @@ public class PaymentController {
             @RequestHeader("Idempotency-Key") @NotBlank @Size(max = 255) String idempotencyKey,
             @Valid @RequestBody CreatePaymentRequest request) {
 
+        // A read-only key and a viewer session can see payments; neither may take one.
+        principal.requireWrite("create payments");
+
         PaymentResult result = paymentService.createPayment(principal.merchantId(), idempotencyKey, request);
 
         if (!result.created()) {
@@ -80,7 +83,7 @@ public class PaymentController {
             @RequestAttribute(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE) ApiKeyPrincipal principal,
             @PathVariable("paymentId") UUID paymentId) {
         paymentService.getPayment(principal.merchantId(), paymentId);
-        return providerRouterClient.attemptsFor(paymentId);
+        return providerRouterClient.attemptsFor(paymentId, principal.merchantId());
     }
 
     @GetMapping
