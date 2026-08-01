@@ -11,7 +11,7 @@ actually lets someone do, and what fixing it takes.
 | 1 | Session roles are never enforced | **High** | Fixed |
 | 2 | API key scopes are never enforced | **High** | Fixed |
 | 3 | provider-router-service has no authentication at all | **High** | Fixed |
-| 4 | SSRF through the merchant webhook URL | **Medium** | Fixed |
+| 4 | SSRF through the merchant webhook URL | **Medium** | Partly fixed |
 | 5 | No replay window on inbound acquirer callbacks | **Medium** | Open |
 | 6 | One admin token opens everything | **Medium** | Open |
 | 7 | No rate limiting on merchant-facing writes | **Medium** | Open |
@@ -114,8 +114,20 @@ Setting the URL is admin-gated today, which limits *who* can aim it — but that
 a control. The moment merchants configure their own webhook URL, as they do on every real gateway,
 this becomes directly exploitable.
 
-**Fix.** Validate the URL when it is set: `https` (with `http` allowed only for loopback in dev),
-no credentials in the URL, and refuse loopback, link-local, and private address ranges.
+**Fix, and what is left.** The URL is now validated when it is set: `https` (with `http` allowed
+only for loopback in development), no credentials in the URL, and loopback, link-local, private,
+multicast and wildcard addresses refused.
+
+A host that does not resolve is deliberately **allowed** — DNS is transient, and refusing a
+merchant's URL because its domain was briefly unresolvable during onboarding would block a
+legitimate setup for a reason unrelated to the URL. It also makes the check depend on network
+state. An unresolvable host fails delivery and says so in the delivery log.
+
+**Still open: DNS rebinding.** A host that resolves publicly when it is stored can be repointed at
+link-local before the webhook is sent. Closing that requires `WebhookDispatcher` to re-resolve and
+re-check immediately before connecting, which means lifting the policy into a shared library so
+notification-service can apply the same rule. The write-time check stops the direct attack; it does
+not stop a patient one.
 
 ---
 

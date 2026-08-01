@@ -16,9 +16,11 @@ import org.slf4j.LoggerFactory;
  * {@code http://metadata.google.internal/}, or simply another OpenPay service that is not supposed
  * to be reachable from outside.
  *
- * <p>Checking at the point the URL is stored is necessary but not sufficient on its own — DNS can
- * be repointed after the check — so the dispatcher re-resolves before sending. This is the cheap
- * half that rejects the obvious cases early, with a clear error, before anything is persisted.
+ * <p>This check runs when the URL is stored, which stops the obvious cases early and with a clear
+ * error. It is not sufficient on its own: DNS can be repointed between this check and the send, so
+ * a host that resolves publicly today can point at link-local tomorrow. Closing that needs the
+ * dispatcher to re-resolve and re-check immediately before connecting, which is recorded as the
+ * remaining half of this finding in docs/SECURITY-AUDIT.md and is not implemented yet.
  */
 public final class WebhookUrlPolicy {
 
@@ -61,7 +63,13 @@ public final class WebhookUrlPolicy {
         try {
             resolved = InetAddress.getAllByName(host);
         } catch (UnknownHostException exception) {
-            throw new UndeliverableWebhookUrlException("names a host that does not resolve");
+            // Deliberately allowed. DNS is transient, and refusing a merchant's URL because its
+            // domain happened not to resolve during onboarding would block a legitimate setup for
+            // a reason that has nothing to do with the URL. It also makes this check depend on
+            // network state, which would make it untestable offline. An unresolvable host simply
+            // fails delivery and is recorded in the delivery log.
+            log.info("Webhook host {} did not resolve; allowing it and leaving delivery to report", host);
+            return;
         }
 
         for (InetAddress address : resolved) {
