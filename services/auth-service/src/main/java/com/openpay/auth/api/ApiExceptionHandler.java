@@ -11,6 +11,7 @@ import java.time.OffsetDateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -74,12 +75,22 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ErrorResponse> handleUnexpected(Exception exception, HttpServletRequest request) {
+        // Spring's own MVC exceptions — unknown path, wrong method, unsupported media type — already
+        // carry the right status. Without this they are all flattened to 500 by the catch-all below,
+        // so a typo in a URL reads as "the platform is broken" rather than "no such endpoint", and
+        // a POST to a read-only path reads the same way.
+        if (exception instanceof org.springframework.web.ErrorResponse springError) {
+            HttpStatusCode status = springError.getStatusCode();
+            return build(status, status.is4xxClientError() ? "not_found" : "internal_error",
+                    "The request could not be handled", request.getRequestURI());
+        }
+
         log.error("Unhandled exception on {}", request.getRequestURI(), exception);
         return build(HttpStatus.INTERNAL_SERVER_ERROR, "internal_error", "An unexpected error occurred",
                 request.getRequestURI());
     }
 
-    private ResponseEntity<ErrorResponse> build(HttpStatus status, String code, String message, String path) {
+    private ResponseEntity<ErrorResponse> build(HttpStatusCode status, String code, String message, String path) {
         return ResponseEntity.status(status)
                 .body(new ErrorResponse(code, message, path, OffsetDateTime.now()));
     }
