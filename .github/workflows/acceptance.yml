@@ -1,0 +1,90 @@
+name: Acceptance
+
+# The full platform, running, exercised over real HTTP.
+#
+# Separate from the CI pipeline because it costs minutes rather than seconds: it builds twelve
+# images, starts them with their infrastructure, waits for every health check, and then runs the
+# acceptance suite against the result. That is too slow to sit in front of every pull request, and
+# too valuable to skip — it is the only thing here that tests the filters, the token tiers, and the
+# asynchronous flow all at once, in the arrangement they actually run in.
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+  schedule:
+    # Nightly, so a break caused by something other than a code change — a base image moving, a
+    # dependency published with a regression — is found by a build rather than by a person.
+    - cron: '0 3 * * *'
+
+concurrency:
+  group: acceptance-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    name: End-to-end acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    env:
+      # Generated per run rather than stored as repository secrets. Nothing here outlives the job,
+      # and a real secret in a workflow that runs on every push to main is a secret in every fork's
+      # pull request logs the first time somebody misconfigures a trigger.
+      OPENPAY_ADMIN_TOKEN: ci-admin-${{ github.run_id }}
+      OPENPAY_OPS_TOKEN: ci-ops-${{ github.run_id }}
+      OPENPAY_INTERNAL_TOKEN: ci-internal-${{ github.run_id }}
+      OPENPAY_JWT_SECRET: ci-jwt-secret-that-is-comfortably-over-32-bytes-${{ github.run_id }}
+      OPENPAY_DASHBOARD_ORIGINS: http://localhost:5173
+      MOCK_BANK_A_SECRET: ci-bank-a-${{ github.run_id }}
+      MOCK_BANK_B_SECRET: ci-bank-b-${{ github.run_id }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Start the platform
+        run: |
+          docker compose \
+            -f platform/docker/docker-compose.yml \
+            -f platform/docker/docker-compose.apps.yml \
+            up -d --build --wait --wait-timeout 900
+
+      # --wait already blocks on health checks, so reaching here means every container reported
+      # healthy. Printing the state anyway makes a failure downstream immediately readable in the
+      # log rather than requiring a rerun with more logging.
+      - name: Report container state
+        run: docker compose -f platform/docker/docker-compose.yml -f platform/docker/docker-compose.apps.yml ps
+
+      - name: Run the acceptance suite
+        run: bash scripts/e2e.sh
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            -f platform/docker/docker-compose.yml \
+            -f platform/docker/docker-compose.apps.yml \
+            logs --no-color --tail 400 > compose-logs.txt
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compose-logs
+          path: compose-logs.txt
+          retention-days: 7
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose \
+            -f platform/docker/docker-compose.yml \
+            -f platform/docker/docker-compose.apps.yml \
+            down -v

@@ -990,7 +990,9 @@ Delivered:
 - credential authority actually enforced: a read-only key or viewer session can read but not move
   money (see [docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md))
 - merchant-facing settlements and webhook delivery history, split from the operator views
-- CI running unit and integration tests on JDK 21 and 25
+- CI running unit and integration tests on JDK 21 and 25, plus dashboard build, manifest
+  validation, container images to GHCR, and a nightly end-to-end acceptance run
+  (see [docs/ci-cd.md](docs/ci-cd.md))
 - rule-based risk screening in the payment write path, with a review queue and a release that
   survives payment-service being down
 - an audit trail that survives the transaction it is recording, and stores nothing usable as a

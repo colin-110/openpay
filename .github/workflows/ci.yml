@@ -6,6 +6,15 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# A second push to the same branch cancels the first. A PR that gets three commits in a minute
+# should not queue three full builds, each of which starts a PostgreSQL container per module.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
 jobs:
   build-and-verify:
     name: Build & Verify (JDK ${{ matrix.java }})
@@ -30,8 +39,9 @@ jobs:
           cache: 'maven'
 
       # `verify` runs the unit tests (surefire) and then the *IT integration tests (failsafe),
-      # which start a real PostgreSQL through Testcontainers using the runner's Docker daemon.
-      # Those are what actually prove the JPA entities match the Flyway migrations.
+      # which start a real PostgreSQL and, for the dead-letter tests, a real Kafka through
+      # Testcontainers using the runner's Docker daemon. Those are what actually prove the JPA
+      # entities match the Flyway migrations and that a poison message reaches its DLQ.
       - name: Build and verify with Maven
         run: ./mvnw -B clean verify
 
@@ -44,3 +54,165 @@ jobs:
             **/target/surefire-reports/
             **/target/failsafe-reports/
           retention-days: 7
+
+  dashboard:
+    name: Dashboard
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/dashboard/package-lock.json
+
+      # `ci` rather than `install`: it installs exactly what the lockfile says and fails if the
+      # lockfile and package.json disagree, which is the difference between a reproducible build
+      # and one that quietly picks up a new minor version.
+      - name: Install dependencies
+        working-directory: web/dashboard
+        run: npm ci
+
+      - name: Lint
+        working-directory: web/dashboard
+        run: npm run lint
+
+      # `tsc -b` is part of the build script, so a type error fails here rather than shipping a
+      # bundle that only breaks in a browser.
+      - name: Build
+        working-directory: web/dashboard
+        run: npm run build
+
+  manifests:
+    name: Manifests & configuration
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # These files are only exercised when something is deployed, which is the worst moment to
+      # find a typo in them. Parsing them here costs seconds.
+      - name: Validate YAML parses
+        run: |
+          python3 - <<'PY'
+          import glob, sys, yaml
+          failures = []
+          for path in sorted(glob.glob('platform/**/*.yml', recursive=True)
+                             + glob.glob('platform/**/*.yaml', recursive=True)
+                             + glob.glob('.github/workflows/*.yml')):
+              try:
+                  list(yaml.safe_load_all(open(path, encoding='utf-8')))
+              except Exception as error:
+                  failures.append(f'{path}: {error}')
+          for failure in failures:
+              print(f'FAIL {failure}')
+          sys.exit(1 if failures else 0)
+          PY
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      # Server-side validation is not available without a cluster, so this is a client-side dry
+      # run: it catches malformed manifests and unknown fields, not admission-policy problems.
+      - name: Render and validate Kubernetes manifests
+        run: |
+          kubectl kustomize platform/k8s > /tmp/rendered.yaml
+          kubectl apply --dry-run=client -f /tmp/rendered.yaml --validate=false
+
+      - name: Check the secrets template holds no real secrets
+        run: |
+          python3 - <<'PY'
+          import re, sys
+          text = open('platform/k8s/11-secrets.example.yaml', encoding='utf-8').read()
+          # Every value in the template must still be a placeholder. A real token committed here
+          # would stay in git history long after it was rotated.
+          values = re.findall(r'^\s+[A-Z_]+:\s*(\S+)$', text, re.MULTILINE)
+          leaked = [v for v in values if not v.startswith('replace-me')]
+          if leaked:
+              print('Non-placeholder values in the secrets template:', leaked)
+              sys.exit(1)
+          print(f'{len(values)} placeholder values, none of them real.')
+          PY
+
+  shell:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # The acceptance suite is the thing that catches what unit tests cannot, so a syntax error
+      # in it is a gap in coverage that looks like a passing build.
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: ./scripts
+          # Word splitting in these scripts is deliberate: `code -X POST "$URL" -H "$HEADER"`
+          # relies on it, and quoting every one would mean rewriting them around arrays for no
+          # behavioural gain.
+          severity: warning
+
+  images:
+    name: Container images
+    runs-on: ubuntu-latest
+    needs: [ build-and-verify ]
+    # Only on main. Building twelve images on every pull request costs minutes and produces
+    # artifacts nobody deploys.
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    permissions:
+      contents: read
+      packages: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - gateway-service
+          - auth-service
+          - merchant-service
+          - payment-service
+          - webhook-service
+          - provider-router-service
+          - ledger-service
+          - settlement-service
+          - notification-service
+          - fraud-service
+          - mock-bank-service
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.service }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          build-args: |
+            MODULE=services/${{ matrix.service }}
+            ARTIFACT=${{ matrix.service }}
+          push: true
+          # The commit sha, not `latest`. A tag that moves makes a rollback a guess about what was
+          # actually running.
+          tags: ghcr.io/${{ github.repository_owner }}/${{ matrix.service }}:${{ github.sha }}
+          # The build stage is identical for every service, so one shared cache means the Maven
+          # reactor is built once for all eleven images instead of eleven times.
+          cache-from: type=gha,scope=openpay-build
+          cache-to: type=gha,scope=openpay-build,mode=max

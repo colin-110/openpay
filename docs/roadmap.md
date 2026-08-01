@@ -27,6 +27,7 @@ Built:
   container logs shipped to Loki
 - Kubernetes manifests (phase 13) with probes, autoscaling, disruption budgets, and network policy
 - k6 load and resilience scenarios (phase 14) in `tests/performance/`
+- the CI/CD pipeline (phase 15): quality gates, container images, and a nightly acceptance run
 
 Still open inside those phases:
 
