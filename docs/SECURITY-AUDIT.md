@@ -13,12 +13,12 @@ actually lets someone do, and what fixing it takes.
 | 3 | provider-router-service has no authentication at all | **High** | Fixed |
 | 4 | SSRF through the merchant webhook URL | **Medium** | Fixed |
 | 5 | No replay window on inbound acquirer callbacks | **Medium** | Fixed |
-| 6 | One admin token opens everything | **Medium** | Open |
-| 7 | No rate limiting on merchant-facing writes | **Medium** | Open |
-| 8 | notification-service holds the platform admin token | **Medium** | Partly addressed |
-| 9 | Login limiter is in-memory and keyed only on email | **Low** | Open |
+| 6 | One admin token opens everything | **Medium** | Fixed |
+| 7 | No rate limiting on merchant-facing writes | **Medium** | Fixed |
+| 8 | notification-service holds the platform admin token | **Medium** | Fixed |
+| 9 | Login limiter is in-memory and keyed only on email | **Low** | Fixed |
 | 10 | JWT issuer and audience are not validated | **Low** | Fixed |
-| 11 | CORS ships a development origin as its default | **Low** | Open |
+| 11 | CORS ships a development origin as its default | **Low** | Fixed |
 | 12 | No TLS anywhere | **Info** | Accepted |
 
 ---
@@ -193,7 +193,25 @@ history, and merchant signing secrets. Five services compare against the same st
 separation of duties and no way to grant read-only operator access, and rotating it means rotating
 it everywhere at once.
 
-**Fix.** Distinct credentials per capability, or a real operator identity with scoped permissions.
+**Fixed.** Split into three tiers, each a separate secret, so leaking one does not leak the others:
+
+| Header | Authorises | Why it is its own tier |
+| --- | --- | --- |
+| `X-Admin-Token` | Onboarding a merchant, issuing an API key, rotating a webhook secret, creating a dashboard user | Anything that creates a business identity, or a credential capable of moving money on its own |
+| `X-Ops-Token` | The general ledger, closing a settlement window, cross-merchant delivery history | Reporting and administration that mints nothing. The one tier safe to embed in a dashboard or a cron job |
+| `X-Internal-Token` | Router attempt history, merchant webhook config | Service-to-service. The narrowest tier: one service reading one thing from a peer |
+
+The dividing line is *does this create a credential*, not *is this sensitive*. The ledger is highly
+sensitive and sits on the ops tier anyway, because reading it does not let you mint anything —
+whereas a token that can issue an API key goes on to do everything that key can do, indefinitely.
+
+Verified live: the admin token is now **refused** on the ledger, on `/internal/settlements/run`, on
+cross-merchant delivery history, and on merchant webhook config. Every one of those was reachable
+with it before.
+
+Still one shared secret per tier rather than a real operator identity with per-person permissions.
+That is the honest limit of this fix: it cuts the blast radius of a leak substantially and makes
+rotation independent per tier, but it does not tell you *which* operator did something.
 
 ---
 
@@ -204,8 +222,27 @@ it everywhere at once.
 open connections, and each one fans out to Kafka, the router, an acquirer, the ledger, settlement,
 and an outbound webhook. One misbehaving integration is a platform-wide incident.
 
-**Fix.** A per-merchant token bucket at the gateway, backed by Redis (already in the compose file
-and currently unused) so the limit holds across replicas.
+**Fixed.** A per-merchant fixed-window counter at the gateway, in Redis so the limit holds across
+replicas — an in-memory counter would mean N replicas each allowing the full quota independently.
+
+Three deliberate choices:
+
+- **It runs after authentication.** An invalid credential is rejected before this filter sees it,
+  so the limiter counts real merchant traffic rather than someone guessing at API keys.
+- **Writes only.** A read costs far less than a write, which is what fans out to Kafka, the router,
+  an acquirer, the ledger, settlement and a webhook. Limiting reads too would not track the risk.
+- **It fails open.** A rate limiter is an availability protection, not a security invariant like
+  authentication. Refusing every request because Redis blipped would make the limiter a bigger
+  outage than the abuse it exists to prevent.
+
+Fixed window rather than sliding or a token bucket: one `INCR` plus one `EXPIRE`, correct under
+concurrent callers with no extra coordination. It is not exact — a caller can get up to double the
+nominal limit across a window boundary — and that imprecision is worth it for something that runs
+on every request.
+
+Verified live with a 60-request concurrent burst against a 30-per-5s limit: exactly 30 succeeded
+and 30 returned `429` with `Retry-After: 5`, while reads from the same throttled merchant kept
+returning `200`.
 
 ---
 
@@ -216,13 +253,15 @@ It needs merchant signing secrets, and the only way to read them is
 outbound connections to arbitrary third-party URLs — the one most exposed to the outside world — is
 also the one holding the credential that opens the ledger and issues API keys.
 
-**Fix.** A narrow internal endpoint that returns only a signing secret, authenticated by a
-service-specific credential rather than the platform admin token.
+**Fixed.** The endpoint moved to `GET /internal/merchants/{id}/webhook-config`, guarded by
+`X-Internal-Token`, and notification-service no longer holds the admin token at all. The
+admin-gated `/api/v1/merchants/{id}/webhook-config` was removed rather than kept alongside —
+leaving it would have meant the admin token still reached every merchant's live signing secret,
+which is the thing this finding was about.
 
-**Partly addressed.** The credential this needs now exists — `X-Internal-Token`, already used
-between payment-service and the router — so the remaining work is to move
-`/api/v1/merchants/{id}/webhook-config` onto it. notification-service still holds the admin token
-until that lands.
+Verified live: the old path returns `404`, the new one returns `401` for both no credential and the
+admin token, and `200` only for the service token — while webhook delivery still completes on the
+first attempt.
 
 ---
 
@@ -232,7 +271,30 @@ until that lands.
 per instance, so N replicas mean N times the attempts, and it resets on restart. Keying purely on
 email also means anyone who knows an address can deliberately lock that user out.
 
-**Fix.** Move the counter to Redis, and rate-limit by source as well as by account.
+**Fixed.** The counter moved to Redis, and login now carries two budgets rather than one:
+
+- **Per account**, tight (10 failures / 15 min). Somebody retrying their own password a dozen times
+  has stopped remembering and started guessing.
+- **Per source address**, much looser (50 / 15 min). A shared office IP or a NAT gateway
+  legitimately produces many failures from many different people, so setting this near the
+  per-account number would lock out a whole building.
+
+Either budget alone is wrong in a different direction. Counting only by account is what let anyone
+who knew an address lock that person out. Counting only by source lets an attacker spread guesses
+across many accounts from one host and never trip anything.
+
+**A success clears only the account's budget, never the source's.** Otherwise an attacker holding
+one valid account of their own would reset the source counter at will and guess against everybody
+else for free.
+
+Verified live: 10 wrong passwords then `429`, the correct password also refused while the budget is
+spent, and — the point of the fix — a *different* account logging in successfully from the same
+source at the same moment.
+
+**Known weakness.** The source comes from `X-Forwarded-For`, which is forgeable when nothing strips
+it at the edge, so an attacker can rotate the value for a fresh source bucket each time. That is
+why this is defence in depth on top of the per-account budget rather than a replacement for it, and
+why making that header trustworthy belongs to the ingress.
 
 ---
 
@@ -258,7 +320,10 @@ that forgets to set `OPENPAY_DASHBOARD_ORIGINS` silently trusts a developer's la
 than failing. Low impact — an attacker cannot easily control that origin — but the fail-open default
 is inconsistent with how the admin token and the JWT secret behave.
 
-**Fix.** Default to empty, as the other secrets do.
+**Fixed.** Defaults to empty in both services, so a deployment that forgets to set
+`OPENPAY_DASHBOARD_ORIGINS` answers no cross-origin request at all rather than silently trusting a
+developer's laptop. `scripts/run-local.ps1` names the origin explicitly for local work, and the
+compose file *requires* it rather than defaulting.
 
 ---
 

@@ -82,10 +82,18 @@ Four kinds of caller, and the system treats them very differently.
 
 | Caller | Credential | Checked by | Reaches |
 | --- | --- | --- | --- |
-| Merchant server | `X-Api-Key` | `ApiKeyAuthenticationFilter` → auth-service | Payments, refunds |
-| Dashboard user | `Authorization: Bearer` | `JwtAuthenticationFilter` (local signature check) | Payments, refunds |
-| Platform operator | `X-Admin-Token` | `AdminTokenFilter` (constant-time compare) | Merchants, keys, users, ledger, settlements, deliveries |
+| Merchant server | `X-Api-Key` | `ApiKeyAuthenticationFilter` → auth-service | Payments, refunds, own settlements, own deliveries |
+| Dashboard user | `Authorization: Bearer` | `JwtAuthenticationFilter` (local signature check) | The same paths as an API key |
+| Platform operator | `X-Admin-Token` | `AdminTokenFilter` (constant-time compare) | Merchants, API keys, dashboard users, webhook-secret rotation |
+| Platform operator | `X-Ops-Token` | `AdminTokenFilter` (constant-time compare) | Ledger, settlement runs, cross-merchant deliveries |
+| Another service | `X-Internal-Token` | `AdminTokenFilter` (constant-time compare) | Router attempts, merchant webhook config |
 | Acquirer | HMAC-SHA256 over `timestamp.body` | `SignatureVerifier` | Callbacks only |
+
+The three operator/service tiers are separate secrets on purpose. The line between them is *does
+this create a credential* — not *is this sensitive*. The ledger is highly sensitive and sits on the
+ops tier anyway, because reading it mints nothing; issuing an API key sits on the admin tier
+because that key then does everything it is scoped for, indefinitely. Leaking the reporting token a
+dashboard uses should not hand over merchant onboarding.
 
 **Filter order matters and is deliberate.** In `SecurityAutoConfiguration`, ordered from
 `Ordered.HIGHEST_PRECEDENCE`:
@@ -95,8 +103,15 @@ Four kinds of caller, and the system treats them very differently.
 +8   CorsFilter               preflights carry no credential, so they are answered first
 +9   JwtAuthenticationFilter  a bearer token, if present, becomes the principal
 +10  ApiKeyAuthenticationFilter   skipped entirely if a principal already exists
-+11  AdminTokenFilter         operator paths only
++11  AdminTokenFilter         credential-minting operator paths
++12  InternalTokenFilter      service-to-service paths
++13  OpsTokenFilter           operator reporting and administration
++20  RateLimitFilter          gateway only, and last: it charges an authenticated merchant
 ```
+
+`RateLimitFilter` sitting after every authentication filter is the point, not an accident. A
+request that reaches it has already had an invalid credential rejected, so the limiter counts real
+merchant traffic instead of somebody guessing at API keys.
 
 The two merchant filters converge on the same object:
 
@@ -413,6 +428,7 @@ Without this, one poison message blocks its partition forever.
 | ledger-service | Events queue in Kafka, applied on recovery | Everything else |
 | notification-service | Merchant webhooks queue; backoff retries up to 6 h | Everything else |
 | A merchant's endpoint | Retries 8 times over ~6 h, then marked failed in the delivery log | Everything else |
+| Redis | Rate limiting and login throttling stop enforcing and **fail open** | Everything. Protection degrades, service does not |
 | payment-service | Full outage of payment creation and reads | Login, dashboard shell |
 
 The pattern: **the synchronous path is small and the asynchronous path is durable.** Losing an

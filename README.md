@@ -26,7 +26,7 @@ events atomically with its own writes).
 
 ## Credentials
 
-Four kinds of caller, four kinds of credential:
+Four kinds of caller, five kinds of credential:
 
 - **Merchant API key** (`X-Api-Key`) — for payment traffic. Issued by auth-service, presented by
   merchants. Merchant identity is derived from the validated key and never read from a
@@ -34,19 +34,24 @@ Four kinds of caller, four kinds of credential:
 - **Dashboard session** (`Authorization: Bearer`) — for people. A short-lived HS256 JWT issued by
   `POST /api/v1/auth/login`, accepted on exactly the same paths as an API key. Downstream code
   never learns which of the two was used: a payment read is scoped to a merchant either way.
-- **Admin token** (`X-Admin-Token`) — for platform-operator actions: onboarding merchants,
-  issuing API keys, creating dashboard users, and closing settlement windows.
-- **Service token** (`X-Internal-Token`) — for service-to-service calls. Separate from the admin
-  token on purpose: a service that reads one thing from a peer should not have to hold the
-  credential that opens everything else.
+- **Admin token** (`X-Admin-Token`) — for actions that create a business identity or a credential:
+  onboarding merchants, issuing API keys, creating dashboard users, rotating a webhook secret.
+- **Ops token** (`X-Ops-Token`) — for operator reporting and administration that mints nothing: the
+  general ledger, closing a settlement window, cross-merchant delivery history. Separate from the
+  admin token so the credential a reporting dashboard carries cannot also onboard a merchant.
+- **Service token** (`X-Internal-Token`) — for service-to-service calls. Separate again: a service
+  that reads one thing from a peer should not have to hold the credential that opens everything
+  else.
 
 A credential also carries an **authority** — a key's scope (`payments:read` / `payments:write`) or
 a session's role (`MERCHANT_ADMIN` / `MERCHANT_VIEWER`) — and it is enforced. Read-only credentials
 can see payments but cannot take one or refund one.
 
-None of the admin token, the service token, or the JWT secret has a default value. A shipped default would be a
-publicly known secret, so admin endpoints fail closed until `OPENPAY_ADMIN_TOKEN` is set, and
-auth-service refuses to start unless `OPENPAY_JWT_SECRET` is at least 32 bytes.
+None of the admin token, the ops token, the service token, or the JWT secret has a default value. A
+shipped default would be a publicly known secret, so each tier fails closed until its variable is
+set, and auth-service refuses to start unless `OPENPAY_JWT_SECRET` is at least 32 bytes. The
+browser origin (`OPENPAY_DASHBOARD_ORIGINS`) is empty by default for the same reason — an unset
+origin answers no cross-origin request rather than trusting a developer's laptop.
 
 ## Getting Started
 
@@ -56,22 +61,22 @@ auth-service refuses to start unless `OPENPAY_JWT_SECRET` is at least 32 bytes.
 docker compose -f platform/docker/docker-compose.yml up -d
 ```
 
-### 2. Set the admin token and the session signing key
+### 2. Set the credentials
 
 PowerShell:
 
 ```bash
-$env:OPENPAY_ADMIN_TOKEN = "dev-admin-token"; $env:OPENPAY_JWT_SECRET = "dev-jwt-secret-not-for-production-use"
+$env:OPENPAY_ADMIN_TOKEN = "dev-admin-token"; $env:OPENPAY_OPS_TOKEN = "dev-ops-token"; $env:OPENPAY_INTERNAL_TOKEN = "dev-internal-token"; $env:OPENPAY_JWT_SECRET = "dev-jwt-secret-not-for-production-use"; $env:OPENPAY_DASHBOARD_ORIGINS = "http://localhost:5173"
 ```
 
 bash:
 
 ```bash
-export OPENPAY_ADMIN_TOKEN=dev-admin-token OPENPAY_JWT_SECRET=dev-jwt-secret-not-for-production-use
+export OPENPAY_ADMIN_TOKEN=dev-admin-token OPENPAY_OPS_TOKEN=dev-ops-token OPENPAY_INTERNAL_TOKEN=dev-internal-token OPENPAY_JWT_SECRET=dev-jwt-secret-not-for-production-use OPENPAY_DASHBOARD_ORIGINS=http://localhost:5173
 ```
 
 Every service gets the same signing key: auth-service issues sessions and the services behind the
-gateway verify them. `scripts/run-local.ps1` sets both for you.
+gateway verify them. `scripts/run-local.ps1` sets all of these for you.
 
 ### 3. Build
 
@@ -382,12 +387,15 @@ Internal, not exposed through the gateway:
   attempt ended.
 - `GET /api/v1/ledger/accounts/{accountCode}/balance` — derived from the journal, admin-gated.
 - `GET /api/v1/ledger/entries?referenceId={paymentId}` — every transaction and both sides of each.
+Operator reporting and administration, authenticated with `X-Ops-Token`:
+
 - `GET /internal/settlements` — every merchant's payouts.
 - `POST /internal/settlements/run` — close a settlement window explicitly.
 - `POST /internal/settlements/{settlementId}/complete` — mark a payout paid.
-- `GET /api/v1/merchants/{merchantId}/webhook-config` — delivery URL and signing secret.
 - `POST /api/v1/merchants/{merchantId}/webhook-secret` — rotate the signing secret.
 - `GET /internal/webhooks/deliveries?merchantId=` — delivery history across merchants.
+- `GET /api/v1/ledger/entries?referenceId={paymentId}` — every transaction and both sides of each.
+- `GET /api/v1/ledger/accounts/{accountCode}/balance` — derived from the journal.
 
 Every service exposes `/actuator/health`, `/actuator/info`, and `/actuator/prometheus`.
 

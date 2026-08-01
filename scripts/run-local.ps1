@@ -24,6 +24,13 @@ param(
     [string]$JwtSecret = "dev-jwt-secret-not-for-production-use",
     # Service-to-service secret, separate from the admin token on purpose.
     [string]$InternalToken = "dev-internal-token",
+    # Operator reporting/administration that does not mint a credential: the ledger, settlement
+    # windows, cross-merchant delivery history. Separate from the admin token so leaking it does
+    # not also leak the power to onboard a merchant or issue an API key.
+    [string]$OpsToken = "dev-ops-token",
+    # The Vite dev server. Both browser-facing services now refuse cross-origin requests unless an
+    # origin is named, so local work has to say so explicitly rather than relying on a default.
+    [string]$DashboardOrigin = "http://localhost:5173",
     [string]$BankASecret = "bank-a-secret",
     [string]$BankBSecret = "bank-b-secret"
 )
@@ -84,7 +91,8 @@ Write-Host "Starting $($services.Count) services..." -ForegroundColor Cyan
 foreach ($service in $services) {
     # Every service gets the same signing key: auth-service issues sessions, the others verify them.
     $envSetup = "`$env:OPENPAY_ADMIN_TOKEN='$AdminToken'; `$env:OPENPAY_JWT_SECRET='$JwtSecret'; " +
-                "`$env:OPENPAY_INTERNAL_TOKEN='$InternalToken'; "
+                "`$env:OPENPAY_INTERNAL_TOKEN='$InternalToken'; `$env:OPENPAY_OPS_TOKEN='$OpsToken'; " +
+                "`$env:OPENPAY_DASHBOARD_ORIGINS='$DashboardOrigin'; "
     foreach ($key in $service.Env.Keys) {
         $envSetup += "`$env:$key='$($service.Env[$key])'; "
     }

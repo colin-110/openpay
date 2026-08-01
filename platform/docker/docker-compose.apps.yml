@@ -23,8 +23,19 @@ x-service-defaults: &service-defaults
     # Service-to-service calls. Separate from the admin token so a service that reads one thing
     # from a peer does not also hold the credential that opens onboarding and the ledger.
     OPENPAY_INTERNAL_TOKEN: ${OPENPAY_INTERNAL_TOKEN:?set OPENPAY_INTERNAL_TOKEN before starting the stack}
+    # Operator reporting/administration that does not mint a credential: the ledger, settlement
+    # windows, cross-merchant delivery history. Separate again, so this one is safe to hand to a
+    # read-mostly dashboard or a cron job without also handing it merchant onboarding or key issuance.
+    OPENPAY_OPS_TOKEN: ${OPENPAY_OPS_TOKEN:?set OPENPAY_OPS_TOKEN before starting the stack}
     # Containers deliver webhooks to real hosts, so the loopback exemption stays off.
     ALLOW_LOOPBACK_WEBHOOKS: "false"
+    # Browser origin allowed to call the gateway and auth-service. Required: both refuse every
+    # cross-origin request when it is unset, rather than trusting a default nobody chose.
+    OPENPAY_DASHBOARD_ORIGINS: ${OPENPAY_DASHBOARD_ORIGINS:?set OPENPAY_DASHBOARD_ORIGINS before starting the stack}
+    # Backs the gateway rate limit and the auth attempt throttle. Both fail open if it is
+    # unreachable, so this is a degradation, not an outage.
+    REDIS_HOST: redis
+    REDIS_PORT: 6379
     AUTH_SERVICE_BASE_URL: http://auth-service:8081
     MERCHANT_SERVICE_BASE_URL: http://merchant-service:8082
     PAYMENT_SERVICE_BASE_URL: http://payment-service:8083
@@ -73,6 +84,7 @@ services:
     ports: ["8081:8081"]
     depends_on:
       postgres: {condition: service_healthy}
+      redis: {condition: service_started}
       merchant-service: {condition: service_healthy}
     healthcheck:
       <<: *app-healthcheck
@@ -217,6 +229,7 @@ services:
       <<: *common-env
     ports: ["8080:8080"]
     depends_on:
+      redis: {condition: service_started}
       auth-service: {condition: service_healthy}
       payment-service: {condition: service_healthy}
       merchant-service: {condition: service_healthy}

@@ -71,6 +71,9 @@ ADMIN_HEADER="X-Admin-Token: $ADMIN_TOKEN"
 # Service-to-service credential, deliberately not the admin token.
 INTERNAL_TOKEN="${OPENPAY_INTERNAL_TOKEN:-dev-internal-token}"
 INTERNAL_HEADER="X-Internal-Token: $INTERNAL_TOKEN"
+# Operator reporting/administration that does not mint a credential, deliberately a third secret.
+OPS_TOKEN="${OPENPAY_OPS_TOKEN:-dev-ops-token}"
+OPS_HEADER="X-Ops-Token: $OPS_TOKEN"
 
 echo "Gateway  $GATEWAY_URL"
 echo "Auth     $AUTH_URL"
@@ -302,14 +305,33 @@ check "a read-only key can read settlements" 200 \
   "$(code "$GATEWAY_URL/api/v1/settlements" -H "X-Api-Key: $READ_KEY")"
 
 if [ -n "${SETTLEMENT_URL:-}" ]; then
-  check "closing a window needs the admin token" 401 \
+  # Closing a window does not mint a credential, so it takes the ops token rather than the admin
+  # token — and the admin token, which used to open this, no longer does.
+  check "closing a window needs a credential" 401 \
     "$(code -X POST "$SETTLEMENT_URL/internal/settlements/run")"
-  check "an operator can close a window" 200 \
+  check "the platform admin token no longer opens this" 401 \
     "$(code -X POST "$SETTLEMENT_URL/internal/settlements/run" -H "$ADMIN_HEADER")"
+  check "an operator can close a window with the ops token" 200 \
+    "$(code -X POST "$SETTLEMENT_URL/internal/settlements/run" -H "$OPS_HEADER")"
   check "a merchant sees only its own payouts" "$MID" \
     "$(body "$GATEWAY_URL/api/v1/settlements" -H "X-Api-Key: $KEY" \
        | "$PY" -c 'import sys,json;i=json.load(sys.stdin)["items"];print(i[0]["merchantId"] if i else "none")')"
 fi
+
+echo "== Ops surfaces =="
+# Reads and administration that do not mint a credential: the general ledger, cross-merchant
+# delivery history. A leaked ops token cannot onboard a merchant or issue an API key, which is the
+# whole point of not using the admin token here.
+check "the ledger refuses an unauthenticated caller" 401 \
+  "$(code "http://localhost:8086/api/v1/ledger/entries?referenceId=$PID")"
+check "the ledger refuses the platform admin token" 401 \
+  "$(code "http://localhost:8086/api/v1/ledger/entries?referenceId=$PID" -H "$ADMIN_HEADER")"
+check "the ledger accepts the ops token" 200 \
+  "$(code "http://localhost:8086/api/v1/ledger/entries?referenceId=$PID" -H "$OPS_HEADER")"
+check "cross-merchant delivery history refuses the admin token" 401 \
+  "$(code "http://localhost:8088/internal/webhooks/deliveries" -H "$ADMIN_HEADER")"
+check "cross-merchant delivery history accepts the ops token" 200 \
+  "$(code "http://localhost:8088/internal/webhooks/deliveries" -H "$OPS_HEADER")"
 
 echo "== Gateway routing =="
 # A catch-all exception handler must not turn Spring's own 404 into a fabricated 500.
