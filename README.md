@@ -375,6 +375,7 @@ Platform-operator, authenticated with `X-Admin-Token`:
 - `GET /api/v1/merchants?page=0&size=20`
 - `POST /api/v1/api-keys`
 - `POST /api/v1/users` — create a dashboard user for a merchant.
+- `POST /api/v1/merchants/{merchantId}/webhook-secret` — rotate the signing secret, returned once.
 
 Human-facing, on auth-service directly, unauthenticated by necessity:
 
@@ -391,17 +392,21 @@ Internal, not exposed through the gateway:
 - `GET /internal/router/providers` — circuit breaker state per acquirer.
 - `GET /internal/router/payments/{paymentId}/attempts` — what was tried, in order, and why each
   attempt ended.
-- `GET /api/v1/ledger/accounts/{accountCode}/balance` — derived from the journal, admin-gated.
-- `GET /api/v1/ledger/entries?referenceId={paymentId}` — every transaction and both sides of each.
+- `GET /internal/merchants/{merchantId}/webhook-config` — the live signing secret, read by
+  notification-service on each delivery.
+- `POST /internal/fraud/checks` — the risk gate, called by payment-service inside payment creation.
+  Never merchant-facing: a caller who could reach it could binary-search the thresholds.
+
 Operator reporting and administration, authenticated with `X-Ops-Token`:
 
 - `GET /internal/settlements` — every merchant's payouts.
 - `POST /internal/settlements/run` — close a settlement window explicitly.
 - `POST /internal/settlements/{settlementId}/complete` — mark a payout paid.
-- `POST /api/v1/merchants/{merchantId}/webhook-secret` — rotate the signing secret.
 - `GET /internal/webhooks/deliveries?merchantId=` — delivery history across merchants.
 - `GET /api/v1/ledger/entries?referenceId={paymentId}` — every transaction and both sides of each.
 - `GET /api/v1/ledger/accounts/{accountCode}/balance` — derived from the journal.
+- `GET /internal/dlq/topics`, `GET /internal/dlq?topic=`, and `POST /internal/dlq/replay|discard` —
+  present on every consuming service, covering the topics it consumes.
 - `GET /internal/fraud/reviews?merchantId=` — payments held by screening, oldest first.
 - `POST /internal/fraud/reviews/{paymentId}/resolve` — release or refuse a held payment.
 - `GET /internal/fraud/decisions/{paymentId}` — why one payment was judged the way it was.
@@ -1011,7 +1016,28 @@ Delivered:
 - k6 load and resilience scenarios, including one that disables an acquirer mid-run and asserts
   that acceptance does not move
 
-Not yet built (see [docs/roadmap.md](docs/roadmap.md)):
+Every roadmap phase is implemented. What remains open is deliberate scope rather than unfinished
+work — see [docs/roadmap.md](docs/roadmap.md):
 
-- refresh tokens: a session simply expires and you sign in again
-- any real money movement: the acquirers are simulated, so nothing leaves a database
+- **no payout rail.** Settlement batches what a merchant is owed and clears the payable in the
+  ledger, and then nothing sends money anywhere. Both acquirers are simulated, so no funds ever
+  leave a database.
+- **no refresh tokens.** A session expires and you sign in again.
+- **no email notification.** Merchant delivery is HTTP webhooks only.
+- **no distributed tracing.** Correlation IDs and Loki instead, which answers *what happened* well
+  and *where the time went* only coarsely — see
+  [ADR-0010](docs/adrs/0010-correlation-id-not-tracing.md).
+
+## Documentation
+
+| | |
+| --- | --- |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | What every component is, what happens on each request, and what breaks when a piece goes down |
+| [diagrams/](docs/diagrams/) | System context, service topology, both halves of the payment flow, state machine, data model, event flow, deployment |
+| [adrs/](docs/adrs/) | Ten decisions, each naming the alternative and why it lost |
+| [SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md) | Twelve findings, eleven fixed and one accepted, plus a review of everything added since |
+| [runbook.md](docs/runbook.md) | What to do when something is wrong, starting with the failures that are silent |
+| [release-checklist.md](docs/release-checklist.md) | Short enough to actually read |
+| [demo-script.md](docs/demo-script.md) | Fifteen minutes, showing the interesting parts rather than the easy ones |
+| [ci-cd.md](docs/ci-cd.md) | What the pipeline gates, and what it deliberately does not |
+| [roadmap.md](docs/roadmap.md) | Every phase, and what was actually built in each |

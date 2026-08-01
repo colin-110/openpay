@@ -9,11 +9,14 @@ What every component is, what happens on each request, and what breaks when a pi
 - [5. Failure modes](#5-failure-modes)
 - [6. Data model](#6-data-model)
 
+Diagrams for all of this live in [docs/diagrams/](diagrams/), and the decisions behind it in
+[docs/adrs/](adrs/).
+
 ---
 
 ## 1. The shape of the system
 
-Eleven processes, nine databases, one Kafka cluster. Every service owns its schema outright; no
+Twelve processes, ten databases, one Kafka cluster. Every service owns its schema outright; no
 service reads another's tables. Anything one service needs from another it gets over HTTP (when it
 needs an answer now) or from Kafka (when it needs to know something happened).
 
@@ -28,6 +31,7 @@ needs an answer now) or from Kafka (when it needs to know something happened).
 | ledger-service | 8086 | `openpay_ledger` | Double-entry journal. Append-only, enforced by trigger. |
 | settlement-service | 8087 | `openpay_settlement` | Fee calculation, payout batching, an outbox. |
 | notification-service | 8088 | `openpay_notification` | Signed outbound webhooks to merchants, with retries. |
+| fraud-service | 8089 | `openpay_fraud` | Risk rules, screening decisions, and the review queue. |
 | mock-bank-service | 9001, 9002 | — | Two simulated acquirers. One codebase, run twice. |
 | web/dashboard | 5173 | — | React SPA. A client of the public API, nothing more. |
 
@@ -413,6 +417,51 @@ A message that cannot be processed after retries goes to `<topic>.dlq.v1` — `p
 becomes `payment.created.dlq.v1`, version last so a replay tool knows the schema it is holding.
 Without this, one poison message blocks its partition forever.
 
+Getting a message back out is `/internal/dlq` on whichever service consumes the topic, on the ops
+token: **peek** without committing anything, **replay** to the original topic, or **discard**
+explicitly. Discard is a separate operation rather than a flag, because a message whose cause has
+not been fixed goes straight back to the DLQ at a new offset — so using replay to clear a queue
+only moves the poison along by one. Nothing replays on a schedule; automatic replay is how a poison
+message becomes an infinite loop.
+
+The `topic` parameter is checked against a per-service allowlist, since replay publishes to a topic
+derived from the request and an unconstrained one would let the ops token inject any event into the
+platform.
+
+### 4.7 The risk gate
+
+Screening is a synchronous call from payment-service to fraud-service, made *before* the payment is
+written. The payment id is minted in the application rather than by the database so the decision can
+be keyed on it — which is what makes the gate idempotent across a retried creation.
+
+`ALLOW` proceeds. `BLOCK` returns `422` and persists nothing, because a refused payment is not a
+payment that happened. `REVIEW` persists the payment with `fraud_status = HELD` and **withholds the
+outbox row** — routing is driven entirely by `payment.created.v1`, so a payment nobody announced has
+been offered to no acquirer, and there is no second mechanism that has to agree.
+
+When fraud-service cannot be reached the gate **fails open** and records `UNSCREENED` rather than
+`ALLOWED`: failing closed would let one unhealthy risk service stop every merchant on the platform
+from taking money, and the distinct status keeps the window visible afterwards instead of
+indistinguishable from a clean pass. See
+[ADR-0003](adrs/0003-fraud-gate-fails-open.md).
+
+Rules live in `fraud_rules` and are evaluated first-match in priority order, so the table reads top
+to bottom — see [ADR-0008](adrs/0008-first-match-rule-evaluation.md).
+
+### 4.8 The audit trail
+
+`audit_logs` in auth-service and merchant-service, written by a recorder that runs in
+`REQUIRES_NEW`. That is the whole design: a refused login rolls its transaction back, and without a
+separate one the record of the attempt would roll back with it, leaving a log that contains only the
+sign-ins that worked.
+
+A failed insert is logged and swallowed rather than propagated, because the alternative turns an
+audit-table outage into a platform outage — nobody can sign in because the record of them signing in
+cannot be written.
+
+Nothing recorded is usable as a credential: key issuance stores the prefix, rotation stores that it
+happened.
+
 ---
 
 ## 5. Failure modes
@@ -430,6 +479,7 @@ Without this, one poison message blocks its partition forever.
 | A merchant's endpoint | Retries 8 times over ~6 h, then marked failed in the delivery log | Everything else |
 | Redis | Rate limiting and login throttling stop enforcing and **fail open** | Everything. Protection degrades, service does not |
 | payment-service | Full outage of payment creation and reads | Login, dashboard shell |
+| fraud-service | Screening **fails open**: payments are accepted and recorded `UNSCREENED`. Held payments stay held until it returns | Everything. Risk cover degrades, service does not |
 
 The pattern: **the synchronous path is small and the asynchronous path is durable.** Losing an
 event-driven consumer delays work; it does not lose it.
@@ -441,16 +491,25 @@ event-driven consumer delays work; it does not lose it.
 Each service, its tables, and the constraint that matters most.
 
 **auth-service** — `api_keys` (prefix + SHA-256 hash; plaintext returned exactly once and never
-stored), `users` (BCrypt hash, email lowercased and unique).
+stored), `users` (BCrypt hash, email lowercased and unique), `audit_logs`.
 
-**merchant-service** — `merchants` (unique `merchant_code`, webhook URL and signing secret).
+**merchant-service** — `merchants` (unique `merchant_code`, webhook URL and signing secret),
+`audit_logs`. Two audit tables rather than one shared: a central audit database would make every
+service's writes depend on a schema none of them owns, and would be the single outage that stops the
+whole platform recording anything.
 
 **payment-service** — `payments` (unique `(merchant_id, idempotency_key)`, amount `BIGINT` minor
 units, `CHAR(3)` currency, optimistic `version`, flat payment-method columns), `refunds` (same
 idempotency constraint, `amount > 0`), `payment_events` (audit trail), `outbox_events`.
 
 **provider-router-service** — `provider_transactions`, one row per attempt with `attempt_no`,
-provider, status, and failure reason.
+provider, status, and failure reason; `provider_routing_rules`, the acquirer choice as data, unique
+per scope with `NULLS NOT DISTINCT` because every narrowing column is nullable and the general case
+is all of them null.
+
+**fraud-service** — `fraud_rules` (first-match in priority order, disabled rather than deleted) and
+`fraud_decisions` (unique on `payment_id`, with the operator's resolution stored *beside* the
+original outcome rather than overwriting it).
 
 **webhook-service** — `provider_webhook_events`, unique on `(provider, provider_event_id)`, which is
 what makes redelivery a no-op.

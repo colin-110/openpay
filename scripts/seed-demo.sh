@@ -76,6 +76,10 @@ ORDERS=(
   # No method at all, because some integrations do not send one and the console should say so
   # rather than invent one.
   '118000|'
+  # Over the seeded review threshold of Rs 50,000, so screening holds it. Deliberately last: the
+  # console and the review queue both need something in them, and a demo with an empty queue makes
+  # the whole review flow look theoretical.
+  '9000000|{"type":"card","network":"visa","last4":"4242","token":"tok_card_5"}'
 )
 
 echo "Creating ${#ORDERS[@]} payments"
@@ -116,6 +120,12 @@ for id in "${PAYMENT_IDS[@]:0:4}"; do
   refunded=$((refunded + 1))
 done
 
+HELD_COUNT=0
+for id in "${PAYMENT_IDS[@]}"; do
+  fraud=$(curl -sS "$GATEWAY_URL/api/v1/payments/$id" -H "X-Api-Key: $API_KEY" | json "['fraudStatus']")
+  [ "$fraud" = "HELD" ] && HELD_COUNT=$((HELD_COUNT + 1))
+done
+
 cat <<SUMMARY
 
 Done.
@@ -123,6 +133,12 @@ Done.
   Merchant   $MERCHANT_ID
   API key    $API_KEY
   Dashboard  $USER_EMAIL / $PASSWORD
+
+  ${#PAYMENT_IDS[@]} payments, $refunded refunded, $HELD_COUNT held for review.
+
+The held one is waiting on a human and has reached no acquirer, which is the point. Work it with:
+
+  curl -s localhost:8089/internal/fraud/reviews -H "X-Ops-Token: \$OPENPAY_OPS_TOKEN"
 
 Start the dashboard with:  cd web/dashboard && npm run dev
 SUMMARY

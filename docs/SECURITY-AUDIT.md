@@ -21,6 +21,10 @@ actually lets someone do, and what fixing it takes.
 | 11 | CORS ships a development origin as its default | **Low** | Fixed |
 | 12 | No TLS anywhere | **Info** | Accepted |
 
+The surfaces added since that audit — the fraud gate and its rules, the routing table, dead-letter
+replay, and the audit log — were reviewed on the same terms as they were built. What that review
+concluded is at the end, under [Surfaces added since](#surfaces-added-since).
+
 ---
 
 ## 1. Session roles are never enforced — High
@@ -358,3 +362,79 @@ Worth recording, so a future reader knows these were examined rather than missed
 - **The payment state machine** has no merchant-facing transition endpoint. Only an event can move a
   payment.
 - **Instrument tokens are never stored** — only a network and last four, or a masked VPA.
+
+---
+
+## Surfaces added since
+
+Each of these was a new way to reach something, and each was placed on a tier deliberately rather
+than on whichever one was nearest.
+
+### The fraud gate — internal tier
+
+`POST /internal/fraud/checks` is service-to-service and never merchant-facing. A merchant who could
+call it could binary-search the thresholds, which is most of the work of evading them.
+
+The request carries an instrument **type** only — `CARD`, `UPI` — and never a token, PAN fragment,
+or VPA. Screening does not need them, and a risk service accumulating a second copy of payment
+instruments is a breach waiting for a reason.
+
+### Risk rules — admin tier, not ops
+
+Everything else an operator does sits on the ops token. Rule editing does not, because someone who
+can edit a rule can lower a threshold, let one specific payment through, and raise it again —
+leaving nothing in the review queue and no trace that anything was let through. That is closer in
+authority to issuing a credential than to reading a report.
+
+### The routing table — admin tier, on its own prefix
+
+Same reasoning, plus one thing specific to it: a routing rule contains a **base URL**. Someone who
+can write one can point every payment on the platform at a host of their choosing. That is the
+strongest capability added in this release, and it is behind the strongest token.
+
+It sits on `/internal/routing-rules` rather than under `/internal/router`, which the service token
+already guards. A path covered by both filters would require both credentials — a confusing way to
+express "operators only", and the kind of confusion that gets resolved by widening something.
+
+### Dead-letter replay — ops tier, with an allowlist
+
+Replaying puts a message back into the payment flow, which mints no credential and so sits with the
+ledger and settlement runs.
+
+The `topic` parameter is checked against a **per-service allowlist**, and that check is the control
+that matters: replay publishes to a topic derived from the request, so accepting an arbitrary one
+would turn this endpoint into a way to inject any event into the platform using nothing but the ops
+token. An acceptance check asserts a topic the service does not consume is refused.
+
+Peek does not commit, and auto-commit is explicitly disabled on the replay consumer — a peek that
+consumed what it displayed would be a way to destroy evidence by looking at it.
+
+### The audit log — ops tier, read-only
+
+Deliberately *not* the admin tier, even though its entries are mostly about admin actions:
+investigating an incident should not require holding the credential that could have caused one.
+
+There is no write endpoint. Entries are written by the code doing the thing being recorded, so
+nobody holding a token can manufacture history. Nothing recorded is usable as a credential — key
+issuance stores the prefix, rotation stores that it happened and never the secret.
+
+### Two accepted weaknesses, stated plainly
+
+**Screening fails open.** When fraud-service is unreachable, payments are accepted unscreened. This
+is a deliberate availability trade — see
+[ADR-0003](adrs/0003-fraud-gate-fails-open.md) — and the mitigation is that it is *visible*: the
+payment is recorded `UNSCREENED` rather than `ALLOWED`, and it is a tagged series on the dashboard.
+The residual risk is that nothing pages on it, so an unnoticed fraud-service outage is an unnoticed
+window of unscreened traffic.
+
+**Audit failures are swallowed.** A failed insert is logged at ERROR and the action proceeds, so
+someone who can break writes to `audit_logs` can act unlogged. That requires database access, at
+which point the audit log was never the control holding them back — and the alternative turns an
+audit-table outage into nobody being able to sign in.
+
+### What did not change
+
+The tier model itself. Adding four surfaces was the first real test of whether the split in finding
+6 was the right one, and each new endpoint had an obvious home under it. Two of them landed on the
+admin tier despite being operator work, which is the model doing its job rather than a sign it is
+wrong.

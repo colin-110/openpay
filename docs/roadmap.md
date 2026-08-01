@@ -4,37 +4,42 @@ Each phase is sized for approximately 2 to 5 days and must leave the repository 
 
 ## Delivered So Far
 
-Phases 1 to 3 are implemented, plus the asynchronous provider flow that phases 5, 6, and part of 7
-describe. The system now routes a payment to an acquirer, fails over when one is unhealthy, and
-completes the payment from a signature-verified callback.
+Every phase is implemented. The gaps this section used to list are closed; what remains open is
+listed below as deliberate scope, not as unfinished work.
 
 Built:
 
-- phases 1-3, except the gaps listed below
+- phases 1-3: monorepo, merchant identity, API keys, dashboard sessions, the payment API with
+  fingerprinted idempotency and a state machine, refunds, and `audit_logs`
 - `ledger-service` (phase 4) with a database-enforced append-only journal
-- `settlement-service` (phase 8) accruing payables and batching payouts
 - `mock-bank-service` (phase 5), deployed twice as mock-bank-a and mock-bank-b
-- `provider-router-service` (phase 6) with priority routing, failover, and a circuit breaker
-- `webhook-service` (phase 10's inbound half) with HMAC verification and deduplication
-- transactional outbox and Kafka event backbone (the core of phase 7)
-- `fraud-service` (phase 9) gating the payment write path, with database-held rules and a
-  review queue
-- `audit_logs` (phase 2) in auth-service and merchant-service, written in their own transaction so
-  a refused action is still recorded
-- dead-letter peek, replay, and discard (phase 7) on every consuming service
-- `provider_routing_rules` (phase 6), seeded from configuration once and authoritative after that
+- `provider-router-service` (phase 6) with priority routing, failover, a circuit breaker, and
+  `provider_routing_rules` — seeded from configuration once and authoritative after that
+- the Kafka event backbone (phase 7): transactional outbox, dead-letter routing, and peek, replay,
+  and discard on every consuming service
+- `settlement-service` (phase 8) accruing payables, batching payouts, and carrying deficits forward
+- `fraud-service` (phase 9) gating the payment write path, with rules in a table and a review queue
+- `webhook-service` and `notification-service` (phase 10): HMAC-verified inbound callbacks and
+  signed outbound webhooks with retries and a delivery log
 - the observability stack (phase 11): provisioned Grafana dashboards, business metrics, and
   container logs shipped to Loki
+- the containerised platform (phase 12), runnable with one command
 - Kubernetes manifests (phase 13) with probes, autoscaling, disruption budgets, and network policy
 - k6 load and resilience scenarios (phase 14) in `tests/performance/`
 - the CI/CD pipeline (phase 15): quality gates, container images, and a nightly acceptance run
 - diagrams and decision records (phase 16) in `docs/diagrams/` and `docs/adrs/`
+- release hardening (phase 17): a [runbook](runbook.md), a [release checklist](release-checklist.md),
+  a [demo script](demo-script.md), [release notes](release-notes.md), and index tuning
 
-Still open inside those phases:
+Deliberately not built:
 
-- Phase 8: payouts are batched and clear the ledger payable, but no money is actually sent
-  anywhere; there is no payout rail
-- Phase 10: complete for webhooks. Email notification is not built; delivery is HTTP only.
+- **A payout rail.** Settlement batches what a merchant is owed and clears the payable in the
+  ledger, and then nothing sends money anywhere. Both acquirers are simulated, so no funds ever
+  leave a database.
+- **Refresh tokens.** A session expires and you sign in again.
+- **Email notification.** Merchant delivery is HTTP webhooks only.
+- **Distributed tracing.** Correlation IDs and Loki instead — see
+  [ADR-0010](adrs/0010-correlation-id-not-tracing.md).
 
 Money is stored as `BIGINT` minor units throughout, matching the architecture document.
 
