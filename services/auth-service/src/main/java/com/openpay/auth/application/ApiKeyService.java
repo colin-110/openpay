@@ -6,6 +6,8 @@ import com.openpay.auth.api.ValidateApiKeyResponse;
 import com.openpay.auth.domain.ApiKey;
 import com.openpay.auth.domain.ApiKeyRepository;
 import com.openpay.auth.infrastructure.MerchantServiceClient;
+import com.openpay.audit.AuditAction;
+import com.openpay.audit.AuditRecorder;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -34,6 +36,7 @@ public class ApiKeyService {
     private final MerchantServiceClient merchantServiceClient;
     private final ApiKeyUsageTracker usageTracker;
     private final ValidationAttemptLimiter attemptLimiter;
+    private final AuditRecorder auditRecorder;
     private final int maxFailedValidations;
     private final Duration failedValidationWindow;
     private final SecureRandom secureRandom = new SecureRandom();
@@ -43,12 +46,14 @@ public class ApiKeyService {
             MerchantServiceClient merchantServiceClient,
             ApiKeyUsageTracker usageTracker,
             ValidationAttemptLimiter attemptLimiter,
+            AuditRecorder auditRecorder,
             @Value("${openpay.auth.max-failed-validations:20}") int maxFailedValidations,
             @Value("${openpay.auth.failed-validation-window:PT1M}") Duration failedValidationWindow) {
         this.apiKeyRepository = apiKeyRepository;
         this.merchantServiceClient = merchantServiceClient;
         this.usageTracker = usageTracker;
         this.attemptLimiter = attemptLimiter;
+        this.auditRecorder = auditRecorder;
         this.maxFailedValidations = maxFailedValidations;
         this.failedValidationWindow = failedValidationWindow;
     }
@@ -78,6 +83,12 @@ public class ApiKeyService {
 
         ApiKey saved = apiKeyRepository.save(entity);
         log.info("Issued API key id={} for merchantId={}", saved.getId(), saved.getMerchantId());
+
+        // The prefix, never the key. The point of the entry is that a credential now exists and
+        // which one it is; recording enough to use it would make the audit log the softest place
+        // on the platform to steal one from.
+        auditRecorder.record(AuditAction.API_KEY_ISSUED, "admin-token", saved.getKeyPrefix(),
+                saved.getMerchantId(), "Scope " + saved.getScope() + ", named '" + saved.getName() + "'");
 
         // The plaintext key is returned exactly once, here. Only its hash is persisted.
         return new CreateApiKeyResponse(

@@ -6,6 +6,8 @@ import com.openpay.merchant.api.WebhookConfigResponse;
 import com.openpay.merchant.api.PagedResponse;
 import com.openpay.merchant.domain.Merchant;
 import org.springframework.beans.factory.annotation.Value;
+import com.openpay.audit.AuditAction;
+import com.openpay.audit.AuditRecorder;
 import com.openpay.security.OutboundUrlPolicy;
 import com.openpay.merchant.domain.MerchantRepository;
 import java.security.SecureRandom;
@@ -25,6 +27,7 @@ public class MerchantService {
     private final SecureRandom secureRandom = new SecureRandom();
 
     private final MerchantRepository merchantRepository;
+    private final AuditRecorder auditRecorder;
 
     /**
      * Local development points webhooks at localhost, which is exactly what the policy exists to
@@ -34,9 +37,11 @@ public class MerchantService {
 
     public MerchantService(
             MerchantRepository merchantRepository,
+            AuditRecorder auditRecorder,
             @Value("${openpay.merchant.allow-loopback-webhooks:false}") boolean allowLoopbackWebhooks) {
         this.allowLoopbackWebhooks = allowLoopbackWebhooks;
         this.merchantRepository = merchantRepository;
+        this.auditRecorder = auditRecorder;
     }
 
     @Transactional
@@ -64,7 +69,10 @@ public class MerchantService {
             merchant.setWebhookSecret(generateSecret());
         }
 
-        return toResponse(merchantRepository.save(merchant));
+        Merchant saved = merchantRepository.save(merchant);
+        auditRecorder.record(AuditAction.MERCHANT_CREATED, "admin-token", saved.getMerchantCode(),
+                saved.getId(), "Default currency " + saved.getDefaultCurrency());
+        return toResponse(saved);
     }
 
     @Transactional(readOnly = true)
@@ -111,6 +119,10 @@ public class MerchantService {
                 .orElseThrow(() -> new MerchantNotFoundException("Merchant not found: " + merchantId));
         merchant.setWebhookSecret(generateSecret());
         merchantRepository.save(merchant);
+        // The fact of the rotation, never the secret. An audit log holding live signing keys would
+        // be the easiest place on the platform to steal one from.
+        auditRecorder.record(AuditAction.WEBHOOK_SECRET_ROTATED, "admin-token",
+                merchant.getMerchantCode(), merchant.getId(), "Previous secret invalidated");
         return new WebhookConfigResponse(
                 merchant.getId(), merchant.getWebhookUrl(), merchant.getWebhookSecret());
     }

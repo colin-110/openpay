@@ -7,6 +7,8 @@ import com.openpay.auth.api.UserResponse;
 import com.openpay.auth.domain.User;
 import com.openpay.auth.domain.UserRepository;
 import com.openpay.auth.infrastructure.MerchantServiceClient;
+import com.openpay.audit.AuditAction;
+import com.openpay.audit.AuditRecorder;
 import java.time.Duration;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -36,6 +38,7 @@ public class UserService {
     private final MerchantServiceClient merchantServiceClient;
     private final JwtIssuer jwtIssuer;
     private final ValidationAttemptLimiter attemptLimiter;
+    private final AuditRecorder auditRecorder;
     private final int maxFailedLogins;
     private final int maxFailedLoginsPerSource;
     private final Duration failedLoginWindow;
@@ -46,6 +49,7 @@ public class UserService {
             MerchantServiceClient merchantServiceClient,
             JwtIssuer jwtIssuer,
             ValidationAttemptLimiter attemptLimiter,
+            AuditRecorder auditRecorder,
             @Value("${openpay.auth.max-failed-logins:10}") int maxFailedLogins,
             @Value("${openpay.auth.max-failed-logins-per-source:50}") int maxFailedLoginsPerSource,
             @Value("${openpay.auth.failed-login-window:PT15M}") Duration failedLoginWindow) {
@@ -53,6 +57,7 @@ public class UserService {
         this.merchantServiceClient = merchantServiceClient;
         this.jwtIssuer = jwtIssuer;
         this.attemptLimiter = attemptLimiter;
+        this.auditRecorder = auditRecorder;
         this.maxFailedLogins = maxFailedLogins;
         this.maxFailedLoginsPerSource = maxFailedLoginsPerSource;
         this.failedLoginWindow = failedLoginWindow;
@@ -71,6 +76,8 @@ public class UserService {
                     passwordEncoder.encode(request.password()),
                     request.role()));
             log.info("Created user {} for merchant {}", user.getId(), user.getMerchantId());
+            auditRecorder.record(AuditAction.USER_CREATED, "admin-token", user.getEmail(),
+                    user.getMerchantId(), "Role " + user.getRole());
             return toResponse(user);
         } catch (DataIntegrityViolationException exception) {
             throw new InvalidApiKeyRequestException("A user with that email already exists");
@@ -88,8 +95,17 @@ public class UserService {
         // purpose. Counting only by source means an attacker spreading guesses across many
         // accounts from one host never trips anything. The source budget is much looser, since a
         // shared office IP or a NAT gateway legitimately produces many failures from many people.
-        attemptLimiter.checkAllowed(emailBucket, maxFailedLogins);
-        attemptLimiter.checkAllowed(sourceBucket, maxFailedLoginsPerSource);
+        try {
+            attemptLimiter.checkAllowed(emailBucket, maxFailedLogins);
+            attemptLimiter.checkAllowed(sourceBucket, maxFailedLoginsPerSource);
+        } catch (TooManyAttemptsException exception) {
+            // Recorded separately from an ordinary failure: a throttled attempt never reached the
+            // password check, and reading them as the same thing would misstate how far an attacker
+            // actually got.
+            auditRecorder.recordFailure(AuditAction.LOGIN_THROTTLED, email, null, null,
+                    "Refused before the password was checked");
+            throw exception;
+        }
 
         Optional<User> found = userRepository.findByEmail(email);
 
@@ -101,6 +117,11 @@ public class UserService {
             attemptLimiter.recordFailure(emailBucket, failedLoginWindow);
             attemptLimiter.recordFailure(sourceBucket, failedLoginWindow);
             log.warn("Failed login attempt for {}", email);
+            // The email that was tried, even when no such account exists. A burst against one
+            // address is the signal, and it is invisible if only real accounts are recorded.
+            auditRecorder.recordFailure(AuditAction.LOGIN_FAILED, email, null,
+                    found.map(User::getMerchantId).orElse(null),
+                    found.isEmpty() ? "No such account" : "Wrong password or inactive account");
             throw new InvalidCredentialsException();
         }
 
@@ -115,6 +136,8 @@ public class UserService {
                 jwtIssuer.issue(user.getId(), user.getMerchantId(), user.getEmail(), user.getRole());
 
         log.info("User {} logged in for merchant {}", user.getId(), user.getMerchantId());
+        auditRecorder.record(AuditAction.LOGIN_SUCCEEDED, user.getEmail(), user.getId().toString(),
+                user.getMerchantId(), "Role " + user.getRole());
         return new LoginResponse(
                 issued.token(),
                 issued.expiresAt().atOffset(ZoneOffset.UTC),

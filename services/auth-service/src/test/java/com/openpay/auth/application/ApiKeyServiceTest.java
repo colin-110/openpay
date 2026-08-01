@@ -28,6 +28,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import com.openpay.audit.AuditRecorder;
 
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -44,6 +45,9 @@ class ApiKeyServiceTest {
 
     private final ValidationAttemptLimiter attemptLimiter = mock(ValidationAttemptLimiter.class);
 
+    @Mock
+    private AuditRecorder auditRecorder;
+
     private ApiKeyService apiKeyService;
 
     @BeforeEach
@@ -58,6 +62,7 @@ class ApiKeyServiceTest {
                 merchantServiceClient,
                 usageTracker,
                 attemptLimiter,
+                auditRecorder,
                 3,
                 Duration.ofMinutes(1));
     }

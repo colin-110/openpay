@@ -38,6 +38,11 @@ openpay:
       # Creating dashboard users is operator-only. /api/v1/auth/login is deliberately absent:
       # it is the entry point for humans and cannot require a credential they do not have.
       - /api/v1/users
+    # Reading the audit log sits on the operator tier, not the admin tier: investigating an
+    # incident should not require holding the credential that could cause one.
+    ops-token: ${OPENPAY_OPS_TOKEN:}
+    ops-paths:
+      - /internal/audit
   auth:
     max-failed-validations: 20
     failed-validation-window: PT1M

@@ -384,6 +384,30 @@ if [ -n "${FRAUD_URL:-}" ]; then
   check "the released payment is routed after the review closes" ALLOWED "$released"
 fi
 
+echo "== Audit trail =="
+# Reading the log sits on the operator tier, not the admin tier: investigating an incident should
+# not require holding the credential that could cause one. There is no write endpoint at all.
+check "the audit log refuses an unauthenticated caller" 401 "$(code "$AUTH_URL/internal/audit")"
+check "the audit log refuses the platform admin token" 401 "$(code "$AUTH_URL/internal/audit" -H "$ADMIN_HEADER")"
+check "an operator can read the audit log" 200 "$(code "$AUTH_URL/internal/audit" -H "$OPS_HEADER")"
+check "the audit log cannot be written to" 405 \
+  "$(code -X POST "$AUTH_URL/internal/audit" -H "$OPS_HEADER" -H "$JSON" -d '{}')"
+
+# A refused login has to survive the transaction that failed, or the log would contain only the
+# sign-ins that worked.
+body -X POST "$AUTH_URL/api/v1/auth/login" -H "$JSON" \
+  -d "{\"email\":\"ghost-$SUFFIX@openpay.test\",\"password\":\"wrong-password\"}" > /dev/null
+check "a refused login is recorded" 1 \
+  "$(body "$AUTH_URL/internal/audit?action=LOGIN_FAILED&size=200" -H "$OPS_HEADER" \
+     | "$PY" -c "import sys,json;print(sum(1 for e in json.load(sys.stdin) if e['actor']=='ghost-$SUFFIX@openpay.test'))")"
+# Issuing the key above must be on the record, with the prefix rather than the key.
+check "issuing an api key is recorded against the merchant" 1 \
+  "$(body "$AUTH_URL/internal/audit?action=API_KEY_ISSUED&merchantId=$MID&size=200" -H "$OPS_HEADER" \
+     | "$PY" -c "import sys,json;e=json.load(sys.stdin);print(1 if any(x['subject'].startswith('opk_') for x in e) else 0)")"
+check "onboarding a merchant is recorded" 1 \
+  "$(body "$MERCHANT_URL/internal/audit?action=MERCHANT_CREATED&merchantId=$MID" -H "$OPS_HEADER" \
+     | "$PY" -c 'import sys,json;print(len(json.load(sys.stdin)))')"
+
 echo "== Gateway routing =="
 # A catch-all exception handler must not turn Spring's own 404 into a fabricated 500.
 check "unrouted path is 404, not 500" 404 "$(code "$GATEWAY_URL/api/v1/nothing-here" -H "$KEY_HEADER")"

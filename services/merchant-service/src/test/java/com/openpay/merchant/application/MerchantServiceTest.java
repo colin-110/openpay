@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import com.openpay.audit.AuditRecorder;
 
 @ExtendWith(MockitoExtension.class)
 class MerchantServiceTest {
@@ -25,13 +26,16 @@ class MerchantServiceTest {
     @Mock
     private MerchantRepository merchantRepository;
 
+    @Mock
+    private AuditRecorder auditRecorder;
+
     private MerchantService merchantService;
 
     @BeforeEach
     void setUp() {
         // Constructed by hand rather than @InjectMocks: the loopback flag is a boolean, which
         // Mockito has nothing to inject.
-        merchantService = new MerchantService(merchantRepository, false);
+        merchantService = new MerchantService(merchantRepository, auditRecorder, false);
     }
 
     @Test

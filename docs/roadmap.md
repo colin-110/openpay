@@ -19,10 +19,11 @@ Built:
 - transactional outbox and Kafka event backbone (the core of phase 7)
 - `fraud-service` (phase 9) gating the payment write path, with database-held rules and a
   review queue
+- `audit_logs` (phase 2) in auth-service and merchant-service, written in their own transaction so
+  a refused action is still recorded
 
 Still open inside those phases:
 
-- Phase 2: `audit_logs`
 - Phase 6: routing rules are static configuration, not a `provider_routing_rules` table
 - Phase 7: DLQ topics exist, but there is no replay tool; messages land there and must be
   re-published by hand

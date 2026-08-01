@@ -23,7 +23,8 @@ Shared code lives in `libs/`: `common-observability` (correlation IDs), `common-
 (API key and admin token authentication, applied per path by configuration), `common-kafka`
 (topic names, the event envelope, and the JSON event contracts every service agrees on), and
 `common-outbox` (the transactional outbox, extracted once a second service needed to publish
-events atomically with its own writes).
+events atomically with its own writes), and `common-audit` (the audit trail, on the same
+shared-code-per-service-table arrangement as the outbox).
 
 ## Credentials
 
@@ -404,6 +405,9 @@ Operator reporting and administration, authenticated with `X-Ops-Token`:
 - `GET /internal/fraud/reviews?merchantId=` — payments held by screening, oldest first.
 - `POST /internal/fraud/reviews/{paymentId}/resolve` — release or refuse a held payment.
 - `GET /internal/fraud/decisions/{paymentId}` — why one payment was judged the way it was.
+- `GET /internal/audit?action=&merchantId=&page=&size=` — the audit trail. Present on auth-service
+  and merchant-service, each covering its own actions. Read-only: there is no write endpoint, so
+  nobody holding the token can manufacture history.
 
 Risk rules, authenticated with `X-Admin-Token` rather than the ops token, because someone who can
 edit a rule can lower a threshold, let one payment through, and raise it again without leaving
@@ -548,6 +552,38 @@ settle                              payout gross 70000  <- deficit absorbed
 A negative payable is a receivable, not a bug: the merchant was paid for money they have since
 given back. Paying out a negative amount is meaningless, and zeroing it would quietly write off
 money owed, so the items stay pending and reduce the next payout instead.
+
+## The Audit Trail
+
+Two questions the platform has to be able to answer months later: who was given the ability to move
+money, and who tried to sign in and failed.
+
+`audit_logs` is written by auth-service (logins, throttled attempts, key issuance, user creation)
+and merchant-service (onboarding, webhook secret rotation). Two tables, not one shared audit
+database — the same reasoning as everywhere else here: a service owns its schema, and a central
+audit table would be the one outage that stops the whole platform recording anything. The code is
+shared in `libs/common-audit`.
+
+Three things about it are deliberate:
+
+**Entries are written in their own transaction.** `REQUIRES_NEW`, so a record survives the rollback
+of whatever it was recording. Without that, the most valuable entries — the refused login, the
+rejected key issuance — would be written and then thrown away with the failing transaction, and the
+log would contain only the actions that worked.
+
+**Recording never breaks the thing it records.** A failed insert is logged at ERROR and swallowed.
+The alternative turns an audit-table outage into a platform outage: nobody can sign in because the
+record of them signing in cannot be written. The exposure is that someone who can already break
+writes to this table can act unlogged, but that requires database access, at which point the audit
+log was never the control holding them back.
+
+**Nothing recorded is usable as a credential.** Key issuance stores the prefix, never the key.
+Secret rotation stores that it happened, never the secret. An audit log holding live credentials
+would be the softest place on the platform to steal one from.
+
+The log is read on the **ops** tier rather than the admin tier, even though most entries are about
+admin actions: investigating an incident should not require holding the credential that could cause
+one. There is no write endpoint at all.
 
 ## Risk Screening
 
@@ -802,10 +838,11 @@ Delivered:
 - CI running unit and integration tests on JDK 21 and 25
 - rule-based risk screening in the payment write path, with a review queue and a release that
   survives payment-service being down
+- an audit trail that survives the transaction it is recording, and stores nothing usable as a
+  credential
 
 Not yet built (see [docs/roadmap.md](docs/roadmap.md)):
 
-- audit logs
 - refresh tokens: a session simply expires and you sign in again
 - Kubernetes manifests
 - any real money movement: the acquirers are simulated, so nothing leaves a database

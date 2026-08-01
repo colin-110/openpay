@@ -29,6 +29,11 @@ openpay:
     internal-token: ${OPENPAY_INTERNAL_TOKEN:}
     internal-paths:
       - /internal/merchants
+    # Reading this service's audit log, on the operator tier: investigating an onboarding should
+    # not require holding the credential that could perform one.
+    ops-token: ${OPENPAY_OPS_TOKEN:}
+    ops-paths:
+      - /internal/audit
 
 server:
   port: 8082
