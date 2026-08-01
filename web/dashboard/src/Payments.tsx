@@ -7,7 +7,7 @@ import {
   type PaymentStatus,
   type Session,
 } from "./api";
-import { formatAmount, formatDateTime, formatRelative } from "./format";
+import { describeMethod, formatAmount, formatDateTime, formatRelative } from "./format";
 import { CopyableId, EmptyState, Pagination, SkeletonRows, StatusPill } from "./ui";
 
 const STATUSES: PaymentStatus[] = [
@@ -174,6 +174,7 @@ export function Payments({
             <tr>
               <th>Payment ID</th>
               <th className="numeric">Amount</th>
+              <th>Method</th>
               <th>Status</th>
               <th>Created</th>
               <th className="right">Last updated</th>
@@ -181,7 +182,7 @@ export function Payments({
           </thead>
           <tbody>
             {loading && payments.length === 0 ? (
-              <SkeletonRows rows={6} columns={5} />
+              <SkeletonRows rows={6} columns={6} />
             ) : (
               payments.map((payment) => (
                 <tr
@@ -193,6 +194,9 @@ export function Payments({
                     <CopyableId id={payment.id} />
                   </td>
                   <td className="numeric">{formatAmount(payment.amount, payment.currency)}</td>
+                  <td className={payment.paymentMethod ? "" : "muted"}>
+                    {describeMethod(payment.paymentMethod)}
+                  </td>
                   <td>
                     <StatusPill status={payment.status} />
                   </td>

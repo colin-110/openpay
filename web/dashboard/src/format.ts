@@ -1,3 +1,5 @@
+import type { PaymentMethod } from "./api";
+
 // Amounts cross the wire as integer minor units — paise for INR, cents for USD. Nothing above this
 // file is allowed to know that, and nothing below it is allowed to see a decimal.
 
@@ -74,6 +76,42 @@ export function formatRelative(iso: string): string {
 /** Identifiers are UUIDs. Showing the head and tail keeps them recognisable without the width. */
 export function shortId(id: string): string {
   return id.length <= 13 ? id : `${id.slice(0, 8)}…${id.slice(-4)}`;
+}
+
+const NETWORK_NAMES: Record<string, string> = {
+  rupay: "RuPay",
+  visa: "Visa",
+  mastercard: "Mastercard",
+  amex: "Amex",
+  diners: "Diners",
+};
+
+/**
+ * How a payment reads in a table. A payment created without a method returns an em dash rather
+ * than a guess: not knowing is a real answer, and "Card" would be a made-up one.
+ */
+export function describeMethod(method: PaymentMethod | null): string {
+  if (!method || !method.type) return "—";
+  switch (method.type) {
+    case "card": {
+      const network = method.network ? (NETWORK_NAMES[method.network] ?? titleCase(method.network)) : "Card";
+      return method.last4 ? `${network} ••${method.last4}` : network;
+    }
+    case "upi":
+      return method.vpa ? `UPI · ${method.vpa}` : "UPI";
+    case "netbanking":
+      return method.bank ? `Netbanking · ${method.bank}` : "Netbanking";
+    case "wallet":
+      return method.bank ? `Wallet · ${method.bank}` : "Wallet";
+    default:
+      return titleCase(method.type);
+  }
+}
+
+/** Just the family, for grouping: "UPI", "Card", "Netbanking". */
+export function methodFamily(method: PaymentMethod | null): string {
+  if (!method || !method.type) return "Not recorded";
+  return method.type === "upi" ? "UPI" : titleCase(method.type);
 }
 
 export function titleCase(status: string): string {

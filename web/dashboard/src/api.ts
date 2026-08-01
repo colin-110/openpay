@@ -24,13 +24,33 @@ export type PaymentStatus =
 
 export type RefundStatus = "PENDING" | "SUCCEEDED" | "FAILED";
 
+/** The safe half of an instrument: enough to recognise a payment, never enough to reuse it. */
+export type PaymentMethod = {
+  type: string | null;
+  network: string | null;
+  last4: string | null;
+  vpa: string | null;
+  bank: string | null;
+};
+
 export type Payment = {
   id: string;
   status: PaymentStatus;
   amount: number;
   currency: string;
+  /** Null for a payment created without one, which is not the same as an unknown card. */
+  paymentMethod: PaymentMethod | null;
   createdAt: string;
   updatedAt: string;
+};
+
+/** One try at getting a payment through an acquirer. A payment can have several. */
+export type PaymentAttempt = {
+  attemptNo: number;
+  provider: string;
+  status: string;
+  providerReference: string | null;
+  failureReason: string | null;
 };
 
 export type Refund = {
@@ -131,6 +151,9 @@ export const api = {
     ),
 
   payment: (token: string, id: string) => request<Payment>(`${BASE}/api/v1/payments/${id}`, token),
+
+  attempts: (token: string, paymentId: string) =>
+    request<PaymentAttempt[]>(`${BASE}/api/v1/payments/${paymentId}/attempts`, token),
 
   refunds: (
     token: string,

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, isUnauthorized, type Payment, type Refund, type Session } from "./api";
-import { formatAmount, formatRelative } from "./format";
+import { formatAmount, formatRelative, methodFamily } from "./format";
 import { CopyableId, EmptyState, StatusPill } from "./ui";
 
 /** How much history the tiles are computed over. The API pages, so a figure has to say its scope. */
@@ -75,6 +75,22 @@ export function Overview({
 
   const scope =
     totalPayments > WINDOW ? `last ${WINDOW} payments` : `all ${totalPayments} payments`;
+
+  // Ordered by how common each family is, so the mix reads without a legend. "Not recorded" is a
+  // row rather than a hidden remainder: it is a real thing to know about your own traffic.
+  const methodMix = Object.entries(
+    payments.reduce<Record<string, number>>((tally, payment) => {
+      const family = methodFamily(payment.paymentMethod);
+      tally[family] = (tally[family] ?? 0) + 1;
+      return tally;
+    }, {})
+  )
+    .sort((left, right) => right[1] - left[1])
+    .map(([label, count]) => ({
+      label,
+      count,
+      tone: label === "Not recorded" ? "progress" : "returned",
+    }));
 
   return (
     <>
@@ -158,23 +174,35 @@ export function Overview({
           )}
         </section>
 
-        <section className="card">
-          <header className="card-head">
-            <h2>Where payments end up</h2>
-            <span className="muted">{scope}</span>
-          </header>
-          <div className="card-body">
-            <Breakdown
-              rows={[
-                { label: "Captured", count: captured.length, tone: "success" },
-                { label: "Refunded", count: refunded.length, tone: "returned" },
-                { label: "In flight", count: inFlight.length, tone: "progress" },
-                { label: "Failed", count: failed.length, tone: "failure" },
-              ]}
-              total={payments.length}
-            />
-          </div>
-        </section>
+        <div className="stack">
+          <section className="card">
+            <header className="card-head">
+              <h2>Where payments end up</h2>
+              <span className="muted">{scope}</span>
+            </header>
+            <div className="card-body">
+              <Breakdown
+                rows={[
+                  { label: "Captured", count: captured.length, tone: "success" },
+                  { label: "Refunded", count: refunded.length, tone: "returned" },
+                  { label: "In flight", count: inFlight.length, tone: "progress" },
+                  { label: "Failed", count: failed.length, tone: "failure" },
+                ]}
+                total={payments.length}
+              />
+            </div>
+          </section>
+
+          <section className="card">
+            <header className="card-head">
+              <h2>How customers pay</h2>
+              <span className="muted">{scope}</span>
+            </header>
+            <div className="card-body">
+              <Breakdown rows={methodMix} total={payments.length} />
+            </div>
+          </section>
+        </div>
       </div>
     </>
   );

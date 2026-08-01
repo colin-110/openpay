@@ -56,15 +56,41 @@ USER_EMAIL="${SUFFIX}-${EMAIL}"
 curl -sS -o /dev/null -X POST "$AUTH_URL/api/v1/users" -H "$ADMIN" -H "$JSON" \
   -d "{\"merchantId\":\"$MERCHANT_ID\",\"email\":\"$USER_EMAIL\",\"password\":\"$PASSWORD\",\"role\":\"MERCHANT_ADMIN\"}"
 
-# Paise, not rupees. Spread across the kind of order values a retail merchant actually sees.
-AMOUNTS=(24900 149900 89900 1250000 45000 320000 9900 67500 199900 15000 875000 34900 249900 118000)
+# Paise, not rupees. Spread across the kind of order values a retail merchant actually sees, and
+# weighted towards UPI, which is how most of this traffic would arrive in India. The token is what
+# an acquirer would need; the platform accepts it and does not keep it.
+ORDERS=(
+  '24900|{"type":"upi","vpa":"colin.thomas@okhdfcbank","token":"tok_upi_1"}'
+  '149900|{"type":"card","network":"rupay","last4":"4321","token":"tok_card_1"}'
+  '89900|{"type":"upi","vpa":"anita.r@ybl","token":"tok_upi_2"}'
+  '1250000|{"type":"netbanking","bank":"HDFC","token":"tok_nb_1"}'
+  '45000|{"type":"upi","vpa":"kiran@paytm","token":"tok_upi_3"}'
+  '320000|{"type":"card","network":"visa","last4":"1881","token":"tok_card_2"}'
+  '9900|{"type":"upi","vpa":"s.menon@okaxis","token":"tok_upi_4"}'
+  '67500|{"type":"wallet","bank":"Paytm","token":"tok_wal_1"}'
+  '199900|{"type":"card","network":"mastercard","last4":"9012","token":"tok_card_3"}'
+  '15000|{"type":"upi","vpa":"deepa@okicici","token":"tok_upi_5"}'
+  '875000|{"type":"netbanking","bank":"ICICI","token":"tok_nb_2"}'
+  '34900|{"type":"upi","vpa":"rahul.v@ybl","token":"tok_upi_6"}'
+  '249900|{"type":"card","network":"rupay","last4":"7788","token":"tok_card_4"}'
+  # No method at all, because some integrations do not send one and the console should say so
+  # rather than invent one.
+  '118000|'
+)
 
-echo "Creating ${#AMOUNTS[@]} payments"
+echo "Creating ${#ORDERS[@]} payments"
 PAYMENT_IDS=()
-for amount in "${AMOUNTS[@]}"; do
+for order in "${ORDERS[@]}"; do
+  amount="${order%%|*}"
+  method="${order#*|}"
+  if [ -n "$method" ]; then
+    body="{\"amount\":$amount,\"currency\":\"INR\",\"paymentMethod\":$method}"
+  else
+    body="{\"amount\":$amount,\"currency\":\"INR\"}"
+  fi
   id=$(curl -sS -X POST "$GATEWAY_URL/api/v1/payments" \
     -H "X-Api-Key: $API_KEY" -H "Idempotency-Key: $(uuid)" -H "$JSON" \
-    -d "{\"amount\":$amount,\"currency\":\"INR\"}" | json "['id']")
+    -d "$body" | json "['id']")
   PAYMENT_IDS+=("$id")
 done
 

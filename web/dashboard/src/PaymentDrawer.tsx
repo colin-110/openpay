@@ -1,6 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, isUnauthorized, type Payment, type Refund, type Session } from "./api";
-import { formatAmount, formatDateTime, titleCase, toMajorUnits, toMinorUnits } from "./format";
+import {
+  api,
+  isUnauthorized,
+  type Payment,
+  type PaymentAttempt,
+  type Refund,
+  type Session,
+} from "./api";
+import {
+  describeMethod,
+  formatAmount,
+  formatDateTime,
+  titleCase,
+  toMajorUnits,
+  toMinorUnits,
+} from "./format";
 import { CopyableId, StatusPill, useToast } from "./ui";
 
 export function PaymentDrawer({
@@ -20,6 +34,8 @@ export function PaymentDrawer({
 }) {
   const [payment, setPayment] = useState<Payment | null>(null);
   const [refunds, setRefunds] = useState<Refund[]>([]);
+  const [attempts, setAttempts] = useState<PaymentAttempt[] | null>(null);
+  const [attemptsError, setAttemptsError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,6 +48,18 @@ export function PaymentDrawer({
       setPayment(found);
       setRefunds(itsRefunds);
       setError(null);
+
+      // Attempts live in another service and are fetched separately on purpose: the router being
+      // unreachable should cost this panel one section, not the whole payment.
+      try {
+        setAttempts(await api.attempts(session.token, paymentId));
+        setAttemptsError(null);
+      } catch (caught) {
+        setAttempts(null);
+        setAttemptsError(
+          caught instanceof Error ? caught.message : "Could not load the acquirer attempts"
+        );
+      }
     } catch (caught) {
       if (isUnauthorized(caught)) {
         onUnauthorized();
@@ -96,6 +124,10 @@ export function PaymentDrawer({
                 <dd>{titleCase(payment.status)}</dd>
                 <dt>Amount</dt>
                 <dd>{formatAmount(payment.amount, payment.currency)}</dd>
+                <dt>Method</dt>
+                <dd className={payment.paymentMethod ? "" : "muted"}>
+                  {describeMethod(payment.paymentMethod)}
+                </dd>
                 <dt>Currency</dt>
                 <dd>{payment.currency}</dd>
                 <dt>Refunded</dt>
@@ -107,6 +139,11 @@ export function PaymentDrawer({
                 <dt>Last updated</dt>
                 <dd>{formatDateTime(payment.updatedAt)}</dd>
               </dl>
+            </section>
+
+            <section>
+              <h3>Acquirer attempts</h3>
+              <Attempts attempts={attempts} error={attemptsError} />
             </section>
 
             <section>
@@ -155,6 +192,54 @@ export function PaymentDrawer({
       </aside>
     </>
   );
+}
+
+/**
+ * What the router tried, in order. This is where a failover becomes visible: a payment that
+ * succeeded on the second acquirer looks identical to one that succeeded on the first, until you
+ * see that the first refused it.
+ */
+function Attempts({ attempts, error }: { attempts: PaymentAttempt[] | null; error: string | null }) {
+  if (error) {
+    // Deliberately not an empty list. "Nothing was tried" and "could not ask" are different
+    // answers, and only one of them is true here.
+    return <p className="muted">{error}</p>;
+  }
+  if (attempts === null) {
+    return <p className="muted">Loading…</p>;
+  }
+  if (attempts.length === 0) {
+    return <p className="muted">Not dispatched to an acquirer yet.</p>;
+  }
+
+  return (
+    <ol className="attempts">
+      {attempts.map((attempt) => (
+        <li key={attempt.attemptNo}>
+          <span className={`attempt-no ${attemptTone(attempt.status)}`}>{attempt.attemptNo}</span>
+          <div>
+            <div className="attempt-line">
+              <strong>{attempt.provider}</strong>
+              <span className={`chip ${attemptTone(attempt.status)}`}>
+                {titleCase(attempt.status)}
+              </span>
+            </div>
+            {attempt.providerReference && (
+              <div className="muted small mono">{attempt.providerReference}</div>
+            )}
+            {attempt.failureReason && <div className="muted small">{attempt.failureReason}</div>}
+          </div>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function attemptTone(status: string): string {
+  const upper = status.toUpperCase();
+  if (upper === "ACCEPTED" || upper === "SUCCEEDED" || upper === "CAPTURED") return "success";
+  if (upper === "FAILED" || upper === "DECLINED" || upper === "TIMEOUT") return "failure";
+  return "progress";
 }
 
 /**
