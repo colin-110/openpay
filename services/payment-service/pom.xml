@@ -93,6 +93,22 @@
             <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
+        <!--
+          A real broker for DeadLetterReplayIT. Dead-lettering is the one thing in the event
+          backbone that cannot be tested against a mock: it is entirely the broker's and Spring
+          Kafka's behaviour, and a mocked template would only assert that the test's own
+          assumptions agree with themselves.
+        -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

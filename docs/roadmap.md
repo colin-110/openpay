@@ -21,12 +21,11 @@ Built:
   review queue
 - `audit_logs` (phase 2) in auth-service and merchant-service, written in their own transaction so
   a refused action is still recorded
+- dead-letter peek, replay, and discard (phase 7) on every consuming service
 
 Still open inside those phases:
 
 - Phase 6: routing rules are static configuration, not a `provider_routing_rules` table
-- Phase 7: DLQ topics exist, but there is no replay tool; messages land there and must be
-  re-published by hand
 - Phase 8: payouts are batched and clear the ledger payable, but no money is actually sent
   anywhere; there is no payout rail
 - Phase 10: complete for webhooks. Email notification is not built; delivery is HTTP only.

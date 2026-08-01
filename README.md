@@ -757,6 +757,33 @@ the exception type, message, and stack trace in its headers. Spring Kafka's defa
 ten times and then drop the record, which in a payment system is the worst option available: the
 event is gone, nothing alerts, and a payment simply stops advancing with no trace of why.
 
+### Getting messages back out
+
+Each consuming service exposes `/internal/dlq` on the ops token, covering the topics it consumes:
+
+- `GET /internal/dlq/topics` — what this service can act on.
+- `GET /internal/dlq?topic=&limit=` — what is waiting, **without** consuming it. Auto-commit is off
+  precisely so that looking is free; a peek that quietly destroyed the queue it displayed would be
+  worse than no tool.
+- `POST /internal/dlq/replay?topic=&limit=` — re-publish to the original topic.
+- `POST /internal/dlq/discard?topic=&limit=` — commit past messages without replaying them.
+
+Replay publishes first and commits second, so a crash between the two replays a message twice
+rather than losing it. That is the right way round here: every consumer is already idempotent for
+exactly this reason, whereas a lost payment event is gone.
+
+`topic` is checked against an allowlist per service. Replay publishes to a topic derived from the
+request, so an endpoint that accepted any topic would let the ops token inject an arbitrary event
+into the platform.
+
+Discard is separate from replay on purpose. Replaying a message whose cause has not been fixed
+sends it straight back to the DLQ at a new offset — the integration test asserts exactly that — so
+using replay to clear a queue only moves the poison along. Giving up on a payment event should be a
+deliberate act, and it is logged at WARN with the keys.
+
+Nothing replays on a schedule. Automatic replay is how a poison message becomes an infinite loop,
+and the decision to try again belongs to whoever knows what was changed.
+
 ## Testing
 
 - **Unit tests** (`*Test`, surefire) — no infrastructure required.
@@ -840,6 +867,8 @@ Delivered:
   survives payment-service being down
 - an audit trail that survives the transaction it is recording, and stores nothing usable as a
   credential
+- dead-letter inspection and replay, so a stuck message is an operator action rather than a console
+  producer and a guess
 
 Not yet built (see [docs/roadmap.md](docs/roadmap.md)):
 

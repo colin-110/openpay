@@ -31,6 +31,16 @@ spring:
       accept-float-as-int: false
 
 openpay:
+  dlq:
+    # The replay tool, on this service because these are the topics it consumes and therefore the
+    # dead letters it produces. The list is an allowlist: replay publishes to a topic derived from
+    # the request, so accepting an arbitrary one would let the ops token inject any event anywhere.
+    enabled: ${OPENPAY_DLQ_REPLAY_ENABLED:true}
+    topics:
+      - payment.provider-dispatched.v1
+      - provider.callback-received.v1
+      - refund.callback-received.v1
+      - fraud.check-completed.v1
   router:
     # Read-only, and only when a merchant opens one payment: the router owns its attempt history
     # and this service asks rather than keeping a second copy of it.
@@ -58,6 +68,11 @@ openpay:
     api-key-paths:
       - /api/v1/payments
       - /api/v1/refunds
+    # Replaying a dead letter puts a message back into the payment flow. It mints no credential,
+    # so it sits with the ledger and settlement runs on the ops tier rather than the admin tier.
+    ops-token: ${OPENPAY_OPS_TOKEN:}
+    ops-paths:
+      - /internal/dlq
 
 server:
   port: 8083

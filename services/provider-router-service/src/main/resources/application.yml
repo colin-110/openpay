@@ -24,6 +24,14 @@ spring:
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
 
 openpay:
+  dlq:
+    # The replay tool, on this service because these are the topics it consumes and therefore the
+    # dead letters it produces. The list is an allowlist: replay publishes to a topic derived from
+    # the request, so accepting an arbitrary one would let the ops token inject any event anywhere.
+    enabled: ${OPENPAY_DLQ_REPLAY_ENABLED:true}
+    topics:
+      - payment.created.v1
+      - refund.created.v1
   security:
     # These paths were reachable by anyone who could open the port. "Internal" describes intent,
     # not a control: attempt history names acquirers and their references, and breaker state tells
@@ -34,6 +42,11 @@ openpay:
     internal-token: ${OPENPAY_INTERNAL_TOKEN:}
     internal-paths:
       - /internal/router
+    # Replaying a dead letter puts a message back into the payment flow. It mints no credential,
+    # so it sits with the ledger and settlement runs on the ops tier rather than the admin tier.
+    ops-token: ${OPENPAY_OPS_TOKEN:}
+    ops-paths:
+      - /internal/dlq
   router:
     failure-threshold: 3
     breaker-open-duration: 30s

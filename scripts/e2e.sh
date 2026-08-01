@@ -384,6 +384,20 @@ if [ -n "${FRAUD_URL:-}" ]; then
   check "the released payment is routed after the review closes" ALLOWED "$released"
 fi
 
+echo "== Dead letter replay =="
+# Replaying an event mints no credential, so it sits with the ledger on the ops token. The topic
+# list is an allowlist: replay publishes to a topic derived from the request, and accepting an
+# arbitrary one would let this token inject any event into the platform.
+check "the replay tool refuses an unauthenticated caller" 401 "$(code "$PAYMENT_URL/internal/dlq/topics")"
+check "the replay tool refuses the platform admin token" 401 \
+  "$(code "$PAYMENT_URL/internal/dlq/topics" -H "$ADMIN_HEADER")"
+check "an operator can list the replayable topics" 200 \
+  "$(code "$PAYMENT_URL/internal/dlq/topics" -H "$OPS_HEADER")"
+check "a topic this service does not consume is refused" 400 \
+  "$(code -X POST "$PAYMENT_URL/internal/dlq/replay?topic=settlement.created.v1" -H "$OPS_HEADER")"
+check "peeking an empty dead letter topic is not an error" 200 \
+  "$(code "$PAYMENT_URL/internal/dlq?topic=refund.callback-received.v1&limit=5" -H "$OPS_HEADER")"
+
 echo "== Audit trail =="
 # Reading the log sits on the operator tier, not the admin tier: investigating an incident should
 # not require holding the credential that could cause one. There is no write endpoint at all.

@@ -24,6 +24,14 @@ spring:
       acks: all
 
 openpay:
+  dlq:
+    # The replay tool, on this service because these are the topics it consumes and therefore the
+    # dead letters it produces. The list is an allowlist: replay publishes to a topic derived from
+    # the request, so accepting an arbitrary one would let the ops token inject any event anywhere.
+    enabled: ${OPENPAY_DLQ_REPLAY_ENABLED:true}
+    topics:
+      - payment.status-updated.v1
+      - refund.succeeded.v1
   notification:
     merchant-base-url: ${MERCHANT_SERVICE_BASE_URL:http://localhost:8082}
     # Used to read a merchant's delivery configuration, which includes their signing secret. The
@@ -53,6 +61,7 @@ openpay:
     ops-token: ${OPENPAY_OPS_TOKEN:}
     ops-paths:
       - /internal/webhooks
+      - /internal/dlq
 
 server:
   port: 8088
