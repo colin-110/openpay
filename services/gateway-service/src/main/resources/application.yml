@@ -1,15 +1,26 @@
 spring:
   application:
     name: gateway-service
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
 
 openpay:
+  rate-limit:
+    # Mutating requests one merchant may make per window. Generous for a demo; a real deployment
+    # tunes both numbers to its own traffic.
+    enabled: ${RATE_LIMIT_ENABLED:true}
+    limit: ${RATE_LIMIT_PER_WINDOW:30}
+    window: ${RATE_LIMIT_WINDOW:5s}
   security:
     auth-base-url: ${AUTH_SERVICE_BASE_URL:http://localhost:8081}
     # Same key auth-service signs with, so a dashboard session is accepted wherever an API key is.
     jwt-secret: ${OPENPAY_JWT_SECRET:}
-    # The dashboard is a browser application on a different origin. Defaults to the local dev
-    # server only; a deployment names its real origin.
-    allowed-origins: ${OPENPAY_DASHBOARD_ORIGINS:http://localhost:5173}
+    # The dashboard is a browser application on a different origin. Empty by default, so a
+    # deployment that forgets to name its origin answers no cross-origin request at all rather
+    # than silently trusting a developer's laptop. scripts/run-local.ps1 sets it for local work.
+    allowed-origins: ${OPENPAY_DASHBOARD_ORIGINS:}
     # Merchant-facing paths the gateway authenticates before forwarding. Merchant admin paths are
     # deliberately absent: they use the admin token, which merchant-service checks itself.
     api-key-paths:
@@ -49,6 +60,13 @@ management:
     health:
       probes:
         enabled: true
+  health:
+    # The rate limiter fails open on a Redis outage rather than blocking traffic, so losing Redis
+    # degrades protection, not service. Reporting the gateway itself as DOWN for that would be a
+    # false alarm and would stall the local-startup health probe for something that is not actually
+    # stopping the gateway from serving requests.
+    redis:
+      enabled: false
   metrics:
     tags:
       application: ${spring.application.name}

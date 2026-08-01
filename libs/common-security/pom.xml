@@ -45,6 +45,15 @@
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
         </dependency>
+        <!-- Optional: compiles RedisFixedWindowLimiter without forcing every service that depends
+             on this library to carry a Redis client and its actuator health indicator. Only the
+             services that actually rate-limit something (gateway-service, auth-service) declare
+             this dependency themselves, non-optionally, which is what makes it real for them. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
+            <optional>true</optional>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
