@@ -40,6 +40,9 @@ openpay:
     poll-interval-ms: 500
     batch-size: 100
   security:
+    # Presented to provider-router-service when reading attempt history. Deliberately not the
+    # admin token: this service needs one read from a peer, not the keys to the platform.
+    internal-token: ${OPENPAY_INTERNAL_TOKEN:}
     # Same key auth-service signs with, so a dashboard session is accepted wherever an API key is.
     jwt-secret: ${OPENPAY_JWT_SECRET:}
     auth-base-url: ${AUTH_SERVICE_BASE_URL:http://localhost:8081}

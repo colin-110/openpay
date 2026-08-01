@@ -11,6 +11,9 @@ public interface ProviderTransactionRepository extends JpaRepository<ProviderTra
 
     List<ProviderTransaction> findByPaymentIdOrderByAttemptNoAsc(UUID paymentId);
 
+    List<ProviderTransaction> findByPaymentIdAndMerchantIdOrderByAttemptNoAsc(
+            UUID paymentId, UUID merchantId);
+
     boolean existsByPaymentId(UUID paymentId);
 
     /**

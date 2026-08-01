@@ -1,6 +1,7 @@
 package com.openpay.payment.infrastructure;
 
 import com.openpay.payment.api.PaymentAttemptView;
+import com.openpay.security.AdminTokenFilter;
 import java.util.List;
 import java.util.UUID;
 import org.slf4j.Logger;
@@ -23,16 +24,27 @@ public class ProviderRouterClient {
     private static final Logger log = LoggerFactory.getLogger(ProviderRouterClient.class);
 
     private final RestClient restClient;
+    private final String internalToken;
 
-    public ProviderRouterClient(RestClient restClient) {
+    public ProviderRouterClient(RestClient restClient, String internalToken) {
         this.restClient = restClient;
+        this.internalToken = internalToken == null ? "" : internalToken;
     }
 
-    public List<PaymentAttemptView> attemptsFor(UUID paymentId) {
+    /**
+     * The merchant is passed as well as the payment, so the router can scope the query itself.
+     * The caller has already established ownership; sending it again means a leaked payment id
+     * alone does not read another merchant's routing history.
+     */
+    public List<PaymentAttemptView> attemptsFor(UUID paymentId, UUID merchantId) {
         try {
             List<PaymentAttemptView> attempts = restClient
                     .get()
-                    .uri("/internal/router/payments/{paymentId}/attempts", paymentId)
+                    .uri(builder -> builder
+                            .path("/internal/router/payments/{paymentId}/attempts")
+                            .queryParam("merchantId", merchantId)
+                            .build(paymentId))
+                    .header(AdminTokenFilter.INTERNAL_TOKEN_HEADER, internalToken)
                     .retrieve()
                     .body(new ParameterizedTypeReference<List<PaymentAttemptView>>() {});
             return attempts == null ? List.of() : attempts;

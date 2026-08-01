@@ -24,6 +24,16 @@ spring:
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
 
 openpay:
+  security:
+    # These paths were reachable by anyone who could open the port. "Internal" describes intent,
+    # not a control: attempt history names acquirers and their references, and breaker state tells
+    # a caller exactly when the platform is degraded.
+    #
+    # Guarded by the service token rather than the admin token, so payment-service can read attempt
+    # history without also holding the credential that opens onboarding and the ledger.
+    internal-token: ${OPENPAY_INTERNAL_TOKEN:}
+    internal-paths:
+      - /internal/router
   router:
     failure-threshold: 3
     breaker-open-duration: 30s

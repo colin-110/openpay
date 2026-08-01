@@ -8,6 +8,7 @@ import java.util.UUID;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 /** Operational visibility: which providers are in rotation, and what was tried for a payment. */
@@ -32,9 +33,19 @@ public class RouterAdminController {
                         (a, b) -> a, java.util.LinkedHashMap::new));
     }
 
+    /**
+     * Attempts for one payment, belonging to one merchant.
+     *
+     * <p>The merchant is required rather than optional. The caller has already checked that this
+     * payment is theirs, and asking for it again means a leaked payment id on its own is not
+     * enough to read someone else's routing history.
+     */
     @GetMapping("/payments/{paymentId}/attempts")
-    public List<Map<String, Object>> attempts(@PathVariable("paymentId") UUID paymentId) {
-        return transactionRepository.findByPaymentIdOrderByAttemptNoAsc(paymentId).stream()
+    public List<Map<String, Object>> attempts(
+            @PathVariable("paymentId") UUID paymentId,
+            @RequestParam("merchantId") UUID merchantId) {
+        return transactionRepository
+                .findByPaymentIdAndMerchantIdOrderByAttemptNoAsc(paymentId, merchantId).stream()
                 .map(txn -> {
                     java.util.Map<String, Object> row = new java.util.LinkedHashMap<>();
                     row.put("attemptNo", txn.getAttemptNo());
