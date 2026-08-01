@@ -67,6 +67,9 @@ jget() { "$PY" -c "import sys,json;print(json.load(sys.stdin).get('$1',''))"; }
 
 JSON='Content-Type: application/json'
 ADMIN_HEADER="X-Admin-Token: $ADMIN_TOKEN"
+# Service-to-service credential, deliberately not the admin token.
+INTERNAL_TOKEN="${OPENPAY_INTERNAL_TOKEN:-dev-internal-token}"
+INTERNAL_HEADER="X-Internal-Token: $INTERNAL_TOKEN"
 
 echo "Gateway  $GATEWAY_URL"
 echo "Auth     $AUTH_URL"
@@ -86,9 +89,11 @@ check "onboard merchant with wrong admin token" 401 \
 check "issue api key without admin token" 401 \
   "$(code -X POST "$AUTH_URL/api/v1/api-keys" -H "$JSON" \
      -d '{"merchantId":"11111111-1111-1111-1111-111111111111","name":"x","scope":"s","expiresAt":null}')"
+# A valid scope on purpose: the point of this check is the unknown merchant, and an invalid
+# scope would now be rejected by validation before the lookup ever happened.
 check "issue api key for a merchant that does not exist" 422 \
   "$(code -X POST "$AUTH_URL/api/v1/api-keys" -H "$ADMIN_HEADER" -H "$JSON" \
-     -d '{"merchantId":"deadbeef-0000-0000-0000-000000000000","name":"attacker","scope":"admin","expiresAt":null}')"
+     -d '{"merchantId":"deadbeef-0000-0000-0000-000000000000","name":"attacker","scope":"payments:read","expiresAt":null}')"
 
 SUFFIX="e2e-$(date +%s)-$$"
 MID=$(body -X POST "$MERCHANT_URL/api/v1/merchants" -H "$ADMIN_HEADER" -H "$JSON" \
@@ -185,7 +190,7 @@ done
 check "payment reaches CAPTURED with no client action" CAPTURED "$final_status"
 
 if [ -n "${ROUTER_URL:-}" ]; then
-  attempts=$(body "$ROUTER_URL/internal/router/payments/$PID/attempts")
+  attempts=$(body "$ROUTER_URL/internal/router/payments/$PID/attempts?merchantId=$MID"     -H "$INTERNAL_HEADER")
   case "$attempts" in
     *ACCEPTED*) printf "  PASS  %-58s %s
 " "router recorded an accepted provider attempt" "ok"; pass=$((pass + 1));;
@@ -208,6 +213,46 @@ check "another merchant cannot read the payment" 404 \
   "$(code "$GATEWAY_URL/api/v1/payments/$PID" -H "X-Api-Key: $OTHER_KEY")"
 check "another merchant sees an empty list" 0 \
   "$(body "$GATEWAY_URL/api/v1/payments" -H "X-Api-Key: $OTHER_KEY" | jget totalItems)"
+
+echo "== Authority =="
+# Every credential carries an authority. Until it was enforced, a read-only key and a viewer
+# session could both move money, which made the scope on a key decoration.
+READ_KEY=$(body -X POST "$AUTH_URL/api/v1/api-keys" -H "$ADMIN_HEADER" -H "$JSON" \
+  -d "{\"merchantId\":\"$MID\",\"name\":\"$SUFFIX-read\",\"scope\":\"payments:read\",\"expiresAt\":null}" | jget apiKey)
+check "read-only key cannot create a payment" 403 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/payments" -H "X-Api-Key: $READ_KEY" \
+     -H "Idempotency-Key: $SUFFIX-ro-1" -H "$JSON" -d '{"amount":1000,"currency":"INR"}')"
+check "read-only key cannot issue a refund" 403 \
+  "$(code -X POST "$GATEWAY_URL/api/v1/refunds" -H "X-Api-Key: $READ_KEY" \
+     -H "Idempotency-Key: $SUFFIX-ro-2" -H "$JSON" -d "{\"paymentId\":\"$PID\",\"amount\":null,\"reason\":\"nope\"}")"
+check "read-only key can still read payments" 200 \
+  "$(code "$GATEWAY_URL/api/v1/payments/$PID" -H "X-Api-Key: $READ_KEY")"
+check "an unrecognised scope cannot be issued" 400 \
+  "$(code -X POST "$AUTH_URL/api/v1/api-keys" -H "$ADMIN_HEADER" -H "$JSON" \
+     -d "{\"merchantId\":\"$MID\",\"name\":\"$SUFFIX-bad\",\"scope\":\"payments:everything\",\"expiresAt\":null}")"
+
+echo "== Internal surfaces =="
+# These were reachable by anyone who could open the port. The service token is deliberately not
+# the admin token: payment-service reads attempt history without holding the keys to the platform.
+if [ -n "${ROUTER_URL:-}" ]; then
+  check "router refuses an unauthenticated caller" 401 "$(code "$ROUTER_URL/internal/router/providers")"
+  check "router refuses the platform admin token" 401 "$(code "$ROUTER_URL/internal/router/providers" -H "$ADMIN_HEADER")"
+  check "router accepts the service token" 200 "$(code "$ROUTER_URL/internal/router/providers" -H "$INTERNAL_HEADER")"
+  check "router scopes attempts to the owning merchant" "[]" \
+    "$(body "$ROUTER_URL/internal/router/payments/$PID/attempts?merchantId=$OTHER_MID" -H "$INTERNAL_HEADER")"
+fi
+
+echo "== Webhook URL policy =="
+# The platform POSTs to whatever is in this column, from inside its own network, signed.
+check "webhook URL aimed at cloud metadata is refused" 400 \
+  "$(code -X POST "$MERCHANT_URL/api/v1/merchants" -H "$ADMIN_HEADER" -H "$JSON" \
+     -d "{\"merchantCode\":\"$SUFFIX-ssrf1\",\"legalName\":\"S\",\"webhookUrl\":\"http://169.254.169.254/latest/meta-data/\",\"defaultCurrency\":\"INR\"}")"
+check "webhook URL on a private range is refused" 400 \
+  "$(code -X POST "$MERCHANT_URL/api/v1/merchants" -H "$ADMIN_HEADER" -H "$JSON" \
+     -d "{\"merchantCode\":\"$SUFFIX-ssrf2\",\"legalName\":\"S\",\"webhookUrl\":\"http://10.0.0.5/hook\",\"defaultCurrency\":\"INR\"}")"
+check "a public https webhook URL is accepted" 201 \
+  "$(code -X POST "$MERCHANT_URL/api/v1/merchants" -H "$ADMIN_HEADER" -H "$JSON" \
+     -d "{\"merchantCode\":\"$SUFFIX-ssrf3\",\"legalName\":\"S\",\"webhookUrl\":\"https://example.com/hook\",\"defaultCurrency\":\"INR\"}")"
 
 echo "== Gateway routing =="
 # A catch-all exception handler must not turn Spring's own 404 into a fabricated 500.
