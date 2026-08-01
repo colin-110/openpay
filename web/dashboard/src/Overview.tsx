@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, isUnauthorized, type Payment, type Refund, type Session } from "./api";
 import { formatAmount, formatRelative, methodFamily } from "./format";
+import { AreaChart, RateChart, bucketByDay } from "./Chart";
 import { CopyableId, EmptyState, StatusPill } from "./ui";
 
 /** How much history the tiles are computed over. The API pages, so a figure has to say its scope. */
@@ -73,6 +74,26 @@ export function Overview({
     .reduce((sum, refund) => sum + refund.amount, 0);
   const refundsInFlight = refunds.filter((refund) => refund.status === "PENDING").length;
 
+  // Fourteen daily buckets, empty days included: dropping them would compress the axis and make
+  // a quiet week look busy.
+  const volumeByDay = bucketByDay(payments, 14, (p) => p.createdAt, (inBucket) =>
+    inBucket
+      .filter((p) => p.status === "CAPTURED" || p.status === "REFUNDED")
+      .reduce((sum, p) => sum + p.amount, 0)
+  );
+
+  const rateByDay = bucketByDay(payments, 14, (p) => p.createdAt, (inBucket) => {
+    const settledInBucket = inBucket.filter(
+      (p) => p.status === "CAPTURED" || p.status === "REFUNDED"
+    ).length;
+    const decidedInBucket =
+      settledInBucket +
+      inBucket.filter((p) => p.status === "FAILED" || p.status === "CANCELLED").length;
+    // A day with no decided payments plots as zero rather than being dropped, so the axis stays
+    // a real calendar.
+    return decidedInBucket === 0 ? 0 : (settledInBucket / decidedInBucket) * 100;
+  });
+
   const scope =
     totalPayments > WINDOW ? `last ${WINDOW} payments` : `all ${totalPayments} payments`;
 
@@ -132,6 +153,28 @@ export function Overview({
           tone={inFlight.length > 0 ? "warn" : undefined}
         />
       </section>
+
+      <div className="split even">
+        <section className="card">
+          <header className="card-head">
+            <h2>Payment volume</h2>
+            <span className="muted">Captured, last 14 days</span>
+          </header>
+          <div className="card-body">
+            <AreaChart buckets={volumeByDay} format={(value) => formatAmount(value, currency)} />
+          </div>
+        </section>
+
+        <section className="card">
+          <header className="card-head">
+            <h2>Success rate</h2>
+            <span className="muted">Of payments that reached an outcome</span>
+          </header>
+          <div className="card-body">
+            <RateChart buckets={rateByDay} />
+          </div>
+        </section>
+      </div>
 
       <div className="split">
         <section className="card">

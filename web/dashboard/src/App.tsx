@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Session } from "./api";
+import { Developers } from "./Developers";
 import { Login, Mark } from "./Login";
 import { Overview } from "./Overview";
 import { PaymentDrawer } from "./PaymentDrawer";
 import { Payments } from "./Payments";
-import { Developers } from "./Developers";
 import { Refunds } from "./Refunds";
 import { Settlements } from "./Settlements";
 import { shortId } from "./format";
+import {
+  DevelopersIcon,
+  HomeIcon,
+  PaymentsIcon,
+  RefundsIcon,
+  SettlementsIcon,
+} from "./icons";
 import { ToastProvider } from "./ui";
 import "./styles.css";
 
@@ -16,36 +23,59 @@ const POLL_INTERVAL_MS = 5000;
 
 type View = "overview" | "payments" | "refunds" | "settlements" | "developers";
 
-const VIEWS: { id: View; label: string; title: string; subtitle: string }[] = [
+type ViewDef = {
+  id: View;
+  label: string;
+  title: string;
+  subtitle: string;
+  group: string;
+  Icon: (props: { className?: string }) => React.ReactElement;
+};
+
+/**
+ * Grouped the way the work is grouped, not alphabetically. Someone reconciling yesterday's takings
+ * is in Operations all morning and never touches Developers.
+ */
+const VIEWS: ViewDef[] = [
   {
     id: "overview",
-    label: "Overview",
+    label: "Home",
     title: "Overview",
     subtitle: "How payments are going right now",
+    group: "",
+    Icon: HomeIcon,
   },
   {
     id: "payments",
     label: "Payments",
     title: "Payments",
     subtitle: "Every payment taken through the gateway",
+    group: "Operations",
+    Icon: PaymentsIcon,
   },
   {
     id: "refunds",
     label: "Refunds",
     title: "Refunds",
     subtitle: "Money returned to customers",
+    group: "Operations",
+    Icon: RefundsIcon,
   },
   {
     id: "settlements",
     label: "Settlements",
     title: "Settlements",
     subtitle: "When the money reaches your bank, and what was deducted",
+    group: "Operations",
+    Icon: SettlementsIcon,
   },
   {
     id: "developers",
-    label: "Developers",
+    label: "Webhooks & API",
     title: "Developers",
     subtitle: "Your integration, and every webhook we have sent you",
+    group: "Developers",
+    Icon: DevelopersIcon,
   },
 ];
 
@@ -129,36 +159,49 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
   const closePayment = useCallback(() => go(route.view), [go, route.view]);
 
   const current = VIEWS.find((candidate) => candidate.id === route.view) ?? VIEWS[0];
+  const groups = [...new Set(VIEWS.map((view) => view.group))];
+  const initials = session.email.slice(0, 2).toUpperCase();
 
   return (
     <div className="shell">
-      <nav className="sidebar">
-        <div className="brand">
+      <nav className="rail">
+        <div className="rail-brand">
           <Mark />
           <span>OpenPay</span>
         </div>
-        <span className="env-pill">Sandbox</span>
 
-        <ul className="nav">
-          {VIEWS.map((view) => (
-            <li key={view.id}>
-              <button
-                className={route.view === view.id ? "active" : ""}
-                onClick={() => go(view.id)}
-              >
-                {view.label}
-              </button>
-            </li>
-          ))}
-        </ul>
+        <div className="switcher" title={`Merchant ${session.merchantId}`}>
+          <span className="switcher-avatar">{initials}</span>
+          <span className="switcher-body">
+            <strong>{session.email.split("@")[0]}</strong>
+            <span className="mono">{shortId(session.merchantId)}</span>
+          </span>
+        </div>
 
-        <div className="sidebar-foot">
+        {groups.map((group) => (
+          <div className="rail-group" key={group || "root"}>
+            {group && <p className="rail-group-label">{group}</p>}
+            <ul>
+              {VIEWS.filter((view) => view.group === group).map((view) => (
+                <li key={view.id}>
+                  <button
+                    className={route.view === view.id ? "active" : ""}
+                    onClick={() => go(view.id)}
+                    aria-current={route.view === view.id ? "page" : undefined}
+                  >
+                    <view.Icon className="rail-icon" />
+                    {view.label}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+
+        <div className="rail-foot">
           <div className="who">
             <strong>{session.email}</strong>
             <span>{session.role.replace("_", " ").toLowerCase()}</span>
-            <span className="mono muted" title={session.merchantId}>
-              {shortId(session.merchantId)}
-            </span>
           </div>
           <button className="ghost on-dark" onClick={onSignOut}>
             Sign out
@@ -168,11 +211,21 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
 
       <main>
         <header className="topbar">
-          <div>
+          <div className="topbar-lead">
+            <nav className="crumbs" aria-label="Breadcrumb">
+              <button onClick={() => go("overview")}>Home</button>
+              {current.id !== "overview" && (
+                <>
+                  <span aria-hidden="true">/</span>
+                  <span className="crumb-current">{current.title}</span>
+                </>
+              )}
+            </nav>
             <h1>{current.title}</h1>
             <p className="muted">{current.subtitle}</p>
           </div>
           <div className="topbar-actions">
+            <span className="env-pill">Sandbox</span>
             <button
               className={`live ${live ? "on" : ""}`}
               onClick={() => setLive((value) => !value)}
@@ -184,6 +237,9 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
             <button className="ghost" onClick={refresh}>
               Refresh
             </button>
+            <span className="avatar" title={session.email}>
+              {initials}
+            </span>
           </div>
         </header>
 

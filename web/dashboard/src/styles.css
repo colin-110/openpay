@@ -1,15 +1,19 @@
 :root {
-  --rail: #101828;
-  --rail-text: #98a2b3;
+  --rail: #101527;
+  --rail-hover: #1a2138;
+  --rail-active-bg: #1c2742;
+  --rail-line: #212a44;
+  --rail-text: #9aa4bd;
   --rail-active: #ffffff;
-  --bg: #f7f8fa;
+  --bg: #f6f8fb;
   --surface: #ffffff;
-  --line: #e4e7ec;
-  --line-soft: #f0f1f4;
-  --text: #101828;
+  --line: #e3e8ef;
+  --line-soft: #eef1f6;
+  --text: #0f1729;
   --muted: #667085;
-  --brand: #4f46e5;
-  --brand-dark: #4338ca;
+  --brand: #0b5cff;
+  --brand-dark: #0846c9;
+  --brand-soft: #eaf1ff;
 
   --success-fg: #067647;
   --success-bg: #ecfdf3;
@@ -136,12 +140,12 @@ button.ghost:hover:not(:disabled) {
 
 button.ghost.on-dark {
   background: transparent;
-  border-color: #2a3448;
+  border-color: var(--rail-line);
   color: var(--rail-text);
 }
 
 button.ghost.on-dark:hover {
-  background: #1a2334;
+  background: var(--rail-hover);
   color: #fff;
 }
 
@@ -183,7 +187,7 @@ select {
 
 input:focus,
 select:focus {
-  outline: 2px solid #c7d2fe;
+  outline: 2px solid #b9d0ff;
   outline-offset: -1px;
   border-color: var(--brand);
 }
@@ -312,16 +316,95 @@ select:focus {
   min-height: 100vh;
 }
 
-.sidebar {
+.rail {
   background: var(--rail);
   color: var(--rail-text);
-  padding: 1.25rem 1rem;
+  padding: 1.1rem 0.85rem 1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.9rem;
   position: sticky;
   top: 0;
   height: 100vh;
+  overflow-y: auto;
+}
+
+.rail-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  color: #fff;
+  font-weight: 600;
+  font-size: 1rem;
+  padding: 0 0.35rem;
+}
+
+/* The merchant you are looking at, always visible. On a platform with several, this is the
+   control that switches between them; with one it still answers "whose data is this". */
+.switcher {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.5rem 0.55rem;
+  border: 1px solid var(--rail-line);
+  border-radius: 9px;
+  background: #161d33;
+}
+
+.switcher-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: var(--brand);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-size: 0.72rem;
+  font-weight: 600;
+  flex: none;
+}
+
+.switcher-body {
+  display: grid;
+  gap: 0.05rem;
+  min-width: 0;
+  font-size: 0.78rem;
+}
+
+.switcher-body strong {
+  color: #fff;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.switcher-body .mono {
+  font-size: 0.68rem;
+  color: var(--rail-text);
+}
+
+.rail-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.1rem;
+}
+
+.rail-group-label {
+  font-size: 0.66rem;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: #6b7691;
+  margin: 0 0 0.35rem 0.6rem;
+}
+
+.rail-icon {
+  width: 17px;
+  height: 17px;
+  flex: none;
+  opacity: 0.85;
 }
 
 .brand {
@@ -333,39 +416,39 @@ select:focus {
   font-size: 1rem;
 }
 
-.nav {
-  list-style: none;
-  margin: 1rem 0 0;
-  padding: 0;
-  display: grid;
-  gap: 0.15rem;
-}
-
-.nav button {
+.rail-group button {
   width: 100%;
   text-align: left;
   color: var(--rail-text);
-  padding: 0.5rem 0.7rem;
+  padding: 0.48rem 0.6rem;
   border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.875rem;
 }
 
-.nav button:hover {
-  background: #1a2334;
+.rail-group button:hover {
+  background: var(--rail-hover);
   color: #fff;
 }
 
-.nav button.active {
-  background: #1e2942;
+.rail-group button.active {
+  background: var(--rail-active-bg);
   color: var(--rail-active);
   font-weight: 500;
-  box-shadow: inset 2px 0 0 var(--brand);
 }
 
-.sidebar-foot {
+.rail-group button.active .rail-icon {
+  opacity: 1;
+  color: #7aa7ff;
+}
+
+.rail-foot {
   margin-top: auto;
   display: grid;
   gap: 0.6rem;
-  border-top: 1px solid #222c3f;
+  border-top: 1px solid var(--rail-line);
   padding-top: 0.85rem;
 }
 
@@ -391,7 +474,7 @@ main {
 .topbar {
   background: var(--surface);
   border-bottom: 1px solid var(--line);
-  padding: 1rem 1.5rem;
+  padding: 0.9rem 1.5rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -405,6 +488,50 @@ main {
   display: flex;
   gap: 0.5rem;
   align-items: center;
+}
+
+.topbar-lead {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-bottom: 0.1rem;
+}
+
+.crumbs button {
+  padding: 0;
+  color: var(--muted);
+  font-size: inherit;
+}
+
+.crumbs button:hover {
+  color: var(--brand);
+  text-decoration: underline;
+}
+
+.crumb-current {
+  color: var(--text);
+}
+
+.avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--brand-soft);
+  color: var(--brand-dark);
+  display: grid;
+  place-items: center;
+  font-size: 0.7rem;
+  font-weight: 600;
+  border: 1px solid #cfe0ff;
+  margin-left: 0.15rem;
 }
 
 .live {
@@ -449,6 +576,73 @@ main {
 }
 
 /* -- tiles -------------------------------------------------------------- */
+
+/* Two charts side by side want equal width; a table beside a summary does not. */
+.split.even {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.chart {
+  position: relative;
+  width: 100%;
+}
+
+.chart-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  overflow: visible;
+}
+
+.chart-grid {
+  stroke: var(--line);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+
+.chart-line {
+  fill: none;
+  stroke: var(--brand);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.chart-line.ok {
+  stroke: var(--success-fg);
+}
+
+/* Positioned outside the stretched viewBox so it stays a circle rather than an ellipse. */
+.chart-endpoint {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  margin: -4px 0 0 -4px;
+  border-radius: 50%;
+  background: var(--brand);
+  border: 2px solid var(--surface);
+  box-shadow: 0 0 0 3px rgba(11, 92, 255, 0.15);
+}
+
+.chart-endpoint.ok {
+  background: var(--success-fg);
+  box-shadow: 0 0 0 3px rgba(6, 118, 71, 0.15);
+}
+
+.chart-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.chart-peak {
+  color: var(--text);
+  font-weight: 500;
+}
 
 .tiles {
   display: grid;
@@ -1157,7 +1351,7 @@ table.grid.nested tr:last-child td {
     grid-template-columns: 1fr;
   }
 
-  .sidebar {
+  .rail {
     position: static;
     height: auto;
   }
