@@ -13,6 +13,10 @@ spring:
     enabled: true
 
 openpay:
+  merchant:
+    # Local development points webhooks at localhost, which the delivery policy exists to refuse.
+    # A deployment leaves this false so a merchant cannot aim the platform at its own network.
+    allow-loopback-webhooks: ${ALLOW_LOOPBACK_WEBHOOKS:true}
   security:
     # Merchant onboarding and lookup are platform-operator actions, not merchant-facing ones.
     admin-token: ${OPENPAY_ADMIN_TOKEN:}

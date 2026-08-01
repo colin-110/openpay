@@ -5,6 +5,8 @@ import com.openpay.merchant.api.MerchantResponse;
 import com.openpay.merchant.api.WebhookConfigResponse;
 import com.openpay.merchant.api.PagedResponse;
 import com.openpay.merchant.domain.Merchant;
+import org.springframework.beans.factory.annotation.Value;
+import com.openpay.merchant.domain.WebhookUrlPolicy;
 import com.openpay.merchant.domain.MerchantRepository;
 import java.security.SecureRandom;
 import java.util.HexFormat;
@@ -24,7 +26,16 @@ public class MerchantService {
 
     private final MerchantRepository merchantRepository;
 
-    public MerchantService(MerchantRepository merchantRepository) {
+    /**
+     * Local development points webhooks at localhost, which is exactly what the policy exists to
+     * refuse. Opt in explicitly rather than making the safe rule conditional on guesswork.
+     */
+    private final boolean allowLoopbackWebhooks;
+
+    public MerchantService(
+            MerchantRepository merchantRepository,
+            @Value("${openpay.merchant.allow-loopback-webhooks:false}") boolean allowLoopbackWebhooks) {
+        this.allowLoopbackWebhooks = allowLoopbackWebhooks;
         this.merchantRepository = merchantRepository;
     }
 
@@ -35,6 +46,10 @@ public class MerchantService {
                     throw new MerchantAlreadyExistsException(
                             "Merchant code already exists: " + request.merchantCode());
                 });
+
+        // Checked before anything is stored: an unsendable URL is a bad request, not a delivery
+        // failure discovered hours later by the notification service.
+        WebhookUrlPolicy.requireDeliverable(request.webhookUrl(), allowLoopbackWebhooks);
 
         Merchant merchant = new Merchant();
         merchant.setId(UUID.randomUUID());

@@ -13,9 +13,9 @@ import com.openpay.merchant.domain.MerchantRepository;
 import java.time.OffsetDateTime;
 import java.util.Optional;
 import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
@@ -25,8 +25,14 @@ class MerchantServiceTest {
     @Mock
     private MerchantRepository merchantRepository;
 
-    @InjectMocks
     private MerchantService merchantService;
+
+    @BeforeEach
+    void setUp() {
+        // Constructed by hand rather than @InjectMocks: the loopback flag is a boolean, which
+        // Mockito has nothing to inject.
+        merchantService = new MerchantService(merchantRepository, false);
+    }
 
     @Test
     void createsMerchantWhenMerchantCodeIsUnique() {
