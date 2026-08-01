@@ -923,6 +923,8 @@ the cause is API version negotiation, not a missing daemon. The root `pom.xml` p
 
 ```text
 docs/
+  adrs/
+  diagrams/
 libs/
   common-observability/
   common-security/
@@ -961,7 +963,8 @@ web/
 - `scripts/` holds the local run script and the acceptance suite.
 - `tests/performance/` holds the k6 load and resilience scenarios
   (see [tests/performance/README.md](tests/performance/README.md)).
-- `docs/` captures architecture decisions.
+- `docs/` captures architecture decisions, including
+  [diagrams](docs/diagrams/) and [decision records](docs/adrs/).
 
 ## Status
 
