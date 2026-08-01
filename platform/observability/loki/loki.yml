@@ -1,0 +1,49 @@
+# Single-binary Loki, sized for a laptop.
+#
+# Filesystem storage and no replication: this is a local platform, and the alternative — object
+# storage and a ring — is a lot of moving parts to keep a demo's logs for a week.
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # Containers restart, and a restarted container replays its own recent output. Rejecting those
+  # outright would leave gaps in the timeline of the very incident being investigated.
+  reject_old_samples: false
+  # A load test can produce a lot of lines very quickly, and the default ingestion limit turns that
+  # into dropped logs at exactly the moment the logs matter.
+  ingestion_rate_mb: 16
+  ingestion_burst_size_mb: 32
+  # Correlation is by trace id, not by grepping across a month.
+  retention_period: 168h
+
+compactor:
+  working_directory: /loki/compactor
+  delete_request_store: filesystem
+  retention_enabled: true

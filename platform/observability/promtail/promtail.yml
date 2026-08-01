@@ -1,0 +1,58 @@
+# Ships container logs to Loki.
+#
+# Docker service discovery rather than the Loki logging driver: the driver has to be installed on
+# the host as a Docker plugin, which is a step every person running this would have to do by hand
+# before anything worked. This container reads the same log files the daemon already writes.
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: openpay-containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+
+    relabel_configs:
+      # Drop the leading slash Docker puts on container names, so a label reads "payment-service"
+      # rather than "/openpay-payment-service".
+      - source_labels: ['__meta_docker_container_name']
+        regex: '/(.*)'
+        target_label: 'container'
+      - source_labels: ['__meta_docker_container_log_stream']
+        target_label: 'stream'
+      # Only this platform's containers. Without it, Loki fills with Postgres and Kafka chatter and
+      # the queries a person actually runs get slower for no benefit.
+      - source_labels: ['container']
+        regex: 'openpay-.*'
+        action: keep
+      # A short service label, so a Grafana query is service="payment-service".
+      - source_labels: ['container']
+        regex: 'openpay-(.*)'
+        target_label: 'service'
+
+    pipeline_stages:
+      # The services log a fixed pattern:
+      #   2026-08-02 01:23:45.678 INFO  [thread] [correlationId] logger - message
+      # Pulling the level and the correlation id out as labels is what makes
+      # {service="payment-service"} |= correlationId a one-line investigation instead of a grep.
+      - regex:
+          expression: '^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}) +(?P<level>[A-Z]+) +\[(?P<thread>[^\]]*)\] +\[(?P<correlation_id>[^\]]*)\]'
+      - labels:
+          level:
+      # correlation_id is deliberately NOT a label. It is unbounded — one value per request — and a
+      # label like that gives Loki a stream per request, which is how a small deployment runs out of
+      # memory. It stays in the line, where `|= "<id>"` finds it just as well.
+      - timestamp:
+          source: timestamp
+          format: '2006-01-02 15:04:05.000'
+          # The services log in the container's local time, which is UTC in these images.
+          location: UTC

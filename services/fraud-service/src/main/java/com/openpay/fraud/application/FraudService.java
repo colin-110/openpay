@@ -135,7 +135,7 @@ public class FraudService {
         decision.resolve(finalOutcome, operator);
         publishCompletion(decision, finalOutcome, true);
 
-        meterRegistry.counter("openpay_fraud_reviews_resolved_total",
+        meterRegistry.counter("openpay.fraud.reviews.resolved",
                 "outcome", finalOutcome.name()).increment();
         log.info("Review for payment {} resolved as {} by {}", paymentId, finalOutcome, operator);
         return decision;
@@ -204,7 +204,7 @@ public class FraudService {
     }
 
     private void countDecision(DecisionOutcome outcome, String ruleName) {
-        Counter.builder("openpay_fraud_decisions_total")
+        Counter.builder("openpay.fraud.decisions")
                 .tag("outcome", outcome.name())
                 // A constant tag value for the allow path, rather than the rule name, so the
                 // cardinality of this metric is bounded by the number of rules and not by traffic.

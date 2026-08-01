@@ -562,6 +562,68 @@ A negative payable is a receivable, not a bug: the merchant was paid for money t
 given back. Paying out a negative amount is meaningless, and zeroing it would quietly write off
 money owed, so the items stay pending and reduce the next payout instead.
 
+## Observability
+
+Three signals, and one place to look at them:
+
+```bash
+docker compose -f platform/docker/docker-compose.yml up -d
+```
+
+Grafana is on <http://localhost:3000>, anonymous viewer access enabled, with two dashboards
+provisioned from `platform/observability/grafana/dashboards/`:
+
+- **Service Health (RED)** — request rate, 5xx rate, and latency percentiles per service, plus heap
+  and connection-pool usage. The first thing to open when something is wrong and you do not yet
+  know what.
+- **Payment Flow** — whether money is actually moving. Outbox backlog, review queue depth, open
+  circuit breakers, capture rate, transitions, and acquirer outcomes.
+
+The dashboards, datasources, and log shipping are all provisioned from files. Before that Grafana
+and Loki were running but empty: every dashboard had to be rebuilt by hand on each fresh volume,
+which meant nobody did.
+
+### Why two dashboards and not one
+
+Spring Boot already exports RED metrics per HTTP endpoint, and they answer "is the API healthy".
+They cannot answer "are payments completing", because a payment that is accepted and then never
+captured is two successful HTTP requests and one stuck customer. The business metrics count the
+lifecycle instead of the requests.
+
+The most important number on either dashboard is **outbox backlog**. Everything after payment
+creation is event-driven, so a stalled relay fails nothing at all — payments are accepted,
+committed, and then simply stop advancing. There is no error to alert on, and without this gauge
+the first signal is a merchant asking why nothing has settled.
+
+### Metric naming, the hard way
+
+Two conventions, both found by scraping the real endpoint rather than by reading documentation, and
+both now asserted by `MetricsExposureIT`:
+
+- Meters are named with dots and **no** `_total` suffix. Micrometer's Prometheus registry appends
+  it; writing the Prometheus name produces `..._total_total`, which matches nothing.
+- A counter must not end in `created`. `_created` is a reserved OpenMetrics suffix, so the client
+  strips it: `openpay.payments.created` reached Prometheus as `openpay_payments_total`, having
+  quietly lost the word that said what it counted. It is `openpay.payments.accepted` now.
+
+Every tag is drawn from a closed set — a status, a currency, a rule name. None is a merchant id or
+a payment id: a label whose cardinality grows with traffic turns a time series database into an
+outage. There is a `MeterFilter` ceiling on URI cardinality as a backstop, so that mistake would
+lose one metric rather than the monitoring stack.
+
+HTTP timings are published as histogram **buckets**, not client-side percentiles, because buckets
+aggregate across instances and percentiles do not — averaging two instances' p99s gives a number
+that is neither instance's p99 nor the fleet's.
+
+### Logs
+
+Promtail ships container logs to Loki with Docker service discovery, rather than the Loki logging
+driver, which would have to be installed as a plugin on every machine before anything worked. Log
+level becomes a label; the correlation id deliberately does not — it is unbounded, and a label per
+request is how a small Loki runs out of memory. It stays in the line, where `|= "<id>"` finds it
+just as well, and Grafana turns it into a link that pulls up every service's view of that one
+request.
+
 ## The Audit Trail
 
 Two questions the platform has to be able to answer months later: who was given the ability to move
@@ -920,6 +982,8 @@ Delivered:
   producer and a guess
 - routing rules in a table, so taking an acquirer out of rotation is a request rather than a
   deployment
+- provisioned Grafana dashboards over real business metrics, container logs in Loki, and a test
+  that fails when a metric a dashboard queries stops being exported
 
 Not yet built (see [docs/roadmap.md](docs/roadmap.md)):
 

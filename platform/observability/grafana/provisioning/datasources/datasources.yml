@@ -1,0 +1,33 @@
+# Datasources, provisioned rather than clicked.
+#
+# Grafana came up empty before this: the containers were running, and every dashboard had to be
+# wired by hand on each fresh volume, which meant nobody did it.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    uid: openpay-prometheus
+    jsonData:
+      # Matches prometheus.yml. Grafana uses it to pick sensible step sizes rather than guessing.
+      timeInterval: 15s
+
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    uid: openpay-loki
+    jsonData:
+      # Turns a correlation id in a log line into a link. This is the payoff of propagating the id
+      # through every service: one click from "this request" to "everything that happened for it".
+      derivedFields:
+        - name: correlationId
+          # The services log it in the second bracketed field.
+          matcherRegex: '\[([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\]'
+          url: '$${__value.raw}'
+          datasourceUid: openpay-loki
+          urlDisplayLabel: 'All services, this request'

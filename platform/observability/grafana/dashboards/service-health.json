@@ -1,0 +1,198 @@
+{
+  "uid": "openpay-service-health",
+  "title": "OpenPay / Service Health (RED)",
+  "description": "Rate, errors, and duration for every service. The first dashboard to open when something is wrong and you do not yet know what.",
+  "tags": ["openpay", "red"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "label": "Service",
+        "type": "query",
+        "datasource": { "type": "prometheus", "uid": "openpay-prometheus" },
+        "query": "label_values(http_server_requests_seconds_count, job)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": { "text": "All", "value": "$__all" }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "Rate",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Requests per second, by service",
+      "datasource": { "type": "prometheus", "uid": "openpay-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "custom": { "fillOpacity": 10 } },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (job) (rate(http_server_requests_seconds_count{job=~\"$service\"}[5m]))",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Requests per second, by endpoint",
+      "description": "Grouped by URI template, not by URL, so /api/v1/payments/{paymentId} is one series rather than one per payment.",
+      "datasource": { "type": "prometheus", "uid": "openpay-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "topk(10, sum by (uri) (rate(http_server_requests_seconds_count{job=~\"$service\"}[5m])))",
+          "legendFormat": "{{uri}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "row",
+      "title": "Errors",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "5xx rate",
+      "description": "Server errors only. 4xx is excluded on purpose: a merchant sending a bad request is not an incident, and mixing the two makes a genuine 500 invisible behind validation noise.",
+      "datasource": { "type": "prometheus", "uid": "openpay-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "color": { "mode": "fixed", "fixedColor": "red" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (job) (rate(http_server_requests_seconds_count{job=~\"$service\", status=~\"5..\"}[5m]))",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "4xx rate, by status",
+      "description": "Not an incident by itself, but a jump in 401 or 403 is worth seeing next to everything else.",
+      "datasource": { "type": "prometheus", "uid": "openpay-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 10 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (status) (rate(http_server_requests_seconds_count{job=~\"$service\", status=~\"4..\"}[5m]))",
+          "legendFormat": "{{status}}"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "row",
+      "title": "Duration",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 18 }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Latency p50 / p95 / p99",
+      "description": "Percentiles from the histogram, not an average. An average latency hides exactly the tail that a customer at a checkout experiences.",
+      "datasource": { "type": "prometheus", "uid": "openpay-prometheus" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 19 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.50, sum by (le, job) (rate(http_server_requests_seconds_bucket{job=~\"$service\"}[5m])))",
+          "legendFormat": "p50 {{job}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le, job) (rate(http_server_requests_seconds_bucket{job=~\"$service\"}[5m])))",
+          "legendFormat": "p95 {{job}}"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le, job) (rate(http_server_requests_seconds_bucket{job=~\"$service\"}[5m])))",
+          "legendFormat": "p99 {{job}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "row",
+      "title": "Runtime",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Heap used",
+      "datasource": { "type": "prometheus", "uid": "openpay-prometheus" },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 28 },
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (job) (jvm_memory_used_bytes{job=~\"$service\", area=\"heap\"})",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Database connections in use",
+      "description": "Against the pool maximum. A pool pinned at its limit is the usual reason latency climbs everywhere at once.",
+      "datasource": { "type": "prometheus", "uid": "openpay-prometheus" },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 28 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (job) (hikaricp_connections_active{job=~\"$service\"})",
+          "legendFormat": "active {{job}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (job) (hikaricp_connections_max{job=~\"$service\"})",
+          "legendFormat": "max {{job}}"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Log volume by level",
+      "datasource": { "type": "loki", "uid": "openpay-loki" },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 28 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (level) (rate({container=~\"openpay-.+\"}[5m]))",
+          "legendFormat": "{{level}}"
+        }
+      ]
+    }
+  ]
+}

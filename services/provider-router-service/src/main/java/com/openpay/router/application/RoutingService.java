@@ -39,6 +39,7 @@ public class RoutingService {
     private final ProviderClient providerClient;
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final EventCodec eventCodec;
+    private final RouterMetrics metrics;
     private final Map<String, CircuitBreaker> breakers = new ConcurrentHashMap<>();
 
     public RoutingService(
@@ -47,13 +48,15 @@ public class RoutingService {
             ProviderTransactionRepository transactionRepository,
             ProviderClient providerClient,
             KafkaTemplate<String, String> kafkaTemplate,
-            EventCodec eventCodec) {
+            EventCodec eventCodec,
+            RouterMetrics metrics) {
         this.properties = properties;
         this.routingRuleService = routingRuleService;
         this.transactionRepository = transactionRepository;
         this.providerClient = providerClient;
         this.kafkaTemplate = kafkaTemplate;
         this.eventCodec = eventCodec;
+        this.metrics = metrics;
     }
 
     public void route(UUID paymentId, UUID merchantId, long amount, String currency, String correlationId) {
@@ -68,6 +71,7 @@ public class RoutingService {
         if (candidates.isEmpty()) {
             // Distinguished from "every acquirer refused it": no rule matched at all, which is a
             // configuration problem and not an acquirer problem, and the two want different people.
+            metrics.routingExhausted("no_matching_rule");
             failPayment(paymentId, merchantId, "no routing rule matches this payment", correlationId);
             return;
         }
@@ -78,6 +82,7 @@ public class RoutingService {
             if (!breaker.allowsRequest()) {
                 log.warn("Skipping {} for payment {}: circuit breaker is {}",
                         rule.getProviderName(), paymentId, breaker.state());
+                metrics.skippedByBreaker(rule.getProviderName());
                 continue;
             }
 
@@ -92,6 +97,7 @@ public class RoutingService {
                 attempt.markAccepted(providerReference);
                 transactionRepository.save(attempt);
                 breaker.recordSuccess();
+                metrics.attempt(rule.getProviderName(), "accepted");
 
                 publishDispatched(paymentId, merchantId, rule.getProviderName(),
                         providerReference, attemptNo, correlationId);
@@ -103,12 +109,16 @@ public class RoutingService {
                 attempt.markFailed(exception.getMessage());
                 transactionRepository.save(attempt);
                 breaker.recordFailure();
+                metrics.attempt(rule.getProviderName(), "failed");
                 log.warn("Attempt {} on {} failed for payment {} ({} consecutive failures), trying next",
                         attemptNo, rule.getProviderName(), paymentId, breaker.consecutiveFailures());
             }
         }
 
         // Failing over is only worth doing if running out of providers is itself an outcome.
+        // Tagged apart from no_matching_rule: one is an acquirer problem and the other is a
+        // configuration problem, and they want different people woken up.
+        metrics.routingExhausted("all_providers_exhausted");
         failPayment(paymentId, merchantId, "all providers exhausted", correlationId);
     }
 

@@ -22,6 +22,7 @@ import com.openpay.payment.domain.PaymentStatus;
 import com.openpay.payment.infrastructure.FraudScreeningClient;
 import com.openpay.payment.infrastructure.FraudScreeningClient.ScreeningOutcome;
 import com.openpay.outbox.OutboxWriter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -57,7 +58,8 @@ class PaymentServiceTest {
         ObjectMapper objectMapper = new ObjectMapper();
         objectMapper.findAndRegisterModules();
         paymentService = new PaymentService(
-                paymentRepository, paymentEventRepository, outboxWriter, objectMapper, fraudScreeningClient);
+                paymentRepository, paymentEventRepository, outboxWriter, objectMapper, fraudScreeningClient,
+                new PaymentMetrics(new SimpleMeterRegistry()));
     }
 
     @Test

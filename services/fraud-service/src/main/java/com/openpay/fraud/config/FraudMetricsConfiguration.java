@@ -18,7 +18,7 @@ public class FraudMetricsConfiguration {
      */
     @Bean
     public Gauge openReviewsGauge(MeterRegistry registry, FraudService fraudService) {
-        return Gauge.builder("openpay_fraud_open_reviews", fraudService, FraudService::openReviewCount)
+        return Gauge.builder("openpay.fraud.open.reviews", fraudService, FraudService::openReviewCount)
                 .description("Payments held for manual review and not yet resolved")
                 .register(registry);
     }

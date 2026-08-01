@@ -23,6 +23,8 @@ Built:
   a refused action is still recorded
 - dead-letter peek, replay, and discard (phase 7) on every consuming service
 - `provider_routing_rules` (phase 6), seeded from configuration once and authoritative after that
+- the observability stack (phase 11): provisioned Grafana dashboards, business metrics, and
+  container logs shipped to Loki
 
 Still open inside those phases:
 

@@ -1,8 +1,10 @@
 package com.openpay.outbox;
 
 import com.openpay.events.EventCodec;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
@@ -53,6 +55,27 @@ public class OutboxAutoConfiguration {
                 OutboxRepository outboxRepository,
                 @Value("${openpay.outbox.retention:P7D}") java.time.Duration retention) {
             return new OutboxRetentionJob(outboxRepository, retention);
+        }
+
+    }
+
+    /**
+     * The backlog gauge.
+     *
+     * <p>Its own configuration rather than living with the relay, because the number is worth
+     * having precisely when the relay is <em>not</em> running: a relay switched off is the most
+     * direct way to end up with a growing outbox and no other symptom. It carries its own
+     * {@code @EnableScheduling} for the same reason — it must not inherit the relay's.
+     */
+    @Configuration
+    @EnableScheduling
+    static class MetricsConfiguration {
+
+        @Bean
+        @ConditionalOnBean(MeterRegistry.class)
+        @ConditionalOnMissingBean
+        public OutboxMetrics outboxMetrics(OutboxRepository outboxRepository, MeterRegistry meterRegistry) {
+            return new OutboxMetrics(outboxRepository, meterRegistry);
         }
     }
 }

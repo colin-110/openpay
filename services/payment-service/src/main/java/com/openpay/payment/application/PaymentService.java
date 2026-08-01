@@ -46,18 +46,21 @@ public class PaymentService {
     private final OutboxWriter outboxWriter;
     private final ObjectMapper objectMapper;
     private final FraudScreeningClient fraudScreeningClient;
+    private final PaymentMetrics metrics;
 
     public PaymentService(
             PaymentRepository paymentRepository,
             PaymentEventRepository paymentEventRepository,
             OutboxWriter outboxWriter,
             ObjectMapper objectMapper,
-            FraudScreeningClient fraudScreeningClient) {
+            FraudScreeningClient fraudScreeningClient,
+            PaymentMetrics metrics) {
         this.paymentRepository = paymentRepository;
         this.paymentEventRepository = paymentEventRepository;
         this.outboxWriter = outboxWriter;
         this.objectMapper = objectMapper;
         this.fraudScreeningClient = fraudScreeningClient;
+        this.metrics = metrics;
     }
 
     @Transactional
@@ -88,6 +91,7 @@ public class PaymentService {
             // one would put a FAILED row in every merchant's list for traffic they never took.
             // The decision itself is recorded — in fraud-service, which owns it.
             log.info("Refusing payment for merchantId={} on rule '{}'", merchantId, screening.ruleName());
+            metrics.paymentBlocked(screening.ruleName());
             throw new PaymentBlockedException(screening.ruleName());
         }
 
@@ -117,6 +121,7 @@ public class PaymentService {
                 log.info("Created payment id={} merchantId={}", payment.getId(), merchantId);
             }
 
+            metrics.paymentCreated(payment.getCurrency(), payment.getFraudStatus());
             return new PaymentResult(toResponse(payment), true);
         } catch (DataIntegrityViolationException exception) {
             // A concurrent request won the unique constraint on (merchant_id, idempotency_key).
@@ -186,6 +191,7 @@ public class PaymentService {
                 payment.getAmount(),
                 payment.getCurrency()));
 
+        metrics.transition(current, target);
         log.info("Payment {} moved {} -> {} ({})", paymentId, current, target, reason);
         return true;
     }
@@ -230,6 +236,7 @@ public class PaymentService {
             // merchant's webhooks see a refused payment in the shape they already understand.
             PaymentStatus current = payment.getStatus();
             payment.transitionTo(PaymentStatus.FAILED);
+            metrics.transition(current, PaymentStatus.FAILED);
             recordEvent(payment, "PAYMENT_FAILED");
             outboxWriter.append(AGGREGATE_TYPE, OpenPayTopics.PAYMENT_STATUS_UPDATED, payment.getId(),
                     new PaymentStatusUpdated(

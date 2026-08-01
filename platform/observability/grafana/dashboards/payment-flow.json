@@ -1,0 +1,239 @@
+{
+  "uid": "openpay-payment-flow",
+  "title": "OpenPay / Payment Flow",
+  "description": "Whether money is actually moving. Service Health answers 'is the API up'; this answers 'are payments completing', which is a different question and the one that matters.",
+  "tags": ["openpay", "business"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "The number to look at first",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Outbox backlog",
+      "description": "Events written and not yet published. Arguably the most important number here: everything after payment creation is event-driven, so a stalled relay fails nothing at all — payments are accepted, committed, and then simply stop advancing. Steady-state is near zero; sustained growth means the relay or the broker is in trouble.",
+      "datasource": { "type": "prometheus", "uid": "openpay-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 50 },
+              { "color": "red", "value": 500 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "graphMode": "area", "colorMode": "background" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(openpay_outbox_unpublished)",
+          "legendFormat": "unpublished"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Payments held for review",
+      "description": "Depth of the risk review queue. Each one is a merchant's customer waiting at a checkout, so the question worth alerting on is how many are waiting right now, not how many ever have.",
+      "datasource": { "type": "prometheus", "uid": "openpay-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 10 },
+              { "color": "red", "value": 50 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "graphMode": "area", "colorMode": "background" },
+      "targets": [
+        { "refId": "A", "expr": "sum(openpay_fraud_open_reviews)", "legendFormat": "open reviews" }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Acquirers out of rotation",
+      "description": "Circuit breakers currently open. One is a failover working as designed; all of them at once is an outage.",
+      "datasource": { "type": "prometheus", "uid": "openpay-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 2 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "graphMode": "none", "colorMode": "background" },
+      "targets": [
+        { "refId": "A", "expr": "sum(openpay_provider_breaker_open)", "legendFormat": "open" }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Capture rate, last hour",
+      "description": "Captures as a share of payments that reached a terminal state. The single number that says whether the platform is doing its job.",
+      "datasource": { "type": "prometheus", "uid": "openpay-prometheus" },
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 1 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 0.8 },
+              { "color": "green", "value": 0.95 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": { "graphMode": "area", "colorMode": "background" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(openpay_payment_transitions_total{to=\"CAPTURED\"}[1h])) / clamp_min(sum(increase(openpay_payment_transitions_total{to=~\"CAPTURED|FAILED|CANCELLED\"}[1h])), 1)",
+          "legendFormat": "captured"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "row",
+      "title": "Lifecycle",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 7 }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Payments accepted, by screening outcome",
+      "description": "UNSCREENED means fraud-service could not be reached and the payment was let through anyway. A non-zero line here is a window that should be explainable afterwards.",
+      "datasource": { "type": "prometheus", "uid": "openpay-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 20, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (screening) (rate(openpay_payments_accepted_total[5m]))",
+          "legendFormat": "{{screening}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Transitions",
+      "description": "Both ends are tagged because the transition is what identifies the problem: PENDING_PROVIDER to FAILED climbing is an acquirer, CREATED to FAILED climbing is routing, and a single 'failures' line cannot tell them apart.",
+      "datasource": { "type": "prometheus", "uid": "openpay-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (from, to) (rate(openpay_payment_transitions_total[5m]))",
+          "legendFormat": "{{from}} → {{to}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "row",
+      "title": "Acquirers",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Dispatch attempts, by acquirer and outcome",
+      "datasource": { "type": "prometheus", "uid": "openpay-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 17 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (provider, outcome) (rate(openpay_provider_attempts_total[5m]))",
+          "legendFormat": "{{provider}} {{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Payments that reached no acquirer",
+      "description": "no_matching_rule is a configuration problem; all_providers_exhausted is an acquirer problem. They look identical to a merchant and want different people woken up, which is why they are separate series.",
+      "datasource": { "type": "prometheus", "uid": "openpay-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 17 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason) (rate(openpay_routing_exhausted_total[5m]))",
+          "legendFormat": "{{reason}}"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by (provider) (rate(openpay_provider_skipped_total[5m]))",
+          "legendFormat": "skipped: {{provider}}"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "row",
+      "title": "Risk",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 25 }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Screening decisions, by rule",
+      "description": "A rule that suddenly fires far more than usual is either catching an attack or misconfigured, and the shape of the change usually tells you which.",
+      "datasource": { "type": "prometheus", "uid": "openpay-prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (outcome, rule) (rate(openpay_fraud_decisions_total[5m]))",
+          "legendFormat": "{{outcome}} / {{rule}}"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "logs",
+      "title": "Errors and warnings across the platform",
+      "datasource": { "type": "loki", "uid": "openpay-loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
+      "options": { "showTime": true, "sortOrder": "Descending", "wrapLogMessage": true },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{container=~\"openpay-.+\", level=~\"ERROR|WARN\"}"
+        }
+      ]
+    }
+  ]
+}

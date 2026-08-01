@@ -16,6 +16,7 @@ import com.openpay.router.domain.ProviderTransactionRepository;
 import com.openpay.router.domain.RoutingRule;
 import com.openpay.router.infrastructure.ProviderClient;
 import com.openpay.router.infrastructure.ProviderUnavailableException;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
@@ -62,7 +63,7 @@ class RoutingServiceTest {
         when(routingRuleService.listRules()).thenReturn(rules());
         routingService = new RoutingService(
                 properties(), routingRuleService, transactionRepository, providerClient,
-                kafkaTemplate, new EventCodec());
+                kafkaTemplate, new EventCodec(), new RouterMetrics(new SimpleMeterRegistry()));
     }
 
     @Test

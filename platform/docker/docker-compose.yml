@@ -69,17 +69,47 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
+      # Local only. The dashboards are read-only anyway, and a login prompt in front of a demo is
+      # friction with nothing behind it.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
     volumes:
       - grafana-data:/var/lib/grafana
+      # Provisioned, not clicked. Grafana came up empty before this, so every dashboard had to be
+      # rebuilt by hand on each fresh volume — which meant nobody did.
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../observability/grafana/dashboards:/etc/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+      - loki
 
   loki:
     image: grafana/loki:3.5.3
     container_name: openpay-loki
     ports:
       - "3100:3100"
-    command: -config.file=/etc/loki/local-config.yaml
+    command: -config.file=/etc/loki/loki.yml
+    volumes:
+      - ../observability/loki/loki.yml:/etc/loki/loki.yml:ro
+      - loki-data:/loki
+
+  # Ships container logs to Loki. Docker service discovery rather than the Loki logging driver,
+  # which would have to be installed as a plugin on every machine before anything worked.
+  promtail:
+    image: grafana/promtail:3.5.3
+    container_name: openpay-promtail
+    command: -config.file=/etc/promtail/promtail.yml
+    volumes:
+      - ../observability/promtail/promtail.yml:/etc/promtail/promtail.yml:ro
+      # Read-only, and the socket is only used for service discovery: promtail asks which
+      # containers exist and then reads their log files.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    depends_on:
+      - loki
 
 volumes:
   postgres-data:
   redis-data:
   grafana-data:
+  loki-data:
