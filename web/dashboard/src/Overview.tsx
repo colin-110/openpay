@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, isUnauthorized, type Payment, type Refund, type Session } from "./api";
-import { formatAmount, formatRelative, methodFamily } from "./format";
+import { formatAmount, formatAmountByCurrency, formatRelative, methodFamily } from "./format";
 import { AreaChart, RateChart, bucketByDay } from "./Chart";
-import { CopyableId, EmptyState, StatusPill } from "./ui";
+import { CopyableId, EmptyState, StatusPill, rowActivation, useRaceGuard } from "./ui";
 
 /** How much history the tiles are computed over. The API pages, so a figure has to say its scope. */
 const WINDOW = 100;
@@ -23,33 +23,40 @@ export function Overview({
   const [totalPayments, setTotalPayments] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { startFetch, isCurrent } = useRaceGuard();
 
   const load = useCallback(async () => {
+    const ticket = startFetch();
     try {
       const [paymentPage, refundPage] = await Promise.all([
         api.payments(session.token, { page: 0, size: WINDOW }),
         api.refunds(session.token, { page: 0, size: WINDOW }),
       ]);
+      if (!isCurrent(ticket)) return;
       setPayments(paymentPage.items);
       setTotalPayments(paymentPage.totalItems);
       setRefunds(refundPage.items);
       setError(null);
     } catch (caught) {
+      if (!isCurrent(ticket)) return;
       if (isUnauthorized(caught)) {
         onUnauthorized();
         return;
       }
       setError(caught instanceof Error ? caught.message : "Could not load the overview");
     } finally {
-      setLoading(false);
+      if (isCurrent(ticket)) setLoading(false);
     }
-  }, [session.token, onUnauthorized]);
+  }, [session.token, onUnauthorized, startFetch, isCurrent]);
 
   useEffect(() => {
     load();
   }, [load, tick]);
 
-  // The merchant's own currency, taken from its traffic rather than assumed.
+  // The merchant's own currency, taken from its traffic rather than assumed. Used only for the
+  // chart's axis labels below — unlike the KPI tiles, a single-currency chart is a trend line, not
+  // a total, so approximating with the dominant currency is a smaller lie than the one the tiles
+  // used to tell.
   const currency = payments[0]?.currency ?? "INR";
 
   const captured = payments.filter((payment) => payment.status === "CAPTURED");
@@ -64,14 +71,16 @@ export function Overview({
       payment.status === "AUTHORIZED"
   );
 
-  const capturedValue = captured.reduce((sum, payment) => sum + payment.amount, 0);
+  // Summed per currency, then joined — not added together as raw integers. A merchant is not
+  // guaranteed to transact in only one currency, and paise plus cents is not a number that means
+  // anything.
+  const capturedValue = formatAmountByCurrency(captured, (p) => p.amount, (p) => p.currency);
   const settled = captured.length + refunded.length;
   const decided = settled + failed.length;
   const successRate = decided === 0 ? null : (settled / decided) * 100;
 
-  const returnedValue = refunds
-    .filter((refund) => refund.status === "SUCCEEDED")
-    .reduce((sum, refund) => sum + refund.amount, 0);
+  const succeededRefunds = refunds.filter((refund) => refund.status === "SUCCEEDED");
+  const returnedValue = formatAmountByCurrency(succeededRefunds, (r) => r.amount, (r) => r.currency);
   const refundsInFlight = refunds.filter((refund) => refund.status === "PENDING").length;
 
   // Fourteen daily buckets, empty days included: dropping them would compress the axis and make
@@ -120,7 +129,7 @@ export function Overview({
       <section className="tiles">
         <Tile
           label="Captured volume"
-          value={formatAmount(capturedValue, currency)}
+          value={capturedValue}
           note={`${captured.length} captured · ${scope}`}
           loading={loading}
         />
@@ -137,7 +146,7 @@ export function Overview({
         />
         <Tile
           label="Refunded"
-          value={formatAmount(returnedValue, currency)}
+          value={returnedValue}
           note={
             refundsInFlight > 0
               ? `${refunds.length} refunds · ${refundsInFlight} in flight`
@@ -201,7 +210,7 @@ export function Overview({
               </thead>
               <tbody>
                 {payments.slice(0, 6).map((payment) => (
-                  <tr key={payment.id} onClick={() => onOpenPayment(payment.id)}>
+                  <tr key={payment.id} {...rowActivation(() => onOpenPayment(payment.id))}>
                     <td>
                       <CopyableId id={payment.id} />
                     </td>

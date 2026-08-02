@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   api,
   isUnauthorized,
@@ -38,6 +38,16 @@ export function PaymentDrawer({
   const [attemptsError, setAttemptsError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
+
+  // Standard ARIA dialog behavior: move focus in on open, and give it back to whatever triggered
+  // the drawer on close, rather than dropping a keyboard/screen-reader user back at <body>.
+  useEffect(() => {
+    openerRef.current = document.activeElement as HTMLElement | null;
+    closeButtonRef.current?.focus();
+    return () => openerRef.current?.focus?.();
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -104,7 +114,7 @@ export function PaymentDrawer({
               <div className="drawer-amount">{loading ? "Loading…" : "Not found"}</div>
             )}
           </div>
-          <button className="icon" onClick={onClose} aria-label="Close">
+          <button ref={closeButtonRef} className="icon" onClick={onClose} aria-label="Close">
             ✕
           </button>
         </header>
@@ -353,6 +363,9 @@ function RefundPanel({
   const [amount, setAmount] = useState("");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
+  // A second, explicit step before the one action in this dashboard that moves money — "typed an
+  // amount" and "confirmed sending it" should not be the same click.
+  const [confirming, setConfirming] = useState(false);
   const notify = useToast();
 
   if (payment.status !== "CAPTURED" || refundable <= 0) {
@@ -370,8 +383,7 @@ function RefundPanel({
   const typed = amount.trim() === "" ? refundable : toMinorUnits(amount, payment.currency);
   const preview = Number.isFinite(typed) && typed > 0 ? typed : refundable;
 
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
+  async function confirmAndSubmit() {
     setBusy(true);
     try {
       // Blank means "everything still refundable", which the backend works out itself rather than
@@ -381,50 +393,87 @@ function RefundPanel({
       notify("ok", "Refund submitted. It settles once the acquirer confirms.");
       setAmount("");
       setReason("");
+      setConfirming(false);
       setOpen(false);
       onDone();
     } catch (caught) {
       notify("bad", caught instanceof Error ? caught.message : "Could not create the refund");
+      setConfirming(false);
     } finally {
       setBusy(false);
     }
   }
 
+  function reviewFirst(event: React.FormEvent) {
+    event.preventDefault();
+    setConfirming(true);
+  }
+
   return (
     <section className="drawer-action">
       {open ? (
-        <form className="refund-form" onSubmit={submit}>
-          <h3>Issue a refund</h3>
-          <label>
-            Amount in {payment.currency} — leave blank to refund the rest
-            <input
-              type="number"
-              step="0.01"
-              min="0.01"
-              max={toMajorUnits(refundable, payment.currency)}
-              value={amount}
-              placeholder={toMajorUnits(refundable, payment.currency)}
-              onChange={(event) => setAmount(event.target.value)}
-            />
-          </label>
-          <label>
-            Reason
-            <input
-              value={reason}
-              maxLength={255}
-              placeholder="Customer returned the order"
-              onChange={(event) => setReason(event.target.value)}
-            />
-          </label>
-          <div className="row">
-            <button type="submit" className="primary" disabled={busy}>
-              {busy ? "Submitting…" : `Refund ${formatAmount(preview, payment.currency)}`}
-            </button>
-            <button type="button" className="ghost" onClick={() => setOpen(false)}>
-              Cancel
-            </button>
+        confirming ? (
+          <div className="refund-form">
+            <h3>Confirm this refund</h3>
+            <p>
+              Send <strong>{formatAmount(preview, payment.currency)}</strong> back to the
+              customer for this payment
+              {reason.trim() ? (
+                <>
+                  {" "}
+                  — <span className="muted">“{reason.trim()}”</span>
+                </>
+              ) : null}
+              . This cannot be undone from the dashboard once the acquirer accepts it.
+            </p>
+            <div className="row">
+              <button
+                type="button"
+                className="primary"
+                disabled={busy}
+                onClick={confirmAndSubmit}
+              >
+                {busy ? "Submitting…" : `Confirm refund of ${formatAmount(preview, payment.currency)}`}
+              </button>
+              <button type="button" className="ghost" disabled={busy} onClick={() => setConfirming(false)}>
+                Back
+              </button>
+            </div>
           </div>
-        </form>
+        ) : (
+          <form className="refund-form" onSubmit={reviewFirst}>
+            <h3>Issue a refund</h3>
+            <label>
+              Amount in {payment.currency} — leave blank to refund the rest
+              <input
+                type="number"
+                step="0.01"
+                min="0.01"
+                max={toMajorUnits(refundable, payment.currency)}
+                value={amount}
+                placeholder={toMajorUnits(refundable, payment.currency)}
+                onChange={(event) => setAmount(event.target.value)}
+              />
+            </label>
+            <label>
+              Reason
+              <input
+                value={reason}
+                maxLength={255}
+                placeholder="Customer returned the order"
+                onChange={(event) => setReason(event.target.value)}
+              />
+            </label>
+            <div className="row">
+              <button type="submit" className="primary">
+                Review refund of {formatAmount(preview, payment.currency)}
+              </button>
+              <button type="button" className="ghost" onClick={() => setOpen(false)}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        )
       ) : (
         <button className="primary" onClick={() => setOpen(true)}>
           Issue a refund

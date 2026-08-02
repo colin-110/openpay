@@ -6,8 +6,8 @@ import {
   type Settlement,
   type SettlementDetail,
 } from "./api";
-import { formatAmount, formatDateTime } from "./format";
-import { CopyableId, EmptyState, Pagination, SkeletonRows, StatusPill } from "./ui";
+import { formatAmount, formatAmountByCurrency, formatDateTime } from "./format";
+import { CopyableId, EmptyState, Pagination, SkeletonRows, StatusPill, rowActivation, useRaceGuard } from "./ui";
 
 /**
  * When the merchant gets paid, and what was taken out on the way.
@@ -34,57 +34,73 @@ export function Settlements({
   const [detail, setDetail] = useState<SettlementDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { startFetch, isCurrent } = useRaceGuard();
 
   const load = useCallback(async () => {
+    const ticket = startFetch();
     try {
       const result = await api.settlements(session.token, { page, size });
+      if (!isCurrent(ticket)) return;
       setSettlements(result.items);
       setMeta({ totalItems: result.totalItems, totalPages: result.totalPages });
       setError(null);
     } catch (caught) {
+      if (!isCurrent(ticket)) return;
       if (isUnauthorized(caught)) {
         onUnauthorized();
         return;
       }
       setError(caught instanceof Error ? caught.message : "Could not load settlements");
     } finally {
-      setLoading(false);
+      if (isCurrent(ticket)) setLoading(false);
     }
-  }, [session.token, page, size, onUnauthorized]);
+  }, [session.token, page, size, onUnauthorized, startFetch, isCurrent]);
 
   useEffect(() => {
     load();
   }, [load, tick]);
 
   // Items are fetched only for the row actually opened: most payouts are never expanded, and
-  // fetching every one of them up front would be a lot of rows nobody asked for.
+  // fetching every one of them up front would be a lot of rows nobody asked for. The `current`
+  // check is what stops expanding row B, while row A's detail fetch is still in flight, from
+  // having A's line items flash under B once A's slower response finally lands.
   useEffect(() => {
     if (!openId) {
       setDetail(null);
       return;
     }
+    const requestedFor = openId;
+    let current = true;
     api
-      .settlement(session.token, openId)
-      .then(setDetail)
-      .catch(() => setDetail(null));
+      .settlement(session.token, requestedFor)
+      .then((result) => {
+        if (current) setDetail(result);
+      })
+      .catch(() => {
+        if (current) setDetail(null);
+      });
+    return () => {
+      current = false;
+    };
   }, [openId, session.token]);
 
-  const currency = settlements[0]?.currency ?? "INR";
+  // Summed per currency, then joined — see Overview.tsx for why raw addition across currencies is
+  // wrong on a KPI tile.
   const pending = settlements.filter((s) => s.status !== "COMPLETED");
-  const awaiting = pending.reduce((sum, s) => sum + s.netAmount, 0);
-  const feesTaken = settlements.reduce((sum, s) => sum + s.feeAmount, 0);
+  const awaiting = formatAmountByCurrency(pending, (s) => s.netAmount, (s) => s.currency);
+  const feesTaken = formatAmountByCurrency(settlements, (s) => s.feeAmount, (s) => s.currency);
 
   return (
     <>
       <section className="tiles">
         <Tile
           label="Awaiting payout"
-          value={loading ? "—" : formatAmount(awaiting, currency)}
+          value={loading ? "—" : awaiting}
           note={`${pending.length} window${pending.length === 1 ? "" : "s"} not yet paid`}
         />
         <Tile
           label="Fees on this page"
-          value={loading ? "—" : formatAmount(feesTaken, currency)}
+          value={loading ? "—" : feesTaken}
           note="Deducted from gross before payout"
         />
         <Tile
@@ -95,6 +111,27 @@ export function Settlements({
       </section>
 
       {error && <div className="banner bad">{error}</div>}
+
+      <div className="toolbar">
+        <div className="toolbar-right">
+          <label className="inline">
+            Rows
+            <select
+              value={size}
+              onChange={(event) => {
+                setSize(Number(event.target.value));
+                setPage(0);
+              }}
+            >
+              {[20, 50, 100].map((value) => (
+                <option key={value} value={value}>
+                  {value}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+      </div>
 
       <section className="card">
         <table className="grid">
@@ -142,23 +179,6 @@ export function Settlements({
           onPage={setPage}
         />
       </section>
-
-      <p className="muted small">
-        Rows per page:{" "}
-        <select
-          value={size}
-          onChange={(event) => {
-            setSize(Number(event.target.value));
-            setPage(0);
-          }}
-        >
-          {[20, 50, 100].map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
-          ))}
-        </select>
-      </p>
     </>
   );
 }
@@ -178,7 +198,7 @@ function SettlementRow({
 }) {
   return (
     <>
-      <tr onClick={onToggle} className={open ? "selected" : ""}>
+      <tr {...rowActivation(onToggle)} className={open ? "selected" : ""}>
         <td>
           <span className="disclosure" aria-hidden="true">
             {open ? "▾" : "▸"}
@@ -222,6 +242,7 @@ function SettlementRow({
                   {detail.items.map((item) => (
                     <tr
                       key={item.paymentId}
+                      {...rowActivation(() => onOpenPayment(item.paymentId))}
                       onClick={(event) => {
                         event.stopPropagation();
                         onOpenPayment(item.paymentId);

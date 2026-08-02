@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, isUnauthorized, type Refund, type RefundStatus, type Session } from "./api";
 import { formatAmount, formatDateTime } from "./format";
-import { CopyableId, EmptyState, Pagination, SkeletonRows, StatusPill } from "./ui";
+import { CopyableId, EmptyState, Pagination, SkeletonRows, StatusPill, rowActivation, useRaceGuard } from "./ui";
 
 const STATUSES: RefundStatus[] = ["PENDING", "SUCCEEDED", "FAILED"];
 
@@ -23,23 +23,27 @@ export function Refunds({
   const [meta, setMeta] = useState({ totalItems: 0, totalPages: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { startFetch, isCurrent } = useRaceGuard();
 
   const load = useCallback(async () => {
+    const ticket = startFetch();
     try {
       const result = await api.refunds(session.token, { page, size, status: status || null });
+      if (!isCurrent(ticket)) return;
       setRefunds(result.items);
       setMeta({ totalItems: result.totalItems, totalPages: result.totalPages });
       setError(null);
     } catch (caught) {
+      if (!isCurrent(ticket)) return;
       if (isUnauthorized(caught)) {
         onUnauthorized();
         return;
       }
       setError(caught instanceof Error ? caught.message : "Could not load refunds");
     } finally {
-      setLoading(false);
+      if (isCurrent(ticket)) setLoading(false);
     }
-  }, [session.token, page, size, status, onUnauthorized]);
+  }, [session.token, page, size, status, onUnauthorized, startFetch, isCurrent]);
 
   useEffect(() => {
     load();
@@ -109,7 +113,7 @@ export function Refunds({
               <SkeletonRows rows={6} columns={6} />
             ) : (
               refunds.map((refund) => (
-                <tr key={refund.id} onClick={() => onOpenPayment(refund.paymentId)}>
+                <tr key={refund.id} {...rowActivation(() => onOpenPayment(refund.paymentId))}>
                   <td>
                     <CopyableId id={refund.id} />
                   </td>

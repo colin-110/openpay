@@ -9,8 +9,21 @@
  * VITE_API_BASE / VITE_AUTH_BASE still override this outright when set.
  */
 const usingTls = typeof window !== "undefined" && window.location.protocol === "https:";
-const BASE = import.meta.env.VITE_API_BASE ?? (usingTls ? "https://localhost:8443" : "http://localhost:8080");
+// Exported so the Developers screen can show the merchant the base URL actually in use, rather
+// than re-deriving its own copy that skips the TLS check above and tells an integrator the wrong
+// scheme and port whenever the dashboard is loaded through the HTTPS front door.
+export const BASE = import.meta.env.VITE_API_BASE ?? (usingTls ? "https://localhost:8443" : "http://localhost:8080");
 const AUTH_BASE = import.meta.env.VITE_AUTH_BASE ?? (usingTls ? "https://localhost:8444" : "http://localhost:8081");
+
+/**
+ * The badge shown next to the OpenPay wordmark. Configurable rather than hardcoded on purpose:
+ * both acquirers this platform can reach are simulators (mock-bank-a/b), so "Sandbox" is accurate
+ * today — but a hardcoded label doesn't stay true on its own. Wiring up a real acquirer without
+ * also setting VITE_ENVIRONMENT_LABEL would leave a stale badge instead of a wrong one nobody
+ * decided on — a real risk category for a payments UI, since "sandbox" mislabeling live traffic
+ * is the direction that costs someone money.
+ */
+export const ENVIRONMENT_LABEL = import.meta.env.VITE_ENVIRONMENT_LABEL ?? "Sandbox";
 
 export type Session = {
   token: string;

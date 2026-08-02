@@ -8,8 +8,51 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import type { KeyboardEvent } from "react";
 import type { PaymentStatus, RefundStatus } from "./api";
 import { shortId, titleCase } from "./format";
+
+/* -- race guard ----------------------------------------------------------- */
+
+/**
+ * Guards against an out-of-order response clobbering newer state — the 5-second auto-refresh tick
+ * overlapping a manual "Refresh" click, or two filter changes fired in quick succession, can
+ * resolve in either order over the network. Without this, whichever response *arrives* last wins
+ * even if it was not the last one *sent*, and the screen ends up showing results for a filter that
+ * is no longer selected.
+ *
+ * Usage: `const ticket = startFetch(); ...await...; if (!isCurrent(ticket)) return;` before every
+ * setState that follows an await. Cheaper to retrofit than plumbing an AbortController through
+ * every api.ts call site, and equivalent for this purpose — the stale request still completes, its
+ * result is just never applied.
+ */
+export function useRaceGuard() {
+  const ticket = useRef(0);
+  const startFetch = useCallback(() => ++ticket.current, []);
+  const isCurrent = useCallback((t: number) => t === ticket.current, []);
+  return { startFetch, isCurrent };
+}
+
+/* -- rows as buttons ------------------------------------------------------ */
+
+/**
+ * Spreadable props for a `<tr onClick={...}>` that drills into a detail view. A bare onClick on a
+ * table row is mouse-only — no keyboard or screen-reader user can reach it — so every row that
+ * opens something spreads this instead of wiring onClick directly.
+ */
+export function rowActivation(onActivate: () => void) {
+  return {
+    onClick: onActivate,
+    tabIndex: 0,
+    role: "button" as const,
+    onKeyDown: (event: KeyboardEvent<HTMLElement>) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        onActivate();
+      }
+    },
+  };
+}
 
 /* -- status ------------------------------------------------------------- */
 

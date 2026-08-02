@@ -1,9 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import { api, isUnauthorized, type Delivery, type Session } from "./api";
+import { BASE as API_BASE, api, isUnauthorized, type Delivery, type Session } from "./api";
 import { formatDateTime, formatRelative, titleCase } from "./format";
-import { CopyableId, EmptyState, Pagination, SkeletonRows } from "./ui";
-
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
+import { CopyableId, EmptyState, Pagination, SkeletonRows, useRaceGuard } from "./ui";
 
 /**
  * The integration view: what the platform is sending, and what a developer needs to receive it.
@@ -26,23 +24,27 @@ export function Developers({
   const [meta, setMeta] = useState({ totalItems: 0, totalPages: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { startFetch, isCurrent } = useRaceGuard();
 
   const load = useCallback(async () => {
+    const ticket = startFetch();
     try {
       const result = await api.deliveries(session.token, { page, size });
+      if (!isCurrent(ticket)) return;
       setDeliveries(result.items);
       setMeta({ totalItems: result.totalItems, totalPages: result.totalPages });
       setError(null);
     } catch (caught) {
+      if (!isCurrent(ticket)) return;
       if (isUnauthorized(caught)) {
         onUnauthorized();
         return;
       }
       setError(caught instanceof Error ? caught.message : "Could not load the delivery log");
     } finally {
-      setLoading(false);
+      if (isCurrent(ticket)) setLoading(false);
     }
-  }, [session.token, page, size, onUnauthorized]);
+  }, [session.token, page, size, onUnauthorized, startFetch, isCurrent]);
 
   useEffect(() => {
     load();

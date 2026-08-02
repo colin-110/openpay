@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type Session } from "./api";
+import { ENVIRONMENT_LABEL, api, type Session } from "./api";
 import { Developers } from "./Developers";
 import { Login, Mark } from "./Login";
 import { Overview } from "./Overview";
@@ -284,7 +284,7 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
             <p className="muted">{current.subtitle}</p>
           </div>
           <div className="topbar-actions">
-            <span className="env-pill">Sandbox</span>
+            <span className="env-pill">{ENVIRONMENT_LABEL}</span>
             <button
               className={`live ${live ? "on" : ""}`}
               onClick={() => setLive((value) => !value)}
@@ -344,6 +344,10 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
 
       {route.paymentId && (
         <PaymentDrawer
+          // Forces a fresh mount per payment rather than reusing state across one: without this,
+          // navigating from payment A to payment B keeps A's payment/refunds in state until B's
+          // fetch resolves, and a refund submitted in that window would go through against A.
+          key={route.paymentId}
           session={session}
           paymentId={route.paymentId}
           tick={tick}

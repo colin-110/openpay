@@ -28,6 +28,30 @@ export function formatAmount(minorUnits: number, currency: string): string {
   }).format(minorUnits / 10 ** exponent);
 }
 
+/**
+ * Sums minor units *within* each currency present, then formats and joins them — rather than
+ * summing raw integers across currencies and labeling the result with whichever currency happened
+ * to belong to the first record. A merchant is not guaranteed to transact in only one currency
+ * (the payment API accepts whatever `currency` a request specifies), so a KPI tile that just adds
+ * paise to cents and calls the total rupees would be reporting a number that means nothing.
+ */
+export function formatAmountByCurrency<T>(
+  items: T[],
+  amountOf: (item: T) => number,
+  currencyOf: (item: T) => string
+): string {
+  const totals = new Map<string, number>();
+  for (const item of items) {
+    const currency = currencyOf(item);
+    totals.set(currency, (totals.get(currency) ?? 0) + amountOf(item));
+  }
+  if (totals.size === 0) return formatAmount(0, "INR");
+  return [...totals.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .map(([currency, amount]) => formatAmount(amount, currency))
+    .join(" + ");
+}
+
 /** ₹1.63L rather than ₹1,63,240.00, for figures that have to fit in a tile. */
 export function formatCompactAmount(minorUnits: number, currency: string): string {
   const exponent = exponentFor(currency);

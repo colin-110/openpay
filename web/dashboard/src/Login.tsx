@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ApiError, api, type Session } from "./api";
+import { ApiError, ENVIRONMENT_LABEL, api, type Session } from "./api";
 
 export function Login({ onSignIn }: { onSignIn: (session: Session) => void }) {
   const [email, setEmail] = useState("");
@@ -44,7 +44,7 @@ export function Login({ onSignIn }: { onSignIn: (session: Session) => void }) {
         <form className="auth-form" onSubmit={submit}>
           <div className="auth-form-head">
             <h2>Sign in</h2>
-            <span className="env-pill">Sandbox</span>
+            <span className="env-pill">{ENVIRONMENT_LABEL}</span>
           </div>
           <p className="muted">Use the dashboard credentials issued for your merchant account.</p>
 

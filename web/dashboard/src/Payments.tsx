@@ -8,7 +8,7 @@ import {
   type Session,
 } from "./api";
 import { describeMethod, formatAmount, formatDateTime, formatRelative } from "./format";
-import { CopyableId, EmptyState, Pagination, SkeletonRows, StatusPill } from "./ui";
+import { CopyableId, EmptyState, Pagination, SkeletonRows, StatusPill, rowActivation, useRaceGuard } from "./ui";
 
 const STATUSES: PaymentStatus[] = [
   "CREATED",
@@ -44,13 +44,16 @@ export function Payments({
   const [meta, setMeta] = useState({ totalItems: 0, totalPages: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { startFetch, isCurrent } = useRaceGuard();
 
   const load = useCallback(async () => {
+    const ticket = startFetch();
     try {
       // A payment ID is a UUID, so a full one is a direct lookup rather than a filter. Anything
       // else would be a substring search the API cannot honestly serve.
       if (applied) {
         const payment = await api.payment(session.token, applied);
+        if (!isCurrent(ticket)) return;
         setPayments([payment]);
         setMeta({ totalItems: 1, totalPages: 1 });
         setError(null);
@@ -61,10 +64,12 @@ export function Payments({
         size,
         status: status || null,
       });
+      if (!isCurrent(ticket)) return;
       setPayments(result.items);
       setMeta({ totalItems: result.totalItems, totalPages: result.totalPages });
       setError(null);
     } catch (caught) {
+      if (!isCurrent(ticket)) return;
       if (isUnauthorized(caught)) {
         onUnauthorized();
         return;
@@ -77,9 +82,9 @@ export function Payments({
       }
       setError(caught instanceof Error ? caught.message : "Could not load payments");
     } finally {
-      setLoading(false);
+      if (isCurrent(ticket)) setLoading(false);
     }
-  }, [session.token, page, size, status, applied, onUnauthorized]);
+  }, [session.token, page, size, status, applied, onUnauthorized, startFetch, isCurrent]);
 
   useEffect(() => {
     load();
@@ -105,6 +110,7 @@ export function Payments({
         <form className="search" onSubmit={submitSearch}>
           <input
             type="search"
+            aria-label="Search by payment ID"
             value={search}
             placeholder="Search by payment ID"
             onChange={(event) => setSearch(event.target.value)}
@@ -115,10 +121,11 @@ export function Payments({
         </form>
 
         <div className="toolbar-right">
-          <label className="inline">
+          <label className="inline" title={applied ? "Not used while searching by payment ID" : undefined}>
             Status
             <select
               value={status}
+              disabled={applied !== ""}
               onChange={(event) => {
                 setStatus(event.target.value as PaymentStatus | "");
                 setPage(0);
@@ -133,10 +140,11 @@ export function Payments({
             </select>
           </label>
 
-          <label className="inline">
+          <label className="inline" title={applied ? "Not used while searching by payment ID" : undefined}>
             Rows
             <select
               value={size}
+              disabled={applied !== ""}
               onChange={(event) => {
                 setSize(Number(event.target.value));
                 setPage(0);
@@ -188,7 +196,7 @@ export function Payments({
                 <tr
                   key={payment.id}
                   className={selectedId === payment.id ? "selected" : ""}
-                  onClick={() => onOpenPayment(payment.id)}
+                  {...rowActivation(() => onOpenPayment(payment.id))}
                 >
                   <td>
                     <CopyableId id={payment.id} />

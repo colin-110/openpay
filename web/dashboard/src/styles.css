@@ -111,6 +111,12 @@ button {
   cursor: pointer;
   background: none;
   color: inherit;
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease,
+    transform 0.08s ease;
+}
+
+button.primary:active:not(:disabled) {
+  transform: translateY(1px);
 }
 
 button:disabled {
@@ -183,6 +189,7 @@ select {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 0.45rem 0.6rem;
+  transition: border-color 0.12s ease, outline-color 0.12s ease;
 }
 
 input:focus,
@@ -190,6 +197,11 @@ select:focus {
   outline: 2px solid #b9d0ff;
   outline-offset: -1px;
   border-color: var(--brand);
+}
+
+input:hover:not(:focus, :disabled),
+select:hover:not(:focus, :disabled) {
+  border-color: #c7cedb;
 }
 
 /* -- sign in ------------------------------------------------------------ */
@@ -201,13 +213,16 @@ select:focus {
 }
 
 .auth-panel {
-  background: var(--rail);
+  background:
+    radial-gradient(60rem 40rem at 15% -10%, rgba(11, 92, 255, 0.16), transparent 60%),
+    var(--rail);
   color: #e6e9ef;
   padding: 4rem 3.5rem;
   display: flex;
   flex-direction: column;
   justify-content: center;
   gap: 1rem;
+  position: relative;
 }
 
 .auth-panel h1 {
@@ -396,7 +411,10 @@ select:focus {
   font-size: 0.66rem;
   text-transform: uppercase;
   letter-spacing: 0.11em;
-  color: #6b7691;
+  /* Was #6b7691 — ~4.0:1 against --rail, below the 4.5:1 AA minimum for text this small.
+     --rail-text is the same color the nav items already use on this background (~7.3:1);
+     hierarchy still reads from the size/case/letter-spacing, not from a separate, failing color. */
+  color: var(--rail-text);
   margin: 0 0 0.35rem 0.6rem;
 }
 
@@ -691,7 +709,12 @@ main {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 12px;
-  overflow: hidden;
+  /* overflow-x, not overflow: hidden — this was clipping wide tables (Settlements' 7 nowrap
+     columns in particular) instead of letting them scroll, with no way to reach the cut-off
+     columns on a narrow viewport. overflow-y stays hidden for the reason overflow was here in
+     the first place: it's what clips a table's square corners to the card's rounded ones. */
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .card-head {
@@ -714,7 +737,12 @@ main {
 }
 
 @media (max-width: 1000px) {
-  .split {
+  /* .split.even has to be named here too: two class selectors beat one regardless of source
+     order, so ".split.even" at L584 always won over a plain ".split" rule down here — the charts
+     it applies to never collapsed below 1000px, they just got squeezed into two unreadable
+     columns all the way down to phone width. */
+  .split,
+  .split.even {
     grid-template-columns: 1fr;
   }
 }
@@ -745,10 +773,18 @@ table.grid td {
 
 table.grid tbody tr {
   cursor: pointer;
+  transition: background-color 0.1s ease;
 }
 
 table.grid tbody tr:hover {
-  background: #fafbfc;
+  background: var(--line-soft);
+}
+
+/* Rows are keyboard-activatable (see rowActivation in ui.tsx) — an outline here is what makes
+   that reachable by more than a mouse, not just theoretically true. */
+table.grid tbody tr:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: -2px;
 }
 
 table.grid tbody tr.selected {
