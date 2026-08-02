@@ -5,9 +5,10 @@
 #   dashboard  -> the static merchant console. The one thing a human types into a browser bar.
 #   api        -> gateway-service. Merchant traffic. Everything behind it is authenticated by an
 #                 API key or a dashboard session.
-#   auth       -> auth-service, and only /api/v1/auth/login. Login cannot go through the gateway
-#                 because the gateway authenticates every request it proxies, and a person signing
-#                 in has no credential yet.
+#   auth       -> auth-service, and only /api/v1/auth/{login,refresh,logout}. None of the three can
+#                 go through the gateway, which authenticates every request it proxies — a person
+#                 signing in has no credential yet, and a refresh/logout token is not an API key or
+#                 a session, so the gateway would not know what to do with it either.
 #   webhooks   -> webhook-service. Acquirer callbacks. Signature-verified, deduplicated, and the
 #                 only path an external party that is not a merchant can reach.
 #
@@ -31,6 +32,10 @@ metadata:
     # the other.
     nginx.ingress.kubernetes.io/limit-rps: "50"
     nginx.ingress.kubernetes.io/proxy-body-size: 1m
+    # Required for the auth host's path below, which matches one of three literal alternatives
+    # rather than a prefix. Without this, ingress-nginx treats the regex as a literal string and
+    # the route never matches anything.
+    nginx.ingress.kubernetes.io/use-regex: "true"
 spec:
   ingressClassName: nginx
   tls:
@@ -64,11 +69,13 @@ spec:
     - host: auth.openpay.example
       http:
         paths:
-          # Exactly this path. auth-service also issues API keys and creates dashboard users, and
+          # Exactly these three. auth-service also issues API keys and creates dashboard users, and
           # those live behind the admin token — but publishing the whole service would put them one
-          # guessed token away from the internet rather than inside the cluster.
-          - path: /api/v1/auth/login
-            pathType: Exact
+          # guessed token away from the internet rather than inside the cluster. ImplementationSpecific
+          # is nginx's own regex path type; the others (Exact/Prefix) cannot express "one of these
+          # three literal paths" without three separate rules repeating the same backend.
+          - path: /api/v1/auth/(login|refresh|logout)
+            pathType: ImplementationSpecific
             backend:
               service:
                 name: auth-service

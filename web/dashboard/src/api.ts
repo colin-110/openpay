@@ -15,6 +15,9 @@ const AUTH_BASE = import.meta.env.VITE_AUTH_BASE ?? (usingTls ? "https://localho
 export type Session = {
   token: string;
   expiresAt: string;
+  /** Renews the session without asking for a password again. Never sent to anything but auth. */
+  refreshToken: string;
+  refreshExpiresAt: string;
   userId: string;
   merchantId: string;
   email: string;
@@ -186,6 +189,24 @@ export const api = {
     request<Session>(`${AUTH_BASE}/api/v1/auth/login`, null, {
       method: "POST",
       body: JSON.stringify({ email, password }),
+    }),
+
+  /** Trades a refresh token for a brand new session. The old refresh token stops working either way. */
+  refresh: (refreshToken: string) =>
+    request<Session>(`${AUTH_BASE}/api/v1/auth/refresh`, null, {
+      method: "POST",
+      body: JSON.stringify({ refreshToken }),
+    }),
+
+  /**
+   * Revokes the refresh token server-side. Best-effort: the caller clears its own local session
+   * regardless of whether this succeeds, since the point of signing out is that the browser stops
+   * acting authenticated — the network call is what stops the token being useful to anyone else.
+   */
+  logout: (refreshToken: string) =>
+    request<void>(`${AUTH_BASE}/api/v1/auth/logout`, null, {
+      method: "POST",
+      body: JSON.stringify({ refreshToken }),
     }),
 
   payments: (

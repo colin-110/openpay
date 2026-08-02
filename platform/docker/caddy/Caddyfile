@@ -19,10 +19,13 @@ https://localhost:8443 {
 
 https://localhost:8444 {
 	tls internal
-	# Login only, same restriction the k8s ingress applies: auth-service also issues API keys
-	# and creates dashboard users, and those stay behind the admin token rather than published.
-	@login path /api/v1/auth/login
-	handle @login {
+	# Session lifecycle only: login, refresh, logout. Same restriction the k8s ingress applies —
+	# auth-service also issues API keys and creates dashboard users, and those stay behind the
+	# admin token rather than published. All three are credential-less by necessity: a browser
+	# with no session yet has nothing else to present, and the refresh/logout token itself is
+	# the credential for the other two.
+	@session path /api/v1/auth/login /api/v1/auth/refresh /api/v1/auth/logout
+	handle @session {
 		reverse_proxy auth-service:8081
 	}
 	handle {

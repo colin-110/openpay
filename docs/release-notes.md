@@ -1,5 +1,55 @@
 # Release notes
 
+## 0.3.0 — sessions that renew themselves, and a clean bill on dependencies
+
+### Refresh tokens, with theft detection
+
+`POST /api/v1/auth/login` now returns a refresh token alongside the access token. The access token
+TTL dropped from an hour to 15 minutes — safe to shorten only because the dashboard now renews it
+silently in the background (`POST /api/v1/auth/refresh`), 60 seconds before it would otherwise
+expire, instead of dropping the user back to a login screen.
+
+Refresh tokens rotate on every use and are single-use: presenting one that was already rotated away
+is treated as a stolen credential, not a stale one, and revokes every other session the user has —
+not just the token replayed. `POST /api/v1/auth/logout` revokes one session by name and is
+idempotent. Full reasoning, including the transaction-boundary bug this surfaced in testing, is in
+[SECURITY-AUDIT.md § Refresh tokens](SECURITY-AUDIT.md#refresh-tokens--a-revocable-session-behind-a-stateless-access-token).
+
+**For integrations:** `LoginResponse` gains `refreshToken` and `refreshExpiresAt`. The access token
+shape and every existing verification path are unchanged.
+
+New table: `refresh_tokens` (auth-service, V5) — token hash, issue/expiry timestamps, and a
+self-referencing `replaced_by` that is how a rotated-away token is told apart from one that simply
+expired.
+
+### TLS at the edge
+
+Caddy now fronts the compose stack the same way the Kubernetes Ingress already did, with `tls
+internal` minting a local CA automatically — no certificates to generate or commit. Internal
+service-to-service traffic is still plain HTTP; that boundary and the reasoning behind it are in
+[SECURITY-AUDIT.md, finding 12](SECURITY-AUDIT.md#12-no-tls-anywhere--info).
+
+### Dependency CVEs
+
+`docker scout` found 30 known vulnerabilities (5 critical) across Tomcat, Jackson, Kafka, and Spring
+itself, all coming from Spring Boot 3.5.4's managed versions. Fixed by bumping to 3.5.16 — confirmed
+against the BOM directly rather than assumed — with one CVE accepted because it is baked into the
+base JRE image's build tooling, not the running application. Full table in
+[SECURITY-AUDIT.md, finding 13](SECURITY-AUDIT.md#13-outdated-dependencies-carrying-known-cves--critical-fixed-1-accepted).
+
+### The dashboard is finally a container
+
+`web/dashboard` had routes, a build, and no `Dockerfile` — every reference to it in compose and the
+Kubernetes manifests assumed a container that did not exist. It has one now (two-stage, `node:22`
+building into `nginx:1.27-alpine`), wired into both.
+
+### Still not built
+
+- A payout rail. Settlement batches what a merchant is owed and clears the payable in the ledger,
+  and then nothing sends money anywhere.
+- Email notification. Delivery is HTTP webhooks only.
+- Real acquirers. Both are simulated, so nothing ever leaves a database.
+
 ## 0.2.0 — the remaining phases
 
 Closes every gap the roadmap listed as open, and finishes phases 9 and 11 through 17.

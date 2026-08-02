@@ -33,9 +33,12 @@ Four kinds of caller, five kinds of credential:
 - **Merchant API key** (`X-Api-Key`) — for payment traffic. Issued by auth-service, presented by
   merchants. Merchant identity is derived from the validated key and never read from a
   client-supplied header.
-- **Dashboard session** (`Authorization: Bearer`) — for people. A short-lived HS256 JWT issued by
+- **Dashboard session** (`Authorization: Bearer`) — for people. A 15-minute HS256 JWT issued by
   `POST /api/v1/auth/login`, accepted on exactly the same paths as an API key. Downstream code
   never learns which of the two was used: a payment read is scoped to a merchant either way.
+  Login also returns a **refresh token** — a separate, longer-lived, revocable credential the
+  dashboard uses to renew the session silently in the background. See
+  [Sessions and refresh tokens](#sessions-and-refresh-tokens).
 - **Admin token** (`X-Admin-Token`) — for actions that create a business identity or a credential:
   onboarding merchants, issuing API keys, creating dashboard users, rotating a webhook secret.
 - **Ops token** (`X-Ops-Token`) — for operator reporting and administration that mints nothing: the
@@ -358,6 +361,38 @@ The session lives in `sessionStorage` and is dropped on a `401`, so an expired t
 rather than leaving an empty table. Amounts are integer minor units end to end; only the display
 layer knows about decimal places.
 
+## Sessions and refresh tokens
+
+`POST /api/v1/auth/login` returns two credentials, not one:
+
+- an **access token** — the HS256 JWT described above, good for 15 minutes, sent as
+  `Authorization: Bearer` on every API call.
+- a **refresh token** — a 32-byte random value good for 30 days, stored server-side the same way an
+  API key is: SHA-256 hashed, never in the plain. It is not a bearer credential for API calls; it is
+  only good for `POST /api/v1/auth/refresh`.
+
+The dashboard schedules a silent refresh 60 seconds before the access token expires
+(`web/dashboard/src/App.tsx`), so a session stays open across the 15-minute window without the user
+ever seeing a login screen — closer to how a real bank dashboard behaves than a session that just
+expires. Closing the tab still ends the session (`sessionStorage`, not `localStorage`), and
+`POST /api/v1/auth/logout` revokes the refresh token so a stolen `sessionStorage` snapshot from a
+closed tab cannot be replayed later.
+
+Refresh tokens **rotate on every use**: refreshing returns a new access token *and* a new refresh
+token, and the one presented is marked spent. Presenting an already-spent refresh token again is
+treated as evidence the token was stolen — the server revokes every other active session for that
+user, not just the one replayed. This is the same reasoning password managers and banking apps use
+for "sign out everywhere": a stolen refresh token in transit is caught the first time anyone (the
+legitimate client or the thief) tries to use the one that already got rotated away.
+
+```bash
+curl -X POST http://localhost:8081/api/v1/auth/refresh -H "Content-Type: application/json" -d '{"refreshToken":"<REFRESH_TOKEN>"}'
+curl -X POST http://localhost:8081/api/v1/auth/logout -H "Content-Type: application/json" -d '{"refreshToken":"<REFRESH_TOKEN>"}'
+```
+
+Full reasoning and the theft-detection design is in
+[SECURITY-AUDIT.md § Refresh tokens](docs/SECURITY-AUDIT.md#refresh-tokens--a-revocable-session-behind-a-stateless-access-token).
+
 ## Payment Methods
 
 A payment can say how it is being paid:
@@ -436,8 +471,13 @@ Platform-operator, authenticated with `X-Admin-Token`:
 
 Human-facing, on auth-service directly, unauthenticated by necessity:
 
-- `POST /api/v1/auth/login` — returns a session token. An unknown email and a wrong password fail
-  identically, so login cannot be used to discover who has an account.
+- `POST /api/v1/auth/login` — returns an access token and a refresh token. An unknown email and a
+  wrong password fail identically, so login cannot be used to discover who has an account.
+- `POST /api/v1/auth/refresh` — trades an unexpired, unused refresh token for a new access token
+  and a new refresh token. Reusing an already-rotated refresh token revokes every session the user
+  has.
+- `POST /api/v1/auth/logout` — revokes one refresh token. Idempotent: logging out a token that is
+  already gone is success.
 
 Internal, not exposed through the gateway:
 
@@ -1048,7 +1088,9 @@ Delivered:
 - refunds with over-refund protection and negative-balance carry-forward
 - signed outbound merchant webhooks with retries and a delivery log
 - the entire platform containerised and runnable with one command
-- human login with BCrypt password hashing and HS256 sessions, accepted anywhere an API key is
+- human login with BCrypt password hashing and short-lived HS256 sessions, accepted anywhere an API
+  key is, backed by rotating refresh tokens with theft detection (reusing a spent refresh token
+  revokes every session for that user) and silent renewal in the dashboard
 - a merchant dashboard: sign in, watch payments settle, and issue refunds
 - payment methods captured without keeping anything worth stealing, and per-payment acquirer
   attempt history
@@ -1079,7 +1121,6 @@ work — see [docs/roadmap.md](docs/roadmap.md):
 - **no payout rail.** Settlement batches what a merchant is owed and clears the payable in the
   ledger, and then nothing sends money anywhere. Both acquirers are simulated, so no funds ever
   leave a database.
-- **no refresh tokens.** A session expires and you sign in again.
 - **no email notification.** Merchant delivery is HTTP webhooks only.
 - **no distributed tracing.** Correlation IDs and Loki instead, which answers *what happened* well
   and *where the time went* only coarsely — see

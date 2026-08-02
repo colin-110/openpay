@@ -32,5 +32,18 @@ public enum AuditAction {
     MERCHANT_CREATED,
 
     /** A merchant's webhook signing secret was replaced. */
-    WEBHOOK_SECRET_ROTATED
+    WEBHOOK_SECRET_ROTATED,
+
+    /** A session was renewed without re-entering credentials. */
+    SESSION_REFRESHED,
+
+    /**
+     * A refresh token was presented after it had already been rotated away — the signature of a
+     * stolen token being replayed once its rightful owner had already moved on. Every other active
+     * session for the user is revoked in response, not just this one token.
+     */
+    REFRESH_TOKEN_REUSE_DETECTED,
+
+    /** A session was ended deliberately. */
+    LOGOUT
 }

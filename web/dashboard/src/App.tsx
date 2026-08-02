@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import type { Session } from "./api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, type Session } from "./api";
 import { Developers } from "./Developers";
 import { Login, Mark } from "./Login";
 import { Overview } from "./Overview";
@@ -81,18 +81,29 @@ const VIEWS: ViewDef[] = [
 
 /**
  * Sessions live in sessionStorage rather than localStorage: closing the tab ends the session,
- * which is what someone checking their payments on a shared machine would expect.
+ * which is what someone checking their payments on a shared machine would expect. The refresh
+ * token lives right beside the access token in the same object, so that property holds for it too
+ * — closing the tab does not leave a long-lived credential sitting in a browser's local storage.
+ *
+ * <p>Checked against refreshExpiresAt, not expiresAt. The access token expiring on its own is not
+ * the end of the session — that is exactly what the refresh token is for — so discarding the whole
+ * session the moment the short-lived half expires would make refreshing pointless. Only once the
+ * refresh token itself has expired is there nothing left to renew with.
  */
 function loadSession(): Session | null {
   const raw = sessionStorage.getItem(SESSION_KEY);
   if (!raw) return null;
   try {
     const session = JSON.parse(raw) as Session;
-    return new Date(session.expiresAt) > new Date() ? session : null;
+    return new Date(session.refreshExpiresAt) > new Date() ? session : null;
   } catch {
     return null;
   }
 }
+
+/** Refresh this long before the access token actually expires, so a request mid-refresh never
+ *  races an expiry. Comfortably larger than any request this dashboard makes. */
+const REFRESH_SKEW_MS = 60_000;
 
 /**
  * The URL carries the view and the open payment, so a link to one payment is a link someone can
@@ -106,6 +117,10 @@ function readRoute(): { view: View; paymentId: string | null } {
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(loadSession);
+  // Guards against a duplicate refresh firing twice for the same session — React's effect can
+  // re-run (StrictMode's double-invoke in development, or a re-render for an unrelated reason)
+  // before the first refresh call has finished, and a refresh token only works once.
+  const refreshing = useRef(false);
 
   const signIn = (next: Session) => {
     sessionStorage.setItem(SESSION_KEY, JSON.stringify(next));
@@ -113,9 +128,53 @@ export default function App() {
   };
 
   const signOut = useCallback(() => {
+    // Best effort: the session ends locally regardless of whether the network call lands. Not
+    // awaited, because a person clicking "sign out" should see it happen immediately rather than
+    // wait on a request whose result changes nothing they can see.
+    if (session) {
+      api.logout(session.refreshToken).catch(() => {});
+    }
     sessionStorage.removeItem(SESSION_KEY);
     setSession(null);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
+
+  // Silent renewal. Scheduled a minute ahead of the access token's real expiry rather than at the
+  // instant it lapses, so a request that happens to fire in that last minute is never caught
+  // holding a token the server has just started rejecting.
+  useEffect(() => {
+    if (!session) return;
+
+    const msUntilRefresh = new Date(session.expiresAt).getTime() - Date.now() - REFRESH_SKEW_MS;
+
+    const doRefresh = () => {
+      if (refreshing.current) return;
+      refreshing.current = true;
+      api
+        .refresh(session.refreshToken)
+        .then((renewed) => {
+          sessionStorage.setItem(SESSION_KEY, JSON.stringify(renewed));
+          setSession(renewed);
+        })
+        .catch(() => {
+          // The refresh token itself is gone — expired, logged out elsewhere, or (rare, and
+          // treated as theft server-side) already used once. Either way there is nothing left to
+          // renew with, so this is a real end of session rather than something to retry.
+          sessionStorage.removeItem(SESSION_KEY);
+          setSession(null);
+        })
+        .finally(() => {
+          refreshing.current = false;
+        });
+    };
+
+    if (msUntilRefresh <= 0) {
+      doRefresh();
+      return;
+    }
+    const timer = setTimeout(doRefresh, msUntilRefresh);
+    return () => clearTimeout(timer);
+  }, [session]);
 
   if (!session) {
     return <Login onSignIn={signIn} />;

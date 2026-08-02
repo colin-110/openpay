@@ -22,8 +22,16 @@ openpay:
   jwt:
     # No default: HS256 with a weak or shared-by-accident key means forgeable sessions.
     secret: ${OPENPAY_JWT_SECRET:}
-    ttl: ${OPENPAY_JWT_TTL:PT1H}
+    # Short on purpose, and only safe because it is short: the dashboard renews this silently a
+    # minute before it lapses, using the refresh token below, so nobody notices. What a shorter
+    # access token buys is a tighter window on a stolen one — fifteen minutes of use rather than
+    # an hour, with no cost to a legitimate session that keeps renewing.
+    ttl: ${OPENPAY_JWT_TTL:PT15M}
     issuer: openpay
+    # How long a refresh token is good for before it must be a fresh login rather than a renewal.
+    # Rotated on every use — see RefreshToken.rotateTo — so this bounds how long a session can
+    # continue being silently renewed, not how long any single token is valid for.
+    refresh-ttl: ${OPENPAY_JWT_REFRESH_TTL:P30D}
   security:
     # Login is called by the dashboard directly rather than through the gateway, so this service
     # answers cross-origin requests too. Empty by default, so a deployment that forgets to name

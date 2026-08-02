@@ -5,10 +5,12 @@ import com.openpay.auth.application.UserService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import java.net.URI;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 
@@ -38,6 +40,26 @@ public class AuthController {
     @PostMapping("/auth/login")
     public LoginResponse login(@Valid @RequestBody LoginRequest request, HttpServletRequest httpRequest) {
         return userService.login(request, sourceIp(httpRequest));
+    }
+
+    /**
+     * Renews a session without asking for a password again. Public by design, the same as login:
+     * the refresh token itself is the credential, and a caller with no session yet has no other
+     * credential to present.
+     */
+    @PostMapping("/auth/refresh")
+    public LoginResponse refresh(@Valid @RequestBody RefreshRequest request) {
+        return userService.refresh(request.refreshToken());
+    }
+
+    /**
+     * Ends a session. Always 204, even for a token that was already invalid — logout is a
+     * statement of intent ("I am done with this token"), and that intent is satisfied either way.
+     */
+    @PostMapping("/auth/logout")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void logout(@Valid @RequestBody LogoutRequest request) {
+        userService.logout(request.refreshToken());
     }
 
     /**

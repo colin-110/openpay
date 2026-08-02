@@ -473,6 +473,49 @@ There is no write endpoint. Entries are written by the code doing the thing bein
 nobody holding a token can manufacture history. Nothing recorded is usable as a credential — key
 issuance stores the prefix, rotation stores that it happened and never the secret.
 
+### Refresh tokens — a revocable session behind a stateless access token
+
+The access token is still the same short-lived, unrevocable HS256 JWT described in `JwtIssuer` —
+that trade-off (statelessness for every verifier, at the cost of a disabled account staying valid
+until expiry) did not change. What changed is how short "short-lived" can afford to be, and what
+happens when a session needs killing before that.
+
+`POST /auth/login` now also returns a **refresh token**: a 32-byte random value, stored the same
+way an API key is — SHA-256 hashed, never in the plain — in a new `refresh_tokens` table. `POST
+/auth/refresh` exchanges an unexpired, unrevoked, not-yet-rotated one for a brand new access token
+*and* a brand new refresh token, and marks the one presented as rotated. That let the access token
+TTL come down from an hour to 15 minutes (`application.yml`), because the dashboard now renews it
+silently in the background instead of a user sitting logged out.
+
+**Rotation is theft-detectable, not just theft-resistant.** A refresh token is single-use — once
+rotated, presenting it again is not "an old token that still happens to work", it is a used
+credential coming back. That can only happen two ways: the legitimate client retried after losing
+the response (in which case the token it's holding was never actually rotated — this path is
+unaffected), or someone else has a copy. `UserService.refresh` distinguishes replay from ordinary
+expiry (`RefreshToken.wasRotatedAway`, keyed on `revoked_at` being set *with* a `replaced_by`
+pointing at the successor) and on replay revokes every active session the user has, not just the
+one token replayed — an attacker who stole a token mid-chain is holding a credential for the same
+user as every other open session, and killing one of them is not a response.
+
+That revocation had to be pulled into its own `@Component` (`SessionRevoker`) rather than living as
+a method on `UserService` called via `this.` — the same self-invocation pitfall `AuditRecorder`
+already carries a comment about. `UserService.refresh` is `@Transactional`, and it throws
+immediately after detecting the replay; a same-class call inherits that transaction and gets rolled
+back by the very exception reporting the theft. `SessionRevoker.revokeAllSessions` runs in
+`REQUIRES_NEW`, which only takes effect when called through the Spring proxy — i.e. as an injected
+bean, not `this.something()`. Caught by a test that logs in twice, rotates one session, replays the
+rotated token, and asserts the *other* session is dead too — asserting the revocation call happened
+would have passed on the broken version.
+
+`POST /auth/logout` revokes a single named token — the one session the caller means to end — and is
+idempotent: logging out a token that does not exist, or was already revoked, is success, not an
+error. That asymmetry with the theft path is deliberate: only replay of an already-rotated token is
+evidence of compromise; an ordinary logout is not.
+
+`Caddyfile` and the ingress route `/auth/login`, `/auth/refresh`, and `/auth/logout` to the same
+unauthenticated-but-narrowly-scoped path class — reachable without a token, same as login always
+was, and nothing else on that prefix is.
+
 ### Two accepted weaknesses, stated plainly
 
 **Screening fails open.** When fraud-service is unreachable, payments are accepted unscreened. This

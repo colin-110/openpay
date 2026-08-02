@@ -3,6 +3,7 @@ package com.openpay.auth;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.openpay.auth.domain.ApiKeyRepository;
+import com.openpay.auth.domain.RefreshTokenRepository;
 import com.openpay.auth.domain.UserRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -26,6 +27,9 @@ class AuthServiceApplicationTests {
 
     @MockBean
     private UserRepository userRepository;
+
+    @MockBean
+    private RefreshTokenRepository refreshTokenRepository;
 
     @Test
     void contextLoads() {

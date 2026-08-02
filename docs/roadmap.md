@@ -30,13 +30,17 @@ Built:
 - diagrams and decision records (phase 16) in `docs/diagrams/` and `docs/adrs/`
 - release hardening (phase 17): a [runbook](runbook.md), a [release checklist](release-checklist.md),
   a [demo script](demo-script.md), [release notes](release-notes.md), and index tuning
+- TLS at the edge (Caddy in compose, Ingress TLS in Kubernetes) and dependency CVE remediation —
+  see [docs/SECURITY-AUDIT.md](SECURITY-AUDIT.md)
+- rotating refresh tokens with theft detection and silent dashboard renewal, replacing the
+  hour-long stateless-only session — see
+  [SECURITY-AUDIT.md § Refresh tokens](SECURITY-AUDIT.md#refresh-tokens--a-revocable-session-behind-a-stateless-access-token)
 
 Deliberately not built:
 
 - **A payout rail.** Settlement batches what a merchant is owed and clears the payable in the
   ledger, and then nothing sends money anywhere. Both acquirers are simulated, so no funds ever
   leave a database.
-- **Refresh tokens.** A session expires and you sign in again.
 - **Email notification.** Merchant delivery is HTTP webhooks only.
 - **Distributed tracing.** Correlation IDs and Loki instead — see
   [ADR-0010](adrs/0010-correlation-id-not-tracing.md).

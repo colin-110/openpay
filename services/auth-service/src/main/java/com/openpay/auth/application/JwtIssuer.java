@@ -6,6 +6,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
+import java.util.UUID;
 import javax.crypto.SecretKey;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -55,6 +56,14 @@ public class JwtIssuer {
         String token = Jwts.builder()
                 .issuer(issuer)
                 .subject(userId.toString())
+                // A random id, not derived from anything else in the token. iat/exp are
+                // second-granularity, so two tokens minted for the same user inside the same
+                // second — login immediately followed by a refresh, in particular — would
+                // otherwise be byte-for-byte identical: same issuer, subject, claims, and
+                // timestamps sign to the same output. Harmless in that neither token is any less
+                // valid, but it breaks the assumption that a freshly issued token is a fresh
+                // token, which "renewed my session" ought to mean literally.
+                .id(UUID.randomUUID().toString())
                 // merchantId is in the token so downstream services can scope reads without
                 // calling back here on every request.
                 .claim("merchantId", merchantId.toString())
