@@ -81,6 +81,10 @@ jobs:
         working-directory: web/dashboard
         run: npm run lint
 
+      - name: Test
+        working-directory: web/dashboard
+        run: npm run test
+
       # `tsc -b` is part of the build script, so a type error fails here rather than shipping a
       # bundle that only breaks in a browser.
       - name: Build
