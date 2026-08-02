@@ -1,8 +1,16 @@
 // Everything the dashboard knows about the backend lives here, so screens deal in data rather
 // than in fetch calls and header plumbing.
 
-const BASE = import.meta.env.VITE_API_BASE ?? "http://localhost:8080";
-const AUTH_BASE = import.meta.env.VITE_AUTH_BASE ?? "http://localhost:8081";
+/**
+ * A browser loaded over HTTPS refuses to call a plain-HTTP API — "mixed content" — so the default
+ * has to follow whichever protocol served this page rather than being fixed at build time. Loaded
+ * via the plain :5173 container, that is the direct HTTP ports; loaded via Caddy's TLS front door
+ * on :5443 (platform/docker/caddy/Caddyfile), it is the matching HTTPS ports Caddy terminates.
+ * VITE_API_BASE / VITE_AUTH_BASE still override this outright when set.
+ */
+const usingTls = typeof window !== "undefined" && window.location.protocol === "https:";
+const BASE = import.meta.env.VITE_API_BASE ?? (usingTls ? "https://localhost:8443" : "http://localhost:8080");
+const AUTH_BASE = import.meta.env.VITE_AUTH_BASE ?? (usingTls ? "https://localhost:8444" : "http://localhost:8081");
 
 export type Session = {
   token: string;

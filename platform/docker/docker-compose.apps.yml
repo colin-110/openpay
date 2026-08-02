@@ -331,3 +331,30 @@ services:
     healthcheck:
       <<: *app-healthcheck
       test: ["CMD-SHELL", "curl -fsS http://localhost:9002/actuator/health || exit 1"]
+
+  # TLS termination at the edge, matching platform/k8s/40-ingress.yaml's four-host split exactly.
+  # Nothing behind it changes: gateway-service, auth-service, webhook-service, and dashboard stay
+  # on plain HTTP, unaware anything is proxying them. See platform/docker/caddy/Caddyfile and
+  # SECURITY-AUDIT.md finding 12.
+  caddy:
+    image: caddy:2.9-alpine
+    container_name: openpay-caddy
+    restart: unless-stopped
+    ports:
+      - "8443:8443"   # https, proxies to gateway-service (merchant API traffic)
+      - "8444:8444"   # https, proxies to auth-service, login only
+      - "8445:8445"   # https, proxies to webhook-service (acquirer callbacks)
+      - "5443:5443"   # https, proxies to the dashboard
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Caddy's self-signed local CA persists here across restarts, so the browser only has to
+      # trust it once rather than on every `docker compose up`.
+      - caddy-data:/data
+    depends_on:
+      gateway-service: {condition: service_healthy}
+      auth-service: {condition: service_healthy}
+      webhook-service: {condition: service_healthy}
+      dashboard: {condition: service_healthy}
+
+volumes:
+  caddy-data:

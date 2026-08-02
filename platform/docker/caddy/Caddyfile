@@ -1,0 +1,41 @@
+# TLS termination at the edge, exactly like platform/k8s/40-ingress.yaml does in a cluster —
+# services stay on plain HTTP behind this, unchanged, and only the boundary a browser or an
+# external party actually touches gets encrypted. That is the same trade-off documented in
+# SECURITY-AUDIT.md finding 12: TLS belongs at the ingress/proxy layer, not duplicated into
+# eleven services' application code.
+#
+# `tls internal` tells Caddy to mint and trust its own local CA rather than requesting a real
+# certificate — there is no public DNS name to prove ownership of on a laptop. The browser will
+# still show a one-time warning the first time it sees this CA; that is expected for any local
+# HTTPS setup and is not a sign of anything wrong. See README.md for how to trust it so the
+# warning stops appearing.
+#
+# Four hosts, matching the four the Kubernetes ingress publishes:
+
+https://localhost:8443 {
+	tls internal
+	reverse_proxy gateway-service:8080
+}
+
+https://localhost:8444 {
+	tls internal
+	# Login only, same restriction the k8s ingress applies: auth-service also issues API keys
+	# and creates dashboard users, and those stay behind the admin token rather than published.
+	@login path /api/v1/auth/login
+	handle @login {
+		reverse_proxy auth-service:8081
+	}
+	handle {
+		respond 404
+	}
+}
+
+https://localhost:8445 {
+	tls internal
+	reverse_proxy webhook-service:8084
+}
+
+https://localhost:5443 {
+	tls internal
+	reverse_proxy dashboard:80
+}

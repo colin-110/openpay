@@ -19,7 +19,7 @@ actually lets someone do, and what fixing it takes.
 | 9 | Login limiter is in-memory and keyed only on email | **Low** | Fixed |
 | 10 | JWT issuer and audience are not validated | **Low** | Fixed |
 | 11 | CORS ships a development origin as its default | **Low** | Fixed |
-| 12 | No TLS anywhere | **Info** | Accepted |
+| 12 | No TLS anywhere | **Info** | Fixed at the edge (compose + k8s); internal traffic still plain HTTP |
 | 13 | Outdated dependencies carrying known CVEs | **Critical** | Fixed (1 accepted) |
 
 The surfaces added since that audit — the fraud gate and its rules, the routing table, dead-letter
@@ -332,11 +332,29 @@ compose file *requires* it rather than defaulting.
 
 ---
 
-## 12. No TLS anywhere — Info, accepted
+## 12. No TLS anywhere — Info, fixed at the edge
 
 All service-to-service traffic is plain HTTP, including API keys and session tokens in headers.
-Correct for a local compose stack; in a real deployment this belongs to the service mesh or ingress
-layer rather than to application code.
+That part is unchanged and is still the right call: TLS between eleven internal services belongs to
+a service mesh, not to application code duplicated eleven times, and nothing here reaches past the
+platform's own network boundary.
+
+What *is* fixed is the boundary that actually matters: the one a browser or an external party
+touches. `platform/k8s/40-ingress.yaml` already terminated TLS there for a cluster deployment
+(cert-manager, a real certificate). The local Compose stack had nothing equivalent — every port a
+merchant, a person signing in, or an acquirer's callback reached was plain HTTP, including the
+credential in every request.
+
+A `caddy` container now sits in front of the same four hosts the k8s ingress publishes — the API,
+login only, webhook callbacks, and the dashboard — terminating TLS with a locally-generated CA
+(there is no public DNS name to prove ownership of on a laptop) and proxying to the existing
+plain-HTTP services unchanged behind it. Confirmed as a genuine TLS handshake rather than a
+transparent proxy: `curl` without `-k` fails with `SSL certificate problem: self-signed certificate`
+(exit 60), and `openssl s_client` shows the certificate chain issued by `Caddy Local Authority`.
+
+The plain-HTTP ports remain available alongside the HTTPS ones — existing tooling (`scripts/e2e.sh`,
+the k6 scenarios) keeps working unchanged, and TLS is additive rather than a breaking migration.
+See the "TLS" section in the README for the exact ports and how to trust the local CA.
 
 ## 13. Outdated dependencies carrying known CVEs — Critical, fixed (1 accepted)
 

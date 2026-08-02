@@ -68,13 +68,13 @@ docker compose -f platform/docker/docker-compose.yml up -d
 PowerShell:
 
 ```bash
-$env:OPENPAY_ADMIN_TOKEN = "dev-admin-token"; $env:OPENPAY_OPS_TOKEN = "dev-ops-token"; $env:OPENPAY_INTERNAL_TOKEN = "dev-internal-token"; $env:OPENPAY_JWT_SECRET = "dev-jwt-secret-not-for-production-use"; $env:OPENPAY_DASHBOARD_ORIGINS = "http://localhost:5173"
+$env:OPENPAY_ADMIN_TOKEN = "dev-admin-token"; $env:OPENPAY_OPS_TOKEN = "dev-ops-token"; $env:OPENPAY_INTERNAL_TOKEN = "dev-internal-token"; $env:OPENPAY_JWT_SECRET = "dev-jwt-secret-not-for-production-use"; $env:OPENPAY_DASHBOARD_ORIGINS = "http://localhost:5173,https://localhost:5443"
 ```
 
 bash:
 
 ```bash
-export OPENPAY_ADMIN_TOKEN=dev-admin-token OPENPAY_OPS_TOKEN=dev-ops-token OPENPAY_INTERNAL_TOKEN=dev-internal-token OPENPAY_JWT_SECRET=dev-jwt-secret-not-for-production-use OPENPAY_DASHBOARD_ORIGINS=http://localhost:5173
+export OPENPAY_ADMIN_TOKEN=dev-admin-token OPENPAY_OPS_TOKEN=dev-ops-token OPENPAY_INTERNAL_TOKEN=dev-internal-token OPENPAY_JWT_SECRET=dev-jwt-secret-not-for-production-use OPENPAY_DASHBOARD_ORIGINS=http://localhost:5173,https://localhost:5443
 ```
 
 Every service gets the same signing key: auth-service issues sessions and the services behind the
@@ -126,6 +126,37 @@ Docker builds the reactor once and each image reuses that layer; only the final 
 Images run as a non-root user and size their heap from the container's memory limit rather than a
 hard-coded `-Xmx`. The dashboard is a static React build, so it has its own two-line Dockerfile in
 `web/dashboard/` — a Node build stage, then plain nginx serving the output.
+
+### TLS
+
+The stack above is plain HTTP. A `caddy` container also comes up alongside it, terminating TLS at
+the edge exactly the way `platform/k8s/40-ingress.yaml` does in a real cluster — the services
+themselves never see HTTPS, only the boundary a browser or an external party actually touches does:
+
+| | |
+| --- | --- |
+| API (via the gateway) | `https://localhost:8443` |
+| Login only | `https://localhost:8444/api/v1/auth/login` |
+| Acquirer webhooks | `https://localhost:8445` |
+| Dashboard | `https://localhost:5443` |
+
+The plain-HTTP ports above still work unchanged — nothing is removed, TLS is only added in front.
+
+The certificate is self-signed by Caddy's own locally-generated CA (there is no public DNS name to
+prove ownership of on a laptop), so the browser shows a one-time trust warning the first time it
+sees it — normal for any local HTTPS setup. To make that warning go away, trust the CA Caddy
+generated:
+
+```bash
+docker exec openpay-caddy cat /data/caddy/pki/authorities/local/root.crt > openpay-local-ca.crt
+```
+
+Then import `openpay-local-ca.crt` into your OS or browser's trusted root store. Once trusted, every
+`https://localhost:...` URL above is a green padlock with no warning.
+
+`OPENPAY_DASHBOARD_ORIGINS` needs both origins if you want the dashboard to work whichever port you
+load it from: `http://localhost:5173,https://localhost:5443`. The example in step 2 above already
+includes both.
 
 Kafka advertises two addresses, because the right one depends on who is asking: containers resolve
 `kafka:29092`, while a process on the host cannot and uses `localhost:9092`. That is what lets the
