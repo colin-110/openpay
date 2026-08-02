@@ -521,6 +521,14 @@ happened.
 
 ## 5. Failure modes
 
+Every row below is checked against the real running stack by
+[`scripts/fault-injection.sh`](../scripts/fault-injection.sh), not just asserted here — it pauses
+the actual container each row names and asserts the actual behaviour, rather than trusting that
+this table has stayed true. It already found one real bug on its first run: Redis "failing open"
+took up to 60 seconds per call before a missing client timeout was fixed. See
+[tests/performance/baseline.md § fault-injection.sh](../tests/performance/baseline.md#fault-injectionsh)
+for the full account.
+
 | What dies | What happens | What still works |
 | --- | --- | --- |
 | One acquirer | Router fails over on the next attempt; breaker opens after 3 | Everything |

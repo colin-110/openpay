@@ -1077,12 +1077,24 @@ and the decision to try again belongs to whoever knows what was changed.
 - **Unit tests** (`*Test`, surefire) — no infrastructure required.
 - **Integration tests** (`*IT`, failsafe) — start a real PostgreSQL through Testcontainers, apply
   the Flyway migrations, and let Hibernate's `ddl-auto: validate` check the entities against the
-  real schema.
+  real schema. Several also start Mailpit or Kafka the same way to prove an email or a dead-letter
+  path against the real thing, not a mock of it.
+- **Dashboard tests** (`web/dashboard`, Vitest + Testing Library) — 47 tests aimed at the specific
+  bugs a real audit of the frontend found: an out-of-order API response clobbering newer state, a
+  payment detail drawer that could point a refund at the wrong payment, currency totals summed as
+  raw integers across currencies that don't mix.
 
 - **Acceptance suite** (`scripts/e2e.sh`) — real HTTP against a running stack, covering the
   behaviour no unit test can see: filters, routing, tokens, and the asynchronous flow end to end.
-- **Load and resilience** (`tests/performance/`, k6) — sustained write load, a callback spike, and
-  an acquirer taken out of rotation mid-run.
+- **Load and resilience** (`tests/performance/`, k6) — five scenarios: sustained write load, a
+  ramp built specifically to find where the write path actually breaks (not just confirm a rate
+  already known to be fine), a long steady-state soak for the failure modes only time reveals, a
+  callback spike, and an acquirer taken out of rotation mid-run.
+- **Fault injection** (`scripts/fault-injection.sh`) — not k6: pauses a real dependency (Redis,
+  fraud-service, auth-service, Kafka) with `docker pause` and asserts that
+  [docs/ARCHITECTURE.md § 5's failure-mode table](docs/ARCHITECTURE.md#5-failure-modes) is still
+  true, rather than trusting that it is. Found a real bug on its first run — see
+  [tests/performance/baseline.md](tests/performance/baseline.md#fault-injectionsh).
 
 The integration tests exist because mocked-repository tests cannot see schema mismatches. A `jsonb`
 column bound as `varchar`, and a `CHAR(3)` column mapped as varchar, both passed a fully green unit
@@ -1090,7 +1102,9 @@ suite and failed at runtime.
 
 The load tests exist for the same reason one level up: `MetricsExposureIT` can prove a metric is
 exported, but only a real run at 200 requests a second shows whether the outbox relay keeps up with
-it.
+it. And the fault-injection script exists for the reason one level above *that*: a "Failure modes"
+table with the right prose in it can still be describing a system that no longer behaves that way,
+and the only way to know is to actually take the dependency down and watch.
 
 If Testcontainers reports "Could not find a valid Docker environment" on a recent Docker Desktop,
 the cause is API version negotiation, not a missing daemon. The root `pom.xml` pins
