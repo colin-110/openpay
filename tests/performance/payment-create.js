@@ -40,10 +40,19 @@ export const options = {
       maxVUs: Math.max(100, RATE * 4),
     },
   },
+  // p(99) is not in k6's default set. p(95) can sit flat while the worst 1% of requests are
+  // already past the point a customer would abandon, so it gets reported alongside.
+  summaryTrendStats: ['min', 'med', 'avg', 'p(90)', 'p(95)', 'p(99)', 'max'],
   thresholds: {
     // A payment that takes over a second to accept is a customer watching a spinner. p95 rather
     // than an average, because the average hides exactly the tail they experience.
-    'payment_create_duration{expected_response:true}': ['p(95)<1000'],
+    //
+    // Not `payment_create_duration{expected_response:true}`, which is what this used to say:
+    // expected_response is an HTTP system tag that k6 only attaches to http_req_* metrics, never
+    // to a custom Trend. That submetric therefore matched zero samples, reported as 0s, and
+    // passed `p(95)<1000` trivially on every run — a threshold that could not fail, which is
+    // worse than no threshold at all because it reads like coverage.
+    payment_create_duration: ['p(95)<1000'],
     // Not zero. A load test that trips the platform's own rate limiter is measuring the limiter,
     // and the point here is the write path — but a real error rate above 1% is a failure.
     http_req_failed: ['rate<0.01'],

@@ -33,9 +33,20 @@ const STAGE_DURATION = __ENV.STAGE_DURATION || '45s';
 // The tiers themselves: the first two are already-known-good/known-bad numbers from
 // tests/performance/baseline.md, so a rerun on the same machine has something to anchor against;
 // the rest climb until whoever is reading the summary can see exactly where it gave way.
-const TIERS = (__ENV.TIERS || '20,50,100,150,250')
+//
+// The top tier is 150 rather than the 250+ it started as, and that is a measured decision rather
+// than timidity. Past ~150/s on a single laptop host the write path's latency exceeds the arrival
+// interval, so the arrival-rate executor allocates VUs faster than they retire; an earlier run
+// with tiers up to 600 pushed k6 past a thousand concurrent VUs and wedged the Docker daemon
+// itself, which produces no data at all. Raise TIERS on hardware that deserves it.
+const TIERS = (__ENV.TIERS || '20,50,100,150')
   .split(',')
   .map((value) => Number(value.trim()));
+
+// Hard ceiling on concurrency per tier. Once a tier hits it, k6 reports dropped_iterations
+// instead of growing without bound — and a dropped iteration is exactly the signal wanted here
+// ("the system could not keep up at this rate"), delivered without taking the host down to say so.
+const MAX_VUS = Number(__ENV.MAX_VUS || 300);
 
 const createDuration = new Trend('payment_create_duration', true);
 const acceptedByStage = {};
@@ -59,8 +70,8 @@ function buildScenarios() {
       timeUnit: '1s',
       duration: STAGE_DURATION,
       startTime: `${offsetSeconds}s`,
-      preAllocatedVUs: Math.max(20, rate),
-      maxVUs: Math.max(150, rate * 4),
+      preAllocatedVUs: Math.min(Math.max(20, rate), MAX_VUS),
+      maxVUs: MAX_VUS,
       // Tag every metric this scenario produces with its own rate, so the summary breaks down
       // by tier without needing an external time-series backend to slice it after the fact.
       tags: { stage: `rate_${rate}` },
@@ -82,6 +93,17 @@ function parseDurationSeconds(duration) {
 
 export const options = {
   scenarios: buildScenarios(),
+  // p(99) is not in k6's default set, and it is the number that actually matters here: p(95)
+  // can stay flat while the worst 1% of merchants are already timing out.
+  summaryTrendStats: ['min', 'med', 'avg', 'p(90)', 'p(95)', 'p(99)', 'max'],
+  // These are not real thresholds — every one is trivially true. Declaring a tag-filtered
+  // threshold is the only way to make k6 materialise a per-tag submetric in handleSummary's
+  // data.metrics, which is what lets the per-tier table below print latency per tier instead of
+  // one blended figure. `p(99)>=0` can never fail, so this cannot abort the run or mark it
+  // failed, which the comment below is otherwise careful to avoid.
+  thresholds: Object.fromEntries(
+    TIERS.map((rate) => [`payment_create_duration{stage:rate_${rate}}`, ['p(99)>=0']])
+  ),
   // No thresholds that abort the run: the entire point is to keep going past the point where
   // things start failing, so a threshold breach should be information in the summary, not an
   // early exit that throws away the tiers after it.
@@ -121,14 +143,37 @@ export function handleSummary(data) {
   // The default k6 summary blends every scenario into one set of numbers. This appends a
   // stage-by-stage table, because "where did it stop being linear" is a question about the
   // transition between tiers, and that's exactly what gets lost in a blended average.
-  const lines = ['', 'Stress test — by rate tier', '='.repeat(40)];
+  const stageSeconds = parseDurationSeconds(STAGE_DURATION);
+  const lines = [
+    '',
+    'Stress test — by rate tier',
+    '='.repeat(78),
+    'target    sent   achieved   failed        p50        p95        p99',
+    '-'.repeat(78),
+  ];
   for (const rate of TIERS) {
     const accepted = data.metrics[`accepted_at_${rate}`]?.values?.count ?? 0;
     const failed = data.metrics[`failed_at_${rate}`]?.values?.count ?? 0;
     const total = accepted + failed;
-    const failurePct = total === 0 ? 0 : ((failed / total) * 100).toFixed(1);
-    lines.push(`${String(rate).padStart(4)}/s  →  ${total} sent, ${failurePct}% failed`);
+    const failurePct = total === 0 ? '0.0' : ((failed / total) * 100).toFixed(1);
+    // Achieved vs target is the tell: once the host cannot keep up, the arrival-rate executor
+    // falls behind its own schedule and this drops below the tier it was asked for.
+    const achieved = (total / stageSeconds).toFixed(1);
+    const tier = data.metrics[`payment_create_duration{stage:rate_${rate}}`]?.values ?? {};
+    lines.push(
+      `${String(rate).padStart(4)}/s  ${String(total).padStart(6)}  ${achieved.padStart(7)}/s  ` +
+        `${(failurePct + '%').padStart(6)}  ${millis(tier.med).padStart(9)}  ` +
+        `${millis(tier['p(95)']).padStart(9)}  ${millis(tier['p(99)']).padStart(9)}`
+    );
   }
+  lines.push('');
+
+  // Not per-tier — k6 reports this one globally — but it belongs next to the table rather than
+  // buried in the aggregate block. A non-zero value means the executor could not start iterations
+  // on schedule at some tier, which is saturation showing up as unsent work rather than as errors.
+  const dropped = data.metrics.dropped_iterations?.values?.count ?? 0;
+  lines.push(`dropped iterations (never sent, all tiers): ${dropped}`);
+  lines.push(`VU ceiling per tier: ${MAX_VUS}${dropped > 0 ? '  <- reached' : ''}`);
   lines.push('');
 
   return {
@@ -140,10 +185,15 @@ export function handleSummary(data) {
 // stand-in that still prints the standard aggregate metrics beneath the per-tier table above.
 function textSummaryFallback(data) {
   const httpFailed = data.metrics.http_req_failed?.values?.rate;
-  const duration95 = data.metrics.payment_create_duration?.values?.['p(95)'];
+  const overall = data.metrics.payment_create_duration?.values ?? {};
   return [
     'Aggregate (all tiers blended — see the table above for what this hides):',
     `  http_req_failed: ${httpFailed !== undefined ? (httpFailed * 100).toFixed(2) + '%' : 'n/a'}`,
-    `  payment_create_duration p(95): ${duration95 !== undefined ? duration95.toFixed(0) + 'ms' : 'n/a'}`,
+    `  payment_create_duration p(50)/p(95)/p(99): ` +
+      `${millis(overall.med)} / ${millis(overall['p(95)'])} / ${millis(overall['p(99)'])}`,
   ].join('\n');
+}
+
+function millis(value) {
+  return value === undefined ? 'n/a' : `${value.toFixed(0)}ms`;
 }

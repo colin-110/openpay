@@ -39,6 +39,7 @@ export const options = {
       maxVUs: 200,
     },
   },
+  summaryTrendStats: ['min', 'med', 'avg', 'p(90)', 'p(95)', 'p(99)', 'max'],
   thresholds: {
     // The whole claim, as a number. Losing an acquirer must not cost a single accepted payment:
     // creation does not touch an acquirer at all, and routing happens afterwards, asynchronously.

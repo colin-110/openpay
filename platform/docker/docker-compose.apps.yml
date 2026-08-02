@@ -266,6 +266,11 @@ services:
     container_name: openpay-gateway-service
     environment:
       <<: *common-env
+      # Forwarded explicitly so the load-test override documented in tests/performance/README.md
+      # actually reaches the process. Without this line, `RATE_LIMIT_PER_WINDOW=10000 docker
+      # compose up -d gateway-service` sets the variable on the compose CLI and nowhere else, and
+      # a stress run quietly measures the rate limiter instead of the write path behind it.
+      RATE_LIMIT_PER_WINDOW: ${RATE_LIMIT_PER_WINDOW:-30}
     ports: ["8080:8080"]
     depends_on:
       redis: {condition: service_started}

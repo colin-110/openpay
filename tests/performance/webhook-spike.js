@@ -39,6 +39,7 @@ export const options = {
       ],
     },
   },
+  summaryTrendStats: ['min', 'med', 'avg', 'p(90)', 'p(95)', 'p(99)', 'max'],
   thresholds: {
     // Higher than the payment path allows, deliberately. A callback is not a customer waiting; it
     // is a machine that will retry. Two seconds at the ninety-fifth percentile under a 40x spike is

@@ -57,11 +57,15 @@ export const options = {
       maxVUs: Math.max(100, RATE * 4),
     },
   },
+  summaryTrendStats: ['min', 'med', 'avg', 'p(90)', 'p(95)', 'p(99)', 'max'],
   thresholds: {
     // Same bar as payment-create.js's clean-rate result — this rate has already been measured
     // healthy over 2 minutes; a soak failing this bar means it degrades over time, not that the
     // rate itself was ever in question.
-    'payment_create_duration{expected_response:true}': ['p(95)<1000'],
+    //
+    // Untagged, for the reason spelled out in payment-create.js: expected_response never lands on
+    // a custom Trend, so the tagged form matched nothing and passed unconditionally.
+    payment_create_duration: ['p(95)<1000'],
     http_req_failed: ['rate<0.01'],
     // The one threshold specific to a soak: the second half must not be meaningfully worse than
     // the first. p(95) alone would not catch "still under 1000ms but trending toward it."
