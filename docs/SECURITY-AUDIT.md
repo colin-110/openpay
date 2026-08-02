@@ -20,6 +20,7 @@ actually lets someone do, and what fixing it takes.
 | 10 | JWT issuer and audience are not validated | **Low** | Fixed |
 | 11 | CORS ships a development origin as its default | **Low** | Fixed |
 | 12 | No TLS anywhere | **Info** | Accepted |
+| 13 | Outdated dependencies carrying known CVEs | **Critical** | Fixed (1 accepted) |
 
 The surfaces added since that audit — the fraud gate and its rules, the routing table, dead-letter
 replay, and the audit log — were reviewed on the same terms as they were built. What that review
@@ -336,6 +337,42 @@ compose file *requires* it rather than defaulting.
 All service-to-service traffic is plain HTTP, including API keys and session tokens in headers.
 Correct for a local compose stack; in a real deployment this belongs to the service mesh or ingress
 layer rather than to application code.
+
+## 13. Outdated dependencies carrying known CVEs — Critical, fixed (1 accepted)
+
+`docker scout cves` against the built images found **30 known vulnerabilities across 13 packages
+(5 critical, 25 high)**, all coming from what Spring Boot 3.5.4's dependency-managed versions
+pulled in:
+
+| Package | Fixed in | Worst finding |
+| --- | --- | --- |
+| `tomcat-embed-core` 10.1.43 | 10.1.55 | 4× **CRITICAL** (CVSS up to 9.8) — improper authentication, improper input validation, improper authorization |
+| `jackson-core` 2.19.2 | 2.21.4 | HIGH (CVSS 8.7) — unbounded resource allocation |
+| `kafka-clients` 3.9.1 | 3.9.2 | HIGH (CVSS 8.7) — race condition |
+| `spring-kafka` 3.3.8 | 3.3.16 | HIGH (CVSS 8.1) — deserialization of untrusted data |
+| `spring-boot` 3.5.4 | 3.5.14 | HIGH (CVSS 7.0) — insecure temporary file |
+| `spring-core` 6.2.9 | 6.2.11 | HIGH (CVSS 7.5) — improper authorization |
+| `spring-expression` 6.2.9 | 6.2.19 | HIGH (CVSS 7.5) — inefficient algorithmic complexity |
+| `spring-data-commons` 3.5.2 | 3.5.12 | HIGH (CVSS 7.5) — uncontrolled resource consumption |
+
+**Fix:** bumped `spring.boot.version` from `3.5.4` to `3.5.16` — the newest patch release in the
+same minor line. Read `spring-boot-dependencies-3.5.16.pom` directly to confirm before assuming:
+its own BOM already manages `tomcat.version=10.1.55`, `jackson-bom.version=2.21.4`, and
+`kafka.version=3.9.2`, so the one-line version bump resolves all eight rows above without a single
+per-artifact override, and without the migration risk a 4.x major bump would carry. Full reactor
+rebuild and test suite (17 modules, unit + integration) passed unchanged afterward.
+
+**One finding accepted rather than fixed:** `golang.org/x/net@0.40.0`, CVE-2026-39821, CRITICAL,
+fixed upstream at 0.55.0. This is not an application dependency — it is baked into the official
+`eclipse-temurin:21-jre` base image's own build tooling (confirmed via
+`docker scout cves eclipse-temurin:21-jre --platform linux/amd64`, and Adoptium's own provenance
+attestation). `docker scout` reports the currently pulled tag as already up to date, meaning
+Adoptium has not yet republished a fixed layer. Checked the Alpine-based Temurin variant as an
+alternative: it removes this finding but introduces two HIGH, **currently unpatched** CVEs of its
+own (`sqlite` via the Alpine build toolchain), so switching base images trades one unfixed issue
+for two. Staying on `eclipse-temurin:21-jre` and tracking Adoptium's release feed is the better
+choice until a patched tag appears. Not exploitable over the network as deployed here — it is a
+build-tooling artifact embedded in the image, not a library loaded by the running JVM at runtime.
 
 ---
 

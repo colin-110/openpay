@@ -33,7 +33,17 @@
 
     <properties>
         <java.version>21</java.version>
-        <spring.boot.version>3.5.4</spring.boot.version>
+        <!--
+          Pinned to the newest 3.5.x patch rather than the 4.x line: a scan found 30 known CVEs
+          (5 critical, CVSS up to 9.8) in what 3.5.4's dependency-managed versions pulled in —
+          tomcat-embed-core, spring-core, spring-expression, spring-data-commons, spring-kafka,
+          jackson-core, kafka-clients. 3.5.16's own BOM already manages fixed versions of every
+          one of them (tomcat.version=10.1.55, jackson-bom.version=2.21.4, kafka.version=3.9.2,
+          confirmed by reading spring-boot-dependencies-3.5.16.pom directly), so the single
+          version bump is the complete fix — no per-artifact overrides needed. Staying on 3.5.x
+          avoids the migration risk a 4.x major bump would carry. See docs/SECURITY-AUDIT.md.
+        -->
+        <spring.boot.version>3.5.16</spring.boot.version>
         <springdoc.version>2.8.9</springdoc.version>
         <testcontainers.version>1.21.3</testcontainers.version>
         <jjwt.version>0.12.6</jjwt.version>
