@@ -117,12 +117,19 @@ jobs:
       - name: Set up kubectl
         uses: azure/setup-kubectl@v4
 
-      # Server-side validation is not available without a cluster, so this is a client-side dry
-      # run: it catches malformed manifests and unknown fields, not admission-policy problems.
-      - name: Render and validate Kubernetes manifests
+      - name: Render Kubernetes manifests
+        run: kubectl kustomize platform/k8s > /tmp/rendered.yaml
+
+      # Not `kubectl apply --dry-run=client`: despite the name, that still needs a live API
+      # server to resolve REST mappings, and fails outright with no cluster reachable — found by
+      # actually running this job rather than by reading it. kubeconform validates each resource
+      # against the upstream OpenAPI schemas entirely locally, which is what "no cluster
+      # available" actually requires; -strict catches unknown fields the same way the old step
+      # intended to.
+      - name: Validate Kubernetes manifests
         run: |
-          kubectl kustomize platform/k8s > /tmp/rendered.yaml
-          kubectl apply --dry-run=client -f /tmp/rendered.yaml --validate=false
+          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
+          ./kubeconform -strict -summary /tmp/rendered.yaml
 
       - name: Check the secrets template holds no real secrets
         run: |
