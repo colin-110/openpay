@@ -37,11 +37,44 @@ each finding rather than leaving that to guesswork.
 
 ## `payment-create.js`
 
+### Run of 2026-08-03 — with p99, and with the threshold bug fixed
+
+Every row below is a fresh 60-second `constant-arrival-rate` run on the machine described above,
+against a stack rebuilt from source, with the per-merchant rate limit raised (see
+[A note on the rate limit](#a-note-on-the-rate-limit)).
+
+| Target | Achieved | Payments | p50 | p95 | p99 | max | Errors |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 20/s | 19.99/s | 1,201 | 55.9ms | 227ms | 443ms | 678ms | 0.00% |
+| 50/s | 49.95/s | 3,000 | 43.0ms | 184ms | 295ms | 494ms | 0.00% |
+| 100/s | 97.77/s | 5,884 | 105ms | **1.89s** | **3.00s** | 4.72s | 0.00% |
+
+**The knee is between 50 and 100 requests a second on this host.** Note what does *not* happen at
+100/s: nothing fails. `http_req_failed` is 0.00% across all three rows — every payment is still
+accepted and still correct. What degrades is latency, by an order of magnitude, plus 119 iterations
+that k6 could not start on schedule at all. That distinction matters: this is a queueing ceiling,
+not a correctness failure, and a test that only watched the error rate would have called the 100/s
+run a clean pass.
+
+50/s is *faster* than 20/s (p95 184ms vs 227ms), which is JIT warm-up rather than anything
+mysterious — the 20/s run was first after a restart and paid for the compilation.
+
+**These numbers caught a bug in the test, not just in the system.** The threshold on the
+latency trend was written as `payment_create_duration{expected_response:true}`, but
+`expected_response` is an HTTP system tag k6 only attaches to `http_req_*` metrics — never to a
+custom `Trend`. That submetric therefore matched zero samples, reported `0s`, and passed
+`p(95)<1000` on every run that had ever been recorded here. Corrected to an untagged
+`payment_create_duration`, it immediately failed the 100/s row (`✗ p(95)=1.89s`) — a real
+regression the old form reported as green. A threshold that cannot fail is worse than no
+threshold, because it reads like coverage.
+
+### Earlier run — the Redis timeout fix
+
 | Rate | Duration | p50 | p95 | Error rate | Notes |
 | --- | --- | --- | --- | --- | --- |
 | 20/s | 1m | 29.0ms | 52.9ms | 0.0% | Clean. Every threshold passed. |
 | 50/s | 2m | 51.0ms | 3.01s | 22.3% | **Before the Redis-timeout fix below.** |
-| 50/s | 2m | 38.4ms | 113ms | 0.0% | **Same rate, same host, after the fix.** Rerun to confirm. |
+| 50/s | 2m | 38.4ms | 113ms | 0.0% | **Same rate, same host, after the fix.** |
 
 The first 50/s row is what this baseline originally recorded. Tracing it down (see Observations)
 found a real bug — not host contention, though that was the first guess — and fixing it turned a
@@ -49,18 +82,61 @@ found a real bug — not host contention, though that was the first guess — an
 the identical machine. That is the difference between a load test that measures a laptop's CPU
 count and one that measures the system.
 
-With the fix in place, `stress.js` (below) carries this further: 0% failures up to 150/s on the
-same host, which is what actually answers "how far does this go" now that the artificial ceiling
-is gone.
+### A note on the rate limit
+
+The platform's per-merchant write limit is 30 requests per 5-second window (~6/s), so every rate
+on this page is far above it. All the runs recorded here raise it via `RATE_LIMIT_PER_WINDOW`,
+because the question being asked is "how fast is the write path", not "does the rate limiter
+work" — there are separate tests for the latter.
+
+That override did not actually work until 2026-08-03. `docker-compose.apps.yml` never forwarded
+`RATE_LIMIT_PER_WINDOW` into gateway-service's environment, so setting it on the compose command
+line — exactly as `tests/performance/README.md` instructed — changed nothing inside the container.
+Fixed by forwarding it explicitly. Worth recording because the failure was silent in the worst
+way: the documented instruction looked like it worked, and any run that trusted it was measuring
+the limiter rather than the write path.
+
+### What these runs are actually exercising
+
+At any sustained rate above ~1.6/s from a single merchant, the seeded `merchant-velocity-burst`
+rule (100 payments per 60s → REVIEW) fires, and most payments come back `HELD` rather than
+`ALLOWED`: 1,101 of 1,201 at 20/s, 5,783 of 5,884 at 100/s. That is the fraud engine working
+correctly, not a defect, and the write path is the same either way — screening is called, the
+payment and its outbox row are committed together. But it does mean these are latencies for the
+*held* path, and a run spread across many merchants would sit mostly on the `ALLOWED` path
+instead. Fixing that needs multi-merchant setup, which is listed as a known gap in the main
+README's limitations.
 
 ## `webhook-spike.js`
+
+### Run of 2026-08-03
+
+| | |
+| --- | --- |
+| Callbacks handled | 35,515 |
+| Peak rate | 400/s (a 40x jump from the 10/s baseline, per the script's ramp) |
+| p50 / p95 / p99 | 27.1ms / 913.8ms / 1.20s |
+| Error rate | **0.00%** (0 of 35,515) |
+| Checks passed | 100.00% (35,515 of 35,515) |
+| Duplicates correctly rejected | **3,411** — every one caught, none double-processed |
+| Dropped iterations | 395 |
+
+Passed both thresholds (`p95<2000ms`, `error rate<1%`). The 395 dropped iterations are the spike
+briefly outrunning the VU pool at the top of the ramp; nothing that was sent failed.
+
+Worth stating plainly because it is the property that matters most here: **3,411 duplicate
+callbacks arrived during a 40× spike and not one of them was processed twice.** A duplicate
+capture that slipped through would credit a merchant for money that arrived once, and dedup is
+precisely the check most likely to degrade quietly under load.
+
+### Earlier run
 
 | | |
 | --- | --- |
 | p95 across the run | 119.5ms |
-| Peak rate | 400/s (a 40x jump from the 10/s baseline, per the script's ramp) |
+| Peak rate | 400/s |
 | Error rate | 0.0% |
-| Duplicates correctly rejected | 3,309 of 35,586 callbacks (9.3%) — every one caught, none double-processed |
+| Duplicates correctly rejected | 3,309 of 35,586 callbacks (9.3%) |
 
 Passed clean, both thresholds (`p95<2000ms`, `error rate<1%`) met with wide margin. Signature
 verification and deduplication hold up under a 40x spike with no visible cost — this is the one
@@ -70,9 +146,25 @@ payment creation and login do.
 
 ## `provider-outage.js`
 
+### Run of 2026-08-03
+
 | | |
 | --- | --- |
-| Acceptance rate through the whole run (outage included) | 100.00% (2,401 / 2,401) |
+| Acceptance rate through the whole run (outage included) | **100.00% (2,401 / 2,401)** |
+| p50 / p95 / p99 | 28.8ms / 58.5ms / 95.6ms |
+| max | 420.9ms |
+| Error rate | 0.00% (0 of 2,406) |
+
+Reproduced exactly: an acquirer was disabled in the routing table forty seconds into a two-minute
+run at 20/s, and **not one payment was refused.** Latency did not move either — p95 58ms is
+ordinary for this host — because creation never touches an acquirer. Routing happens afterwards
+and asynchronously, so the outage never touched the request the merchant was waiting on.
+
+### Earlier run
+
+| | |
+| --- | --- |
+| Acceptance rate through the whole run | 100.00% (2,401 / 2,401) |
 | p95 | 42.9ms |
 | Payments accepted during the outage window | 1,602 |
 
@@ -91,6 +183,65 @@ merchant is waiting on.
 | 100/s | 2,988 | 0.0% |
 | 150/s | 3,679 | 0.0% |
 
+### Run of 2026-08-03 — four tiers, capped VUs, and a result that corrects the one above
+
+| Tier | Sent | Achieved | Failed | p50 | p95 | p99 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 20/s | 900 | 20.0/s | 0.0% | 80ms | 659ms | 947ms |
+| 50/s | 2,251 | 50.0/s | 0.0% | 48ms | 90ms | 160ms |
+| 100/s | 4,500 | 100.0/s | 0.0% | 46ms | **98ms** | 250ms |
+| 150/s | 6,750 | 150.0/s | 0.0% | 49ms | 220ms | 341ms |
+
+Dropped iterations: **0**. Every tier hit its requested rate exactly, and nothing failed anywhere.
+
+**This disagrees with the `payment-create.js` table above, and the disagreement is the finding.**
+That table records p95 = 1.89s at 100/s; this one records 98ms at the same rate on the same host,
+twenty times better. Both runs really happened. The difference is how they were scheduled:
+
+- The `payment-create.js` rows were three 60-second runs back to back with no gap. The 100/s run
+  started while the platform was still draining the 50/s run that ended seconds earlier — outbox
+  rows still relaying, connections still cycling.
+- `stress.js` leaves a deliberate 10-second gap between tiers so in-flight work from tier N drains
+  before tier N+1 starts, which is exactly what that gap is in the script for.
+
+The 20/s tier here is the same effect in miniature and in the other direction: it is the *worst*
+tier on the page (p95 659ms) purely because it ran first, on cold JVMs, and paid for JIT
+compilation that every later tier inherited for free.
+
+The corrected reading, then: **this host sustains 150 payments/second at p95 220ms / p99 341ms
+with zero failures and zero dropped iterations, once warm.** The earlier "knee between 50 and
+100/s" was measuring back-to-back scheduling, not a capacity limit. Both numbers are left on this
+page rather than the inconvenient one deleted, because "your load generator's schedule changed the
+answer by 20x" is worth more to a future reader than a single tidy figure.
+
+The real ceiling was still not found — 150/s was the top tier and it was clean.
+
+### 2026-08-03: what happens above 150/s, and why the tiers are capped now
+
+An attempt to find the true breaking point with `TIERS=50,100,200,300,450,600` did not produce a
+number — it produced an outage. Above roughly 150/s the write path's latency exceeds the arrival
+interval, so `constant-arrival-rate` allocates virtual users faster than they retire. With the
+original `maxVUs: rate * 4` there was nothing to stop that: the run passed a thousand concurrent
+VUs, the Docker daemon's control plane started returning HTTP 500 to every command, and the run
+had to be killed. The containers themselves stayed up and kept serving — the gateway answered
+`/actuator/health` in 0.58s throughout — but `docker ps` did not respond for minutes.
+
+Two things came out of that, both now in the script:
+
+- **`MAX_VUS` (default 300) caps concurrency per tier.** Saturation now surfaces as
+  `dropped_iterations` in the summary rather than as unbounded VU growth. Same finding, without
+  losing the run to get it.
+- **The default top tier is 150, not 250.** Not timidity — 150/s is simply past this host's knee
+  already, and tiers beyond it on this hardware measure the load generator and the container
+  runtime rather than the platform.
+
+The honest summary of the ceiling on this machine: **clean to 50/s, degrading by 100/s, and past
+~150/s the single-host test rig is the thing that breaks first.** Finding the architecture's own
+ceiling needs the Kubernetes manifests on real nodes, which is listed as a known limitation rather
+than claimed as a result.
+
+### Earlier run — four tiers, before the cap
+
 Aggregate p95 across all four tiers blended: 7.5s — high, and worth reading correctly. This is
 not an error rate; every one of these payments was eventually accepted (`http_req_failed` stayed
 at 0.00% throughout, and the per-tier table above shows the same). What it means is queueing: at
@@ -101,6 +252,26 @@ where requests start being refused outright rather than merely queueing — was 
 host. Worth extending `TIERS` upward on a rerun specifically to find it.
 
 ## `soak.js`
+
+### Run of 2026-08-03
+
+| | |
+| --- | --- |
+| Rate / duration | 25/s for 4 minutes |
+| Payments | 6,000 |
+| p95, first half | 90ms |
+| p95, second half | **82ms** |
+| Failures | 0 in either half |
+
+No drift — the second half was marginally *faster*, which is JIT settling rather than anything
+suspicious. The script's own drift threshold (`second_half p(95) < 1200ms`) passed with a wide
+margin.
+
+Four minutes is still far too short to be evidence about a slow leak, and that limitation is
+unchanged from the earlier run below. This confirms the mechanism works and finds nothing wrong;
+it is not a substitute for the multi-hour run the scenario is actually for.
+
+### Earlier run
 
 | | |
 | --- | --- |
@@ -134,7 +305,27 @@ trusted because the table says so.
 | Kafka paused | Payment creation still succeeds; payment stays `CREATED` until Kafka returns | Confirmed |
 | Kafka recovered | The payment created during the outage advances on its own — nothing lost | Confirmed |
 
-13 of 13 checks pass — but the first run of this script found a real bug before any of them did.
+**13 of 13 checks pass** (re-run 2026-08-03 on a freshly rebuilt stack) — but the runs that got
+there found three separate bugs, two of them in this script rather than in the platform.
+
+**The script's own client timeout made one assertion unobservable.** `code()` and `body()` used
+`curl --max-time 8`, while the gateway's read timeout to auth-service is 10 seconds. `docker
+pause` freezes a process without closing its sockets, so a request made while auth-service is
+paused hangs for the full 10s before the gateway gives up and answers 503 — and curl abandoned it
+at 8s, reporting `000`. The "API keys fail closed" check could therefore never see the response it
+existed to assert. Raised to 20s: any client timeout here has to outlast the longest server-side
+timeout being exercised.
+
+**A run against a non-default configuration is not a run.** One attempt reported 10/13 purely
+because the stack still had `RATE_LIMIT_PER_WINDOW=200000` left over from a load test, so the
+check that fires 12 writes "past the normal rate limit" was not past anything. Worth stating
+because the failure looked like a regression and was an environment artifact — the fix is to reset
+config before injecting faults, not to loosen the assertion.
+
+**And one lesson that is not the script's fault:** editing this file while it is running corrupts
+the run. Bash reads a script lazily by byte offset, so an edit mid-execution shifts everything
+after the cursor (`ision_merchant: command not found` is what that looks like). Run it from a copy
+if it needs changing while in flight.
 
 **What it found:** pausing Redis and firing writes past the per-merchant rate limit didn't fail
 open — it hung. Each request took up to 60 seconds before falling back. `ValidationAttemptLimiter`

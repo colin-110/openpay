@@ -6,26 +6,48 @@ units end to end. Every payment goes through idempotency, risk screening, provid
 transactional outbox — not because a demo needs it, but because a system that moves money doesn't
 get to skip any of them.
 
+## The problem this solves
+
+Taking a payment is easy. Taking a payment *correctly* is not, and almost none of the difficulty
+is in the happy path. The hard parts are the five ways it goes wrong:
+
+| The failure | What it costs | What this platform does about it |
+| --- | --- | --- |
+| A customer taps "Pay" twice, or the network retries a request that already succeeded | The card is charged twice, and someone has to find and refund it | [Idempotency](#idempotency) keyed on the request *and* its body, enforced by a unique index — a retry returns the original payment, a different body under a reused key is refused |
+| The acquiring bank goes down mid-flight | Payments are refused while the merchant is open for business | [Provider failover](#routing-rules) with a per-acquirer circuit breaker. Measured: **100% of payments still accepted** with an acquirer pulled out of rotation mid-run |
+| The service crashes between saving a payment and announcing it | The payment exists but nothing downstream ever hears about it — no capture, no settlement, no ledger entry | A [transactional outbox](#event-delivery): the row and the event commit in one transaction, and a relay publishes afterwards. A crash replays; it does not lose |
+| The books stop balancing | Nobody can say which payment is wrong, and every reconciliation after it is suspect | A [double-entry ledger](#the-ledger) with an append-only journal enforced by a database trigger, not by application code that a future bug can bypass |
+| An attacker replays a captured "payment succeeded" callback from the bank | Goods ship for a payment that never settled | [Signature verification](#merchant-webhooks) over `timestamp.body`, so a captured callback expires instead of staying valid forever, plus deduplication on the provider's own event id |
+
+Every one of those is a claim that can be checked rather than believed, and
+[Measured performance](#measured-performance) is where the checking is written down — including
+the two bugs that checking found.
+
 This is a portfolio project, not a production system, and it says so throughout — every
 architectural trade-off is written down with the alternative it gave up and why, every known
-limitation is stated rather than hidden (see [Status](#status)), and every claim in this README has
-been exercised against the running system, not just written down: the load numbers in
-[tests/performance/baseline.md](tests/performance/baseline.md) are from a real k6 run, and the
-Kubernetes deployment was walked through an actual login and an actual payment on a real cluster,
-not validated as YAML.
+limitation is stated rather than hidden (see [Status](#status) and
+[Limitations](#limitations-and-what-id-do-next)), and every claim in this README has been exercised
+against the running system, not just written down: the numbers in
+[Measured performance](#measured-performance) are from real k6 runs on a named machine, the
+failure-mode table was verified by pausing real containers, and the Kubernetes deployment was
+walked through an actual login and an actual payment on a real cluster, not validated as YAML.
 
 **Start here:**
 
 - [Getting Started](#getting-started) — one command, the whole platform
+- [Measured performance](#measured-performance) — throughput, p50/p95/p99, and where it breaks
 - [Architecture](docs/ARCHITECTURE.md) — what every component is, and what breaks when one dies
 - [Status](#status) — what's built, and what's deliberately not
+- [Limitations](#limitations-and-what-id-do-next) — what's missing, and what I'd fix first
 
 <details>
 <summary><strong>Table of contents</strong></summary>
 
+- [The problem this solves](#the-problem-this-solves)
 - [Services](#services)
 - [Credentials](#credentials)
 - [Getting Started](#getting-started)
+- [Measured performance](#measured-performance)
 - [API Walkthrough](#api-walkthrough)
 - [Merchant Dashboard](#merchant-dashboard)
 - [Sessions and refresh tokens](#sessions-and-refresh-tokens)
@@ -48,6 +70,7 @@ not validated as YAML.
 - [Testing](#testing)
 - [Repository Layout](#repository-layout)
 - [Status](#status)
+- [Limitations and what I'd do next](#limitations-and-what-id-do-next)
 - [Documentation](#documentation)
 
 </details>
@@ -312,6 +335,89 @@ curl "http://localhost:8080/api/v1/payments/<PAYMENT_ID>/attempts" -H "X-Api-Key
 
 Each acquirer can also be made to misbehave on purpose with `BANK_DECLINE_RATE`,
 `BANK_TIMEOUT_RATE`, and `BANK_UNAVAILABLE`.
+
+## Measured performance
+
+Numbers, not adjectives. Every figure below was produced by a k6 run against the full stack on a
+named machine, and the raw output plus the caveats are in
+[tests/performance/baseline.md](tests/performance/baseline.md).
+
+**Where it was measured:** one Windows 10 laptop, Docker Desktop with 12 vCPUs / 7.4 GiB, running
+*all 22 containers at once* — eleven Spring Boot services, Postgres, Kafka, Redis, Prometheus,
+Grafana, Loki, and the rest. This is a deliberately hostile setup for a throughput number, and it
+is stated plainly because a benchmark without its hardware is a number that means nothing.
+
+### Payment creation — sustained write load
+
+The full write path: authenticate at the gateway, screen for risk, persist the payment and its
+outbox row in one transaction. Four rate tiers, 45 seconds each, 14,401 payments total.
+
+| Target rate | Achieved | Payments | p50 | p95 | p99 | Errors | Dropped |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 20/s | 20.0/s | 900 | 80ms | 659ms | 947ms | **0.00%** | 0 |
+| 50/s | 50.0/s | 2,251 | 48ms | 90ms | 160ms | **0.00%** | 0 |
+| 100/s | 100.0/s | 4,500 | 46ms | 98ms | 250ms | **0.00%** | 0 |
+| 150/s | 150.0/s | 6,750 | 49ms | **220ms** | **341ms** | **0.00%** | 0 |
+
+**150 payments/second at p95 220ms, zero failures, zero dropped requests** — and 150/s was the
+highest tier run, not a ceiling that was found. The 20/s row is the worst on the table purely
+because it ran first on cold JVMs and paid for the JIT compilation every later tier inherited.
+
+An earlier set of runs on the same host reported p95 = 1.89s at 100/s — twenty times worse. Both
+happened; the difference was that those ran back-to-back with no gap, so each started while the
+platform was still draining the previous one. Both sets of numbers are kept in
+[baseline.md](tests/performance/baseline.md) rather than the inconvenient one deleted, because
+"the load generator's schedule changed the answer by 20×" is a more useful thing to know than a
+single tidy figure.
+
+### Resilience — the claims, tested
+
+These are the interesting numbers, because they are the ones a payment platform is actually judged
+on. Each was produced by breaking something real and watching.
+
+| What was done to it | Result |
+| --- | --- |
+| An acquirer pulled out of rotation mid-run (`provider-outage.js`) | **100.00% of payments still accepted** (2,401 / 2,401), p95 58ms — losing an acquirer cost nothing, not even latency |
+| Callback traffic spiked 40× (10/s → 400/s, `webhook-spike.js`) | 35,515 callbacks, 0.00% errors, and **3,411 duplicate callbacks all correctly rejected** — no double-credit under load |
+| Held at 25/s for 4 minutes (`soak.js`) | p95 90ms in the first half, **82ms in the second** — no drift, no leak, 0 failures |
+| Redis paused (`fault-injection.sh`) | Rate limiting and login throttling fail open — **after a fix; this is where the Lettuce bug was found** |
+| fraud-service paused | Screening fails open, payment recorded `UNSCREENED` rather than refused |
+| auth-service paused | API-key payments refused (503); existing dashboard sessions keep working |
+| Kafka paused, then restored | Payment creation still succeeds; the payment advances on its own when Kafka returns — **nothing lost** |
+
+**13 of 13 fault-injection checks pass.** They are re-run by a script against real paused
+containers, not asserted in prose: [`scripts/fault-injection.sh`](scripts/fault-injection.sh).
+Each one names the line in [docs/ARCHITECTURE.md § 5](docs/ARCHITECTURE.md#5-failure-modes) it is
+checking, so the failure-mode table cannot quietly drift away from what the system actually does.
+
+### Four bugs the measurements found
+
+The point of testing is finding things. Every one of these was invisible to a fully green test
+suite, and three of them were bugs in the *tests* — which is its own lesson, because a test that
+cannot fail is indistinguishable from a test that passes.
+
+1. **Redis commands had no timeout.** The rate limiter and login throttle both caught the right
+   exception and failed open correctly — but Lettuce's *default* command timeout is 60 seconds, so
+   "fails open" actually meant "hangs for a minute, then fails open". Found by pausing the Redis
+   container and watching. Fixing it turned a 22.3% failure rate at 50/s into 0.00%.
+2. **A load-test threshold that could never fail.** The p95 latency threshold was written against
+   `payment_create_duration{expected_response:true}`; that tag only exists on k6's built-in HTTP
+   metrics, never on a custom trend, so it matched zero samples and passed every run ever recorded.
+   Corrected, it immediately caught a 1.89s p95 that it had been reporting as green.
+3. **A documented config override that did nothing.** The compose file never forwarded
+   `RATE_LIMIT_PER_WINDOW` into the container, so the documented way to raise the rate limit for a
+   load test silently changed nothing — meaning any run that trusted it measured the rate limiter
+   instead of the write path.
+4. **A fault-injection assertion that could never be observed.** The script checked that API-key
+   payments are refused with 503 while auth-service is paused — but used an 8-second client
+   timeout against a gateway whose own read timeout is 10 seconds. Since `docker pause` freezes a
+   process without closing its sockets, the request hung the full 10s and curl gave up first,
+   recording `000`. The check could never see the response it existed to assert.
+
+A fifth finding was not a bug but a measurement error worth keeping: running the load scenarios
+back-to-back with no drain gap made 100/s look 20× worse than it is
+([the details](tests/performance/baseline.md)). The schedule of the test changed the answer more
+than any code did.
 
 ## API Walkthrough
 
@@ -1074,6 +1180,10 @@ and the decision to try again belongs to whoever knows what was changed.
 
 ## Testing
 
+**420 automated tests** — 373 backend and 47 frontend — plus five k6 scenarios and a
+fault-injection script that neither of those can replace. The layers exist because each one
+catches something the layer below it structurally cannot see.
+
 - **Unit tests** (`*Test`, surefire) — no infrastructure required.
 - **Integration tests** (`*IT`, failsafe) — start a real PostgreSQL through Testcontainers, apply
   the Flyway migrations, and let Hibernate's `ddl-auto: validate` check the entities against the
@@ -1084,6 +1194,11 @@ and the decision to try again belongs to whoever knows what was changed.
   payment detail drawer that could point a refund at the wrong payment, currency totals summed as
   raw integers across currencies that don't mix.
 
+- **Shared-library tests** (`libs/`) — the outbox relay's ordering guarantee (it stops at the first
+  failed send rather than publishing a capture ahead of its own authorisation), the audit
+  recorder's promise that a failed audit write can never break the operation it was recording, and
+  the event codec's forward-compatibility contract, without which every schema addition becomes a
+  lockstep release across every service reading the topic.
 - **Acceptance suite** (`scripts/e2e.sh`) — real HTTP against a running stack, covering the
   behaviour no unit test can see: filters, routing, tokens, and the asynchronous flow end to end.
 - **Load and resilience** (`tests/performance/`, k6) — five scenarios: sustained write load, a
@@ -1218,6 +1333,63 @@ work — see [docs/roadmap.md](docs/roadmap.md):
 - **no distributed tracing.** Correlation IDs and Loki instead, which answers *what happened* well
   and *where the time went* only coarsely — see
   [ADR-0010](docs/adrs/0010-correlation-id-not-tracing.md).
+
+## Limitations and what I'd do next
+
+Split by the only distinction that matters: things that are a decision, and things that are a
+constraint. Being able to tell them apart is most of engineering judgement, so they are labelled
+rather than blended into one list of caveats.
+
+### Can't be fixed here — they need something this project doesn't have
+
+| Limitation | Why it can't be fixed | What it would take |
+| --- | --- | --- |
+| **No real money moves.** Both acquirers are simulated and settlement clears a payable without sending funds anywhere. | Real acquiring needs a licensed entity, a bank relationship, and PCI-DSS scope. Not obtainable for a portfolio project. | A real acquirer sandbox (Razorpay/Stripe/Adyen) behind the existing `ProviderClient` interface — the routing, failover, and callback verification are already written against that seam, so it is an adapter, not a rewrite. |
+| **No PCI compliance.** Card data is captured as a network + last four and nothing else. | Compliance is an audited organisational process, not a code property. | Keep the current design (store nothing worth stealing) and put a real tokenisation vault in front. The data model already assumes it. |
+| **Throughput numbers are laptop numbers.** ~50 payments/second sustained on one host running all 22 containers. | Twelve JVMs, Postgres, Kafka, and Redis are sharing 12 vCPUs. The ceiling measured is the host's, not the architecture's. | Run the same k6 scripts against the existing Kubernetes manifests on real nodes. Nothing in the code changes; only the number does. |
+| **Fraud rules are a rule engine, not a model.** Threshold, velocity, and repeated-amount rules. | A real risk model needs labelled fraud data that doesn't exist for synthetic traffic. | Keep the rules as the fast deterministic path and add a scored model behind the same `FraudDecision` interface. |
+
+### Can be fixed — I know how, it's scope not skill
+
+Roughly in the order I'd actually do them:
+
+1. **The fraud call sits inside the payment transaction.** Screening is a synchronous HTTP call
+   made while the database transaction is open, so it holds a connection while it waits. It is
+   bounded (500ms connect, 1s read) and it fails open, but bounded is not free and it is the single
+   biggest structural contributor to p99 on the write path. **Fix:** screen *before* opening the
+   transaction, or move to a two-phase `CREATED → SCREENED` flow driven by the event backbone that
+   already exists.
+2. **Key validation is a network call on every single request.** The gateway asks auth-service to
+   validate the API key per request, uncached. **Fix:** a short-TTL (5–10s) local cache of key
+   hash → merchant + scope. The trade-off is real and worth stating: revocation would take up to
+   the TTL to take effect, which is why it isn't already done.
+3. **No distributed tracing.** Correlation IDs answer *what happened* but not *where the time
+   went*. Given the p95 finding at 100 req/s below, this is now the thing I'd most want.
+   **Fix:** OpenTelemetry spans across the gateway → payment → fraud hop.
+   ([ADR-0010](docs/adrs/0010-correlation-id-not-tracing.md) explains why it was deferred.)
+4. **The soak test is four minutes, not four hours.** Long enough to prove the mechanism, far too
+   short to trust as evidence about a slow leak. **Fix:** `-e DURATION=4h` and actually watch it.
+5. **Single-merchant load only.** Every k6 run drives one merchant, so the
+   `(merchant_id, idempotency_key)` index is hotter than real traffic would make it, and
+   per-merchant velocity rules fire in a way they wouldn't across thousands of merchants.
+   **Fix:** provision N merchants in `setup()` and pick one per iteration.
+6. **No chaos under concurrent load.** `fault-injection.sh` proves fail-open and recovery, but one
+   dependency at a time with no traffic. The interesting case — Redis dying *during* a 200/s run —
+   isn't covered by anything yet.
+7. **No consumer-contract tests.** Services agree on JSON payload shapes in `common-kafka`, and
+   `EventCodecTest` pins forward-compatibility, but nothing fails when a producer removes a field a
+   consumer still reads. **Fix:** Pact, or schema-registry-backed contracts.
+
+### What I'd tell a reviewer to look at first
+
+Not the feature list — the parts where the reasoning is visible:
+
+- [`docs/adrs/`](docs/adrs/) — ten decisions, each naming the alternative it rejected and why.
+- [`tests/performance/baseline.md`](tests/performance/baseline.md) — includes a hypothesis I
+  recorded, tested, and found wrong, left in the document with the correction rather than quietly
+  overwritten.
+- [`scripts/fault-injection.sh`](scripts/fault-injection.sh) — the failure-mode table checked
+  against reality instead of trusted, which is what found the Redis bug.
 
 ## Documentation
 

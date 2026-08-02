@@ -79,12 +79,20 @@ average that hides exactly the transition this test exists to find.
 
 ```bash
 k6 run tests/performance/stress.js
-k6 run -e TIERS=20,50,100,150,250,400 -e STAGE_DURATION=1m tests/performance/stress.js
+k6 run -e TIERS=20,50,100,150,250 -e MAX_VUS=600 -e STAGE_DURATION=1m tests/performance/stress.js
 ```
 
 No thresholds abort the run early — the point is to keep going past the point where things start
 failing, so a threshold breach is information in the summary, not an excuse to stop before the
 interesting tier.
+
+**`MAX_VUS` is a safety rail, not a tuning knob.** Above roughly 150/s on a single laptop host the
+write path's latency exceeds the arrival interval, so an arrival-rate executor allocates virtual
+users faster than they retire. Left uncapped it does not converge: a run with tiers up to 600/s
+took k6 past a thousand concurrent VUs and wedged the Docker daemon, which produces no data at all
+and takes the stack with it. With the cap, the same saturation shows up as `dropped iterations` in
+the summary — the same finding, without losing the run to get it. Raise both together on hardware
+that can take it.
 
 Raise the per-merchant rate limit for this one, the same as any run pushing a single merchant past
 30 writes / 5s intentionally:

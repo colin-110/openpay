@@ -69,8 +69,14 @@ check() {
 # --max-time on every call: a paused dependency must never make this script itself hang. If a
 # request takes longer than this, that is itself the finding — "fails open" only counts if it
 # fails open fast, not eventually.
-code() { curl -s --max-time 8 -o /dev/null -w "%{http_code}" "$@"; }
-body() { curl -s --max-time 8 "$@"; }
+# 20s, not the 8s this used to be. The gateway's own read timeout to auth-service is 10s, and
+# `docker pause` freezes the process rather than closing its socket, so a call made while
+# auth-service is paused hangs for the full 10s before the gateway gives up and answers 503.
+# At 8s curl abandoned the request first and reported 000, which made the "API keys fail closed"
+# assertion unobservable — the test could never see the very response it existed to check. Any
+# client timeout here has to be longer than the longest server-side timeout being exercised.
+code() { curl -s --max-time 20 -o /dev/null -w "%{http_code}" "$@"; }
+body() { curl -s --max-time 20 "$@"; }
 jget() { "$PY" -c "import sys,json;print(json.load(sys.stdin).get('$1',''))"; }
 
 pause() {
