@@ -16,7 +16,8 @@
 #
 # Prerequisites:
 #   docker compose -f platform/docker/docker-compose.yml -f platform/docker/docker-compose.apps.yml up -d
-#   OPENPAY_ADMIN_TOKEN set (and OPENPAY_OPS_TOKEN / OPENPAY_INTERNAL_TOKEN if not using the dev defaults)
+#   OPENPAY_ADMIN_TOKEN set. Nothing here calls an ops-token or internal-token endpoint, so those
+#   two are not needed by this script even though the stack itself requires them to start.
 #
 # Usage:
 #   OPENPAY_ADMIN_TOKEN=dev-admin-token ./scripts/fault-injection.sh
@@ -32,7 +33,6 @@ GATEWAY_URL="${GATEWAY_URL:-http://localhost:8080}"
 AUTH_URL="${AUTH_URL:-http://localhost:8081}"
 MERCHANT_URL="${MERCHANT_URL:-http://localhost:8082}"
 ADMIN_TOKEN="${OPENPAY_ADMIN_TOKEN:-}"
-OPS_TOKEN="${OPENPAY_OPS_TOKEN:-dev-ops-token}"
 
 if [ -z "$ADMIN_TOKEN" ]; then
   echo "OPENPAY_ADMIN_TOKEN is not set. Admin endpoints fail closed without it, so this run" >&2
@@ -101,7 +101,6 @@ trap cleanup EXIT INT TERM
 
 JSON='Content-Type: application/json'
 ADMIN_HEADER="X-Admin-Token: $ADMIN_TOKEN"
-OPS_HEADER="X-Ops-Token: $OPS_TOKEN"
 
 echo "Gateway  $GATEWAY_URL"
 echo "Auth     $AUTH_URL"
@@ -115,8 +114,10 @@ echo
 # tests/performance/lib/setup.js documents for exactly this trap.
 provision_merchant() {
   local label="$1"
-  local suffix="fault-${label}-$(date +%s)-$$-$RANDOM"
-  local mid key email token
+  local mid key email token suffix
+  # Assigned on its own line, not as part of `local`: `local x=$(...)` makes the exit status that
+  # of `local` rather than the command substitution, which silently hides a failure.
+  suffix="fault-${label}-$(date +%s)-$$-$RANDOM"
   mid=$(body -X POST "$MERCHANT_URL/api/v1/merchants" -H "$ADMIN_HEADER" -H "$JSON" \
     -d "{\"merchantCode\":\"$suffix\",\"legalName\":\"Fault Injection $label\",\"webhookUrl\":null,\"defaultCurrency\":\"USD\"}" | jget id)
   key=$(body -X POST "$AUTH_URL/api/v1/api-keys" -H "$ADMIN_HEADER" -H "$JSON" \
@@ -128,7 +129,7 @@ provision_merchant() {
     -d "{\"email\":\"$email\",\"password\":\"correct-horse-battery-staple\"}" | jget token)
   # Caller reads these back via the last-provisioned globals rather than a return value — bash
   # has no structs, and this keeps every call site to one line.
-  P_MID="$mid"; P_KEY="$key"; P_EMAIL="$email"; P_SESSION="$token"
+  P_KEY="$key"; P_EMAIL="$email"; P_SESSION="$token"
   if [ -z "$mid" ] || [ -z "$key" ]; then
     echo "Could not provision a merchant and key for scenario '$label'. Is the stack up?" >&2
     exit 2
