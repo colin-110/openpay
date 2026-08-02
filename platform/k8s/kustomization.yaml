@@ -57,3 +57,5 @@ images:
     newTag: 0.1.0
   - name: openpay/mock-bank-service
     newTag: 0.1.0
+  - name: openpay/dashboard
+    newTag: 0.1.0

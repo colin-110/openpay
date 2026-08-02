@@ -19,7 +19,7 @@ spec:
   # No rules: nothing may connect to anything until something below says so.
 
 ---
-# The three services the ingress controller may reach. Everything else is cluster-internal.
+# The four services the ingress controller may reach. Everything else is cluster-internal.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -30,7 +30,7 @@ spec:
     matchExpressions:
       - key: app
         operator: In
-        values: [gateway-service, auth-service, webhook-service]
+        values: [gateway-service, auth-service, webhook-service, dashboard]
   policyTypes: [Ingress]
   ingress:
     - from:
@@ -41,6 +41,7 @@ spec:
         - port: 8080
         - port: 8081
         - port: 8084
+        - port: 80
 
 ---
 # Service-to-service HTTP. Any OpenPay pod may call any other OpenPay pod's HTTP port.

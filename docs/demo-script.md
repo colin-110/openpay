@@ -21,7 +21,8 @@ bash scripts/seed-demo.sh
 That leaves a merchant with captured payments, a few refunds, and one payment held for review. Keep
 the API key and the dashboard login it prints.
 
-Open two tabs: the dashboard (`cd web/dashboard && npm run dev`) and Grafana on `:3000`.
+Open two tabs: the dashboard (already running at `:5173` as part of the compose stack) and
+Grafana on `:3000`.
 
 ---
 

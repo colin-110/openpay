@@ -80,6 +80,11 @@ export OPENPAY_ADMIN_TOKEN=dev-admin-token OPENPAY_OPS_TOKEN=dev-ops-token OPENP
 Every service gets the same signing key: auth-service issues sessions and the services behind the
 gateway verify them. `scripts/run-local.ps1` sets all of these for you.
 
+**These variables only exist in the terminal session you set them in.** If you close that window,
+open a new tab, or run a later command through a different shell, they are gone and step 4 fails
+with `required variable ... is missing a value`. Set them again in whichever terminal actually runs
+the `docker compose` command — every time you use a new one.
+
 ### 3. Build
 
 ```bash
@@ -91,23 +96,36 @@ real PostgreSQL via Testcontainers and require Docker to be running.
 
 ### 4. Run everything in Docker
 
-The whole platform, infrastructure and services, from one command:
+The whole platform — infrastructure, all eleven backend services, and the merchant dashboard — from
+one command:
 
 ```bash
 docker compose -f platform/docker/docker-compose.yml -f platform/docker/docker-compose.apps.yml up -d --build
 ```
 
 Services start in dependency order and wait on each other's health checks, so the first run takes a
-few minutes and then everything is up. Tear it down with:
+few minutes (building twelve images) and then everything is up:
+
+| | |
+| --- | --- |
+| API (via the gateway) | `http://localhost:8080` |
+| Dashboard | `http://localhost:5173` |
+| Grafana | `http://localhost:3000` |
+| Prometheus | `http://localhost:9090` |
+
+Tear it down with:
 
 ```bash
 docker compose -f platform/docker/docker-compose.yml -f platform/docker/docker-compose.apps.yml down
 ```
 
-One Dockerfile builds every service. The build stage is identical for all of them, so Docker builds
-the reactor once and each image reuses that layer; only the final `COPY` differs. Images run as a
-non-root user and size their heap from the container's memory limit rather than a hard-coded
-`-Xmx`.
+Add `-v` to also drop the database volumes, for a genuinely clean slate.
+
+One Dockerfile builds every backend service. The build stage is identical for all of them, so
+Docker builds the reactor once and each image reuses that layer; only the final `COPY` differs.
+Images run as a non-root user and size their heap from the container's memory limit rather than a
+hard-coded `-Xmx`. The dashboard is a static React build, so it has its own two-line Dockerfile in
+`web/dashboard/` — a Node build stage, then plain nginx serving the output.
 
 Kafka advertises two addresses, because the right one depends on who is asking: containers resolve
 `kafka:29092`, while a process on the host cannot and uses `localhost:9092`. That is what lets the
@@ -279,14 +297,22 @@ Seed a merchant, a dashboard user, and a spread of rupee payments and refunds:
 OPENPAY_ADMIN_TOKEN=dev-admin-token ./scripts/seed-demo.sh
 ```
 
-That prints the login it created. Then run the dashboard:
+That prints the login it created.
+
+**If the stack is running via `docker compose ... apps.yml`**, the dashboard is already up at
+`http://localhost:5173` — it is one of the containers, built from `web/dashboard/Dockerfile` (a
+static build served by nginx). No separate step.
+
+**To run it outside Docker instead** — for `npm run dev`'s hot reload while editing it — start it
+by hand:
 
 ```bash
 cd web/dashboard && npm install && npm run dev
 ```
 
-It serves on `http://localhost:5173` and talks to the gateway on 8080 and auth-service on 8081.
-Point it elsewhere with `VITE_API_BASE` and `VITE_AUTH_BASE`.
+It talks to the gateway on 8080 and auth-service on 8081 either way, from the browser rather than
+from a container, so the same defaults work in both cases. Point it elsewhere with `VITE_API_BASE`
+and `VITE_AUTH_BASE`.
 
 Amounts are integer minor units end to end — paise for INR, cents for USD — and only the display
 layer knows about decimal places. Rupees are grouped the Indian way, so ₹12,50,000.00 rather than

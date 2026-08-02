@@ -1,7 +1,8 @@
 # What is reachable from outside the cluster, and nothing else.
 #
-# Three hosts, and the split matters more than the routing does:
+# Four hosts, and the split matters more than the routing does:
 #
+#   dashboard  -> the static merchant console. The one thing a human types into a browser bar.
 #   api        -> gateway-service. Merchant traffic. Everything behind it is authenticated by an
 #                 API key or a dashboard session.
 #   auth       -> auth-service, and only /api/v1/auth/login. Login cannot go through the gateway
@@ -34,11 +35,22 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
+        - dashboard.openpay.example
         - api.openpay.example
         - auth.openpay.example
         - webhooks.openpay.example
       secretName: openpay-tls
   rules:
+    - host: dashboard.openpay.example
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dashboard
+                port: { number: 80 }
+
     - host: api.openpay.example
       http:
         paths:

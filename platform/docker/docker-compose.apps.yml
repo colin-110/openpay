@@ -270,6 +270,26 @@ services:
       <<: *app-healthcheck
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health || exit 1"]
 
+  # A static SPA, not a Spring service, so none of the JVM environment applies here. It calls the
+  # API from the browser rather than from inside this container, so it needs nothing more than to
+  # exist and be reachable — the gateway and auth-service already default to trusting
+  # localhost:5173, which is exactly where this is published.
+  dashboard:
+    restart: unless-stopped
+    build:
+      context: ../../web/dashboard
+      dockerfile: Dockerfile
+    container_name: openpay-dashboard
+    ports: ["5173:80"]
+    depends_on:
+      gateway-service: {condition: service_healthy}
+    healthcheck:
+      <<: *app-healthcheck
+      # 127.0.0.1, not localhost: this alpine image resolves "localhost" to ::1 first, and nginx's
+      # `listen 80` only binds the IPv4 socket, so wget against the hostname fails even though the
+      # server is right there. Cost us a full clean-restart test to find.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ || exit 1"]
+
   # Both acquirers are the same image with different configuration, which is the point: two
   # independently misbehaving endpoints, one codebase.
   mock-bank-a:

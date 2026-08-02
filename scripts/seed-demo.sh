@@ -140,5 +140,5 @@ The held one is waiting on a human and has reached no acquirer, which is the poi
 
   curl -s localhost:8089/internal/fraud/reviews -H "X-Ops-Token: \$OPENPAY_OPS_TOKEN"
 
-Start the dashboard with:  cd web/dashboard && npm run dev
+Dashboard:  http://localhost:5173  (already running if you started the stack with docker compose)
 SUMMARY
