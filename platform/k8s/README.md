@@ -118,6 +118,51 @@ external party has no business reaching the payments database.
 This needs a CNI that enforces NetworkPolicy. On one that does not, these apply cleanly and do
 nothing at all, which is worth confirming before relying on them.
 
+## Verified against a real cluster
+
+Deployed to a real (if single-node, laptop-class) Kubernetes cluster — Docker Desktop's built-in
+control plane, ingress-nginx installed on top — rather than only validated with `kubectl kustomize`.
+That surfaced three bugs `kubectl kustomize` had no way to catch, because none of them are a YAML
+problem:
+
+1. **The image tag placeholder didn't work.** `openpay/<service>:${TAG}` looks like a normal
+   build-arg substitution, but `${` and `}` are not legal characters in a Docker tag, so
+   kustomize's `images:` transformer silently failed to parse the reference and left it exactly as
+   written. `kubectl apply -k` reported success; every pod came up requesting the literal string
+   `openpay/auth-service:${TAG}` and sat in `InvalidImageName`. Fixed by using a syntactically valid
+   placeholder tag (`:placeholder`) that kustomize can actually parse and replace — see
+   `30-services.yaml`.
+2. **`runAsNonRoot: true` refused to start any service.** Both Dockerfiles set a non-root user by
+   *name* (`USER openpay`, `USER nginx`), which is exactly what a container image is supposed to
+   do — but the kubelet cannot resolve a name to a UID without running the container, and
+   `runAsNonRoot` has to know the number before it starts anything. Every pod sat in
+   `CreateContainerConfigError`. Fixed by pinning a fixed numeric uid/gid in each Dockerfile and
+   stating the same number in `runAsUser`/`runAsGroup` in the manifest, so the kubelet is told
+   rather than asked to infer. The dashboard's nginx also had to move off port 80, since a
+   non-root process can't bind a privileged port without a capability this container deliberately
+   does not have.
+3. **kafka-0 deadlocked on its own DNS record.** A headless Service only publishes a pod's DNS
+   record once that pod is Ready — the same property that makes the four service Deployments'
+   pod-to-pod discovery work correctly. Single-node KRaft resolves its own advertised hostname
+   (`kafka-0.kafka:9093`) to reach its own controller quorum *during* startup, before it can be
+   Ready. That's a pod that can never become Ready trying to publish the DNS record its own
+   readiness depends on — worked every time against Docker Compose, where DNS has no such gate,
+   and never once against a real cluster. Fixed with `publishNotReadyAddresses: true` on the kafka
+   Service.
+
+None of the three showed up in `docker compose`, and none of them are visible by reading the YAML —
+they only exist at the boundary between the manifest and a real kubelet/DNS/image-transform
+pipeline, which is the whole reason to actually deploy rather than trust that valid YAML means a
+working cluster.
+
+**What that same deployment measured**, worth recording because it is a number rather than a
+guess: every service scaled to exactly one replica (`minReplicas: 1` on every HPA, `replicas: 1` on
+every Deployment) still holds **97% of a 7.4 GiB node** at rest. The committed manifests default
+several services to 2 replicas and four HPAs to a floor of 2 — that configuration does not fit a
+node this size at all; it needs either more memory allocated to the cluster or a deliberately
+smaller demo footprint. This is the concrete version of the "resource requests are guesses" note
+below, not a new problem — just no longer a guess.
+
 ## What would have to change for this to be real
 
 Stated plainly, because manifests that look production-ready and are not are worse than none:
@@ -133,5 +178,7 @@ Stated plainly, because manifests that look production-ready and are not are wor
 - **The acquirers.** `mock-bank-a` and `mock-bank-b` are simulators. In a real deployment they are
   replaced by real acquirer endpoints in `provider_routing_rules`, and these two Deployments are
   deleted.
-- **Resource requests.** The values here are guesses that let everything schedule on a laptop
-  cluster. Load testing (`tests/performance/`) is what replaces them with measurements.
+- **Resource requests.** The values here are guesses, and measurement (see above) already shows
+  they do not fit a modest single-node cluster at the committed replica counts. Load testing
+  (`tests/performance/`) is what replaces the per-service numbers with real measurements; a real
+  deployment also needs a node pool sized for more than one node's worth of memory.

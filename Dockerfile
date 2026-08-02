@@ -48,13 +48,18 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Runs unprivileged: a payment service that is compromised should not also be root in its container.
-RUN groupadd --system openpay && useradd --system --gid openpay --home /app openpay
+# Runs unprivileged: a payment service that is compromised should not also be root in its
+# container. Pinned to a fixed numeric uid/gid, not just a named user: Kubernetes' runAsNonRoot
+# check has to verify the *number* a container will actually run as before it starts anything,
+# and a named USER it cannot resolve to one is a refusal to start rather than an assumption in
+# the container's favour. 10001 is arbitrary but fixed, so platform/k8s/30-services.yaml can
+# state the same number in runAsUser rather than asking Kubernetes to trust the image.
+RUN groupadd --system --gid 10001 openpay && useradd --system --uid 10001 --gid openpay --home /app openpay
 WORKDIR /app
 
 COPY --from=build /build/${MODULE}/target/${ARTIFACT}-*.jar /app/app.jar
 RUN chown -R openpay:openpay /app
-USER openpay
+USER 10001:10001
 
 # MaxRAMPercentage rather than a fixed -Xmx: the JVM then respects whatever the container is given,
 # so changing the compose memory limit does not silently leave the heap wrong.

@@ -1,5 +1,39 @@
 # Release notes
 
+## 0.4.0 — the Kubernetes manifests, actually deployed
+
+Everything below came from `kubectl apply -k platform/k8s` against a real (if single-node)
+cluster, not from re-reading YAML that had only ever been through `kubectl kustomize`. Three bugs
+only exist at that boundary — a kubelet that has to resolve an image reference or a UID, DNS that
+only publishes once a pod is Ready — and none of them were visible any other way:
+
+- **The `${TAG}` image placeholder never actually substituted.** `$`, `{`, and `}` are not legal
+  Docker tag characters, so kustomize's image transformer silently failed to parse the reference
+  and left every pod requesting the literal string `openpay/auth-service:${TAG}`.
+  `kubectl kustomize` reported success throughout; every pod sat in `InvalidImageName`. Fixed by
+  using a placeholder tag kustomize can actually parse.
+- **`runAsNonRoot: true` refused to start anything.** Both Dockerfiles set a non-root user by
+  name, which the kubelet cannot resolve to a UID without running the container first — and
+  `runAsNonRoot` needs the number before it starts anything. Fixed by pinning a fixed numeric
+  uid/gid in each Dockerfile and stating it explicitly in `runAsUser`/`runAsGroup`. The
+  dashboard's nginx also moved off port 80 to port 8080, since a non-root process can't bind a
+  privileged port without a capability this container deliberately doesn't have.
+- **Kafka deadlocked on its own DNS record.** A headless Service only publishes a pod's DNS entry
+  once it is Ready, and single-node KRaft needs to resolve its own hostname to reach its own
+  controller quorum *during* startup — a pod that can never become Ready trying to publish the
+  record its own readiness depends on. Worked every time against Docker Compose, where DNS has no
+  such gate; never once against a real cluster. Fixed with `publishNotReadyAddresses: true`.
+
+Full writeup, plus what the same deployment measured about the committed replica counts against a
+modest single-node cluster, in
+[platform/k8s/README.md § Verified against a real cluster](../platform/k8s/README.md#verified-against-a-real-cluster).
+
+Once past those three, the platform came up clean: every one of the 16 workloads reporting
+`1/1 Running`, a merchant onboarded, a user created, a login through the public ingress that
+returned both an access and a refresh token, and a payment that went from `CREATED` to `CAPTURED`
+through the real outbox → Kafka → routing pipeline — the same acceptance path the load tests and
+`scripts/e2e.sh` already exercise against Docker Compose, now confirmed against Kubernetes too.
+
 ## 0.3.0 — sessions that renew themselves, and a clean bill on dependencies
 
 ### Refresh tokens, with theft detection

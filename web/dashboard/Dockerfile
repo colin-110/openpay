@@ -20,4 +20,20 @@ FROM nginx:1.27-alpine AS runtime
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /build/dist /usr/share/nginx/html
 
-EXPOSE 80
+# Runs unprivileged, same reasoning as the main Dockerfile. The image already ships a numeric
+# "nginx" user (uid 101) for its worker processes; running the whole container as that user,
+# rather than only the workers, is what lets Kubernetes' runAsNonRoot actually verify it — a
+# named USER Kubernetes cannot resolve to a UID gets refused at the kubelet rather than started,
+# which is how this was found. 8080, not 80: binding under 1024 needs a capability this container
+# does not have, and a port kubelet can verify without one is simpler than granting it back.
+#
+# /var/cache/nginx and /run are root-owned in the base image — fine for the default "root starts,
+# workers drop to nginx" split, wrong once the whole container runs as nginx from the start.
+# Kubernetes gets working versions of both anyway (emptyDir volumes with fsGroup, see
+# platform/k8s/30-services.yaml), but chowning them here too is what makes `docker run` and
+# docker-compose work without needing volumes to paper over it — same image, same behavior,
+# everywhere it runs.
+RUN chown -R nginx:nginx /usr/share/nginx/html /etc/nginx/conf.d /var/cache/nginx /run
+USER nginx
+
+EXPOSE 8080

@@ -286,15 +286,17 @@ services:
       context: ../../web/dashboard
       dockerfile: Dockerfile
     container_name: openpay-dashboard
-    ports: ["5173:80"]
+    ports: ["5173:8080"]
     depends_on:
       gateway-service: {condition: service_healthy}
     healthcheck:
       <<: *app-healthcheck
       # 127.0.0.1, not localhost: this alpine image resolves "localhost" to ::1 first, and nginx's
-      # `listen 80` only binds the IPv4 socket, so wget against the hostname fails even though the
-      # server is right there. Cost us a full clean-restart test to find.
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ || exit 1"]
+      # `listen` only binds the IPv4 socket, so wget against the hostname fails even though the
+      # server is right there. Cost us a full clean-restart test to find. 8080, not 80: the
+      # container runs as a non-root user (see the Dockerfile) and binding under 1024 needs a
+      # capability it does not have.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ || exit 1"]
 
   # Both acquirers are the same image with different configuration, which is the point: two
   # independently misbehaving endpoints, one codebase.

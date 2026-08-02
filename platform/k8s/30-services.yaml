@@ -5,8 +5,14 @@
 # non-root security context. The differences that do exist -- a database name, an extra secret --
 # are small and visible.
 #
-# Images are referenced as openpay/<service>:${TAG}. Set TAG with kustomize or your deployment
-# tool; there is deliberately no `latest` here, because a tag that moves makes a rollback a guess.
+# Images are referenced as openpay/<service>:placeholder — "placeholder" rather than a build-arg
+# style `${TAG}`, because kustomize's image transformer parses this string as an image reference
+# before replacing the tag, and `${`/`}` are not legal characters in a Docker tag. A reference it
+# cannot parse is one it silently leaves alone: `kubectl apply -k` would report success and every
+# pod would come up requesting the literal, unresolvable image `openpay/auth-service:${TAG}` —
+# found by actually deploying this to a cluster, not by reading the YAML. `kustomization.yaml`'s
+# `images:` block is what overwrites "placeholder" with a real tag at apply time; there is
+# deliberately no `latest` in the result, because a tag that moves makes a rollback a guess.
 #
 # Two things are worth reading rather than skimming:
 #
@@ -47,11 +53,16 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        # The image's own fixed uid/gid (see the Dockerfile) rather than left for the kubelet to
+        # infer: a named USER it cannot resolve to a number is a refusal to start, not an
+        # assumption in the container's favour.
+        runAsUser: 10001
+        runAsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: gateway-service
-          image: openpay/gateway-service:${TAG}
+          image: openpay/gateway-service:placeholder
           ports:
             - containerPort: 8080
           envFrom:
@@ -139,11 +150,13 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: auth-service
-          image: openpay/auth-service:${TAG}
+          image: openpay/auth-service:placeholder
           ports:
             - containerPort: 8081
           envFrom:
@@ -232,11 +245,13 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: merchant-service
-          image: openpay/merchant-service:${TAG}
+          image: openpay/merchant-service:placeholder
           ports:
             - containerPort: 8082
           envFrom:
@@ -327,11 +342,13 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: payment-service
-          image: openpay/payment-service:${TAG}
+          image: openpay/payment-service:placeholder
           ports:
             - containerPort: 8083
           envFrom:
@@ -422,11 +439,13 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: webhook-service
-          image: openpay/webhook-service:${TAG}
+          image: openpay/webhook-service:placeholder
           ports:
             - containerPort: 8084
           envFrom:
@@ -518,11 +537,13 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: provider-router-service
-          image: openpay/provider-router-service:${TAG}
+          image: openpay/provider-router-service:placeholder
           ports:
             - containerPort: 8085
           envFrom:
@@ -611,11 +632,13 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: ledger-service
-          image: openpay/ledger-service:${TAG}
+          image: openpay/ledger-service:placeholder
           ports:
             - containerPort: 8086
           envFrom:
@@ -707,11 +730,13 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: settlement-service
-          image: openpay/settlement-service:${TAG}
+          image: openpay/settlement-service:placeholder
           ports:
             - containerPort: 8087
           envFrom:
@@ -800,11 +825,13 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: notification-service
-          image: openpay/notification-service:${TAG}
+          image: openpay/notification-service:placeholder
           ports:
             - containerPort: 8088
           envFrom:
@@ -895,11 +922,13 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: fraud-service
-          image: openpay/fraud-service:${TAG}
+          image: openpay/fraud-service:placeholder
           ports:
             - containerPort: 8089
           envFrom:
@@ -992,11 +1021,13 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: mock-bank-a
-          image: openpay/mock-bank-service:${TAG}
+          image: openpay/mock-bank-service:placeholder
           ports:
             - containerPort: 9001
           envFrom:
@@ -1092,11 +1123,13 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: mock-bank-b
-          image: openpay/mock-bank-service:${TAG}
+          image: openpay/mock-bank-service:placeholder
           ports:
             - containerPort: 9002
           envFrom:
@@ -1193,13 +1226,23 @@ spec:
     spec:
       securityContext:
         runAsNonRoot: true
+        # The image's own "nginx" user (uid/gid 101), not left for the kubelet to guess. A named
+        # USER in the image is not something the kubelet can resolve to a uid on its own, and
+        # runAsNonRoot with nothing further is a refusal to start, not an assumption in the
+        # container's favour — found by deploying this, not by reading the manifest. fsGroup
+        # matters here specifically because nginx needs to create files under the two emptyDir
+        # mounts below at startup, and an emptyDir is root-owned unless a pod fsGroup says
+        # otherwise.
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
         seccompProfile:
           type: RuntimeDefault
       containers:
         - name: dashboard
-          image: openpay/dashboard:${TAG}
+          image: openpay/dashboard:placeholder
           ports:
-            - containerPort: 80
+            - containerPort: 8080
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -1213,11 +1256,11 @@ spec:
             - name: nginx-run
               mountPath: /var/run
           readinessProbe:
-            httpGet: { path: /, port: 80 }
+            httpGet: { path: /, port: 8080 }
             periodSeconds: 10
             failureThreshold: 3
           livenessProbe:
-            httpGet: { path: /, port: 80 }
+            httpGet: { path: /, port: 8080 }
             periodSeconds: 15
             failureThreshold: 3
           resources:
@@ -1242,5 +1285,5 @@ spec:
     app: dashboard
   ports:
     - port: 80
-      targetPort: 80
+      targetPort: 8080
       name: http

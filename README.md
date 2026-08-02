@@ -1133,7 +1133,9 @@ Delivered:
 - provisioned Grafana dashboards over real business metrics, container logs in Loki, and a test
   that fails when a metric a dashboard queries stops being exported
 - Kubernetes manifests: probes split three ways, network policy that default-denies, and an
-  ingress that publishes three hosts and hides every operator surface
+  ingress that publishes three hosts and hides every operator surface — deployed to a real
+  cluster and taken through a full login-and-payment flow, not just validated as YAML (see
+  [platform/k8s/README.md](platform/k8s/README.md#verified-against-a-real-cluster))
 - k6 load and resilience scenarios, including one that disables an acquirer mid-run and asserts
   that acceptance does not move
 - email notifications: a security alert to the account holder when refresh-token theft is

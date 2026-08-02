@@ -160,6 +160,16 @@ metadata:
   namespace: openpay
 spec:
   clusterIP: None
+  # A headless Service only publishes a pod's DNS record once that pod is Ready — which is what
+  # every other headless Service in this file wants, and what deadlocks this one specifically.
+  # KRaft's single-node "combined mode" has the broker resolve its OWN advertised hostname
+  # (kafka-0.kafka:9093, from KAFKA_CONTROLLER_QUORUM_VOTERS) to reach the controller quorum
+  # during startup — before it can become Ready. Without this, that resolution fails with
+  # UnknownHostException every time, which is a fresh pod that can never become Ready trying to
+  # publish the very DNS record its own readiness depends on. Found by actually deploying this,
+  # not by reading the YAML: it never surfaced against docker-compose, where DNS comes from the
+  # embedded resolver and has no such gate.
+  publishNotReadyAddresses: true
   selector:
     app: kafka
   ports:
@@ -234,6 +244,10 @@ spec:
                 - /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
             initialDelaySeconds: 20
             periodSeconds: 10
+            # kafka-topics.sh launches its own JVM to run one admin call, which routinely takes
+            # longer than the 1-second default timeout — a probe that can fail purely on its own
+            # startup cost isn't measuring broker health, it's measuring JVM spin-up variance.
+            timeoutSeconds: 10
             failureThreshold: 12
           resources:
             requests: { cpu: 200m, memory: 512Mi }

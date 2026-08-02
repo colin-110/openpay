@@ -24,7 +24,9 @@ Built:
 - the observability stack (phase 11): provisioned Grafana dashboards, business metrics, and
   container logs shipped to Loki
 - the containerised platform (phase 12), runnable with one command
-- Kubernetes manifests (phase 13) with probes, autoscaling, disruption budgets, and network policy
+- Kubernetes manifests (phase 13) with probes, autoscaling, disruption budgets, and network
+  policy — deployed and exercised end to end against a real cluster, not just validated as YAML;
+  see [platform/k8s/README.md § Verified against a real cluster](../platform/k8s/README.md#verified-against-a-real-cluster)
 - k6 load and resilience scenarios (phase 14) in `tests/performance/`
 - the CI/CD pipeline (phase 15): quality gates, container images, and a nightly acceptance run
 - diagrams and decision records (phase 16) in `docs/diagrams/` and `docs/adrs/`

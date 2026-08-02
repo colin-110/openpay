@@ -40,5 +40,5 @@ https://localhost:8445 {
 
 https://localhost:5443 {
 	tls internal
-	reverse_proxy dashboard:80
+	reverse_proxy dashboard:8080
 }
