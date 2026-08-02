@@ -43,6 +43,10 @@ x-service-defaults: &service-defaults
     SETTLEMENT_SERVICE_BASE_URL: http://settlement-service:8087
     NOTIFICATION_SERVICE_BASE_URL: http://notification-service:8088
     FRAUD_SERVICE_BASE_URL: http://fraud-service:8089
+    # Mailpit: catches outbound email locally instead of talking to a real SMTP provider. Viewable
+    # at http://localhost:8025.
+    SMTP_HOST: mailpit
+    SMTP_PORT: 1025
 
 x-healthcheck: &app-healthcheck
   interval: 10s
@@ -89,6 +93,7 @@ services:
       postgres-databases: {condition: service_completed_successfully}
       redis: {condition: service_started}
       merchant-service: {condition: service_healthy}
+      mailpit: {condition: service_healthy}
     healthcheck:
       <<: *app-healthcheck
       test: ["CMD-SHELL", "curl -fsS http://localhost:8081/actuator/health || exit 1"]
@@ -224,6 +229,7 @@ services:
       postgres-databases: {condition: service_completed_successfully}
       kafka: {condition: service_healthy}
       merchant-service: {condition: service_healthy}
+      mailpit: {condition: service_healthy}
     healthcheck:
       <<: *app-healthcheck
       test: ["CMD-SHELL", "curl -fsS http://localhost:8088/actuator/health || exit 1"]

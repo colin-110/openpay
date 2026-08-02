@@ -18,6 +18,7 @@
         <module>libs/common-kafka</module>
         <module>libs/common-outbox</module>
         <module>libs/common-audit</module>
+        <module>libs/common-email</module>
         <module>services/gateway-service</module>
         <module>services/auth-service</module>
         <module>services/merchant-service</module>

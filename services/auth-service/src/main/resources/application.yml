@@ -15,8 +15,19 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+  mail:
+    # Same property MailSenderAutoConfiguration itself reads — see common-email. Defaults to the
+    # local Mailpit container in compose; a real deployment points this at a real relay.
+    host: ${SMTP_HOST:localhost}
+    port: ${SMTP_PORT:1025}
+    properties:
+      mail.smtp.connectiontimeout: 2000
+      mail.smtp.timeout: 2000
+      mail.smtp.writetimeout: 2000
 
 openpay:
+  email:
+    from: ${OPENPAY_EMAIL_FROM:security@openpay.local}
   merchant:
     base-url: ${MERCHANT_SERVICE_BASE_URL:http://localhost:8082}
   jwt:

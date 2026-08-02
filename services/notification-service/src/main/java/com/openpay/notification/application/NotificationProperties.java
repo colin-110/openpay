@@ -33,6 +33,17 @@ public class NotificationProperties {
 
     private int batchSize = 50;
 
+    /** Where an abandoned delivery gets reported. Empty disables the alert. */
+    private String opsEmail = "";
+
+    public String getOpsEmail() {
+        return opsEmail;
+    }
+
+    public void setOpsEmail(String opsEmail) {
+        this.opsEmail = opsEmail;
+    }
+
     public String getMerchantBaseUrl() {
         return merchantBaseUrl;
     }

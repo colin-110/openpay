@@ -1,5 +1,7 @@
 package com.openpay.notification.application;
 
+import com.openpay.email.EmailNotifier;
+import com.openpay.notification.domain.DeliveryStatus;
 import com.openpay.notification.domain.WebhookDelivery;
 import com.openpay.notification.domain.WebhookDeliveryRepository;
 import com.openpay.notification.infrastructure.MerchantConfigClient;
@@ -46,14 +48,17 @@ public class WebhookDispatcher {
     private final NotificationProperties properties;
     private final BackoffPolicy backoffPolicy;
     private final RestClient restClient;
+    private final EmailNotifier emailNotifier;
 
     public WebhookDispatcher(
             WebhookDeliveryRepository deliveryRepository,
             MerchantConfigClient merchantConfigClient,
-            NotificationProperties properties) {
+            NotificationProperties properties,
+            EmailNotifier emailNotifier) {
         this.deliveryRepository = deliveryRepository;
         this.merchantConfigClient = merchantConfigClient;
         this.properties = properties;
+        this.emailNotifier = emailNotifier;
         this.backoffPolicy = new BackoffPolicy(properties.getInitialBackoff(), properties.getMaxBackoff());
 
         // Two things here are security, not plumbing.
@@ -156,5 +161,16 @@ public class WebhookDispatcher {
 
         log.warn("Delivery {} to merchant {} failed on attempt {}: {}",
                 delivery.getEventType(), delivery.getMerchantId(), delivery.getAttempts(), error);
+
+        if (delivery.getStatus() == DeliveryStatus.ABANDONED) {
+            // The row survives for inspection either way — this is what makes someone go look at
+            // it instead of it rotting until a merchant complains that a webhook never arrived.
+            emailNotifier.sendBestEffort(
+                    properties.getOpsEmail(),
+                    "Webhook delivery abandoned for merchant " + delivery.getMerchantId(),
+                    "Delivery of " + delivery.getEventType() + " (event " + delivery.getEventId()
+                            + ") to merchant " + delivery.getMerchantId() + " was abandoned after "
+                            + delivery.getAttempts() + " attempts. Last error: " + error);
+        }
     }
 }

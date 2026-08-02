@@ -17,6 +17,11 @@
     <dependencies>
         <dependency>
             <groupId>com.openpay</groupId>
+            <artifactId>common-email</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.openpay</groupId>
             <artifactId>common-observability</artifactId>
             <version>${project.version}</version>
         </dependency>
@@ -93,6 +98,11 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

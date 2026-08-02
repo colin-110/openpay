@@ -35,3 +35,10 @@ data:
 
   MOCK_BANK_A_URL: http://mock-bank-a:9001
   MOCK_BANK_B_URL: http://mock-bank-b:9002
+
+  # Mailpit — see 20-infrastructure.yaml. A real deployment points these at an actual SMTP relay.
+  SMTP_HOST: mailpit
+  SMTP_PORT: "1025"
+  # Where the "a merchant's webhook endpoint gave up" alert goes. Empty here on purpose: no
+  # address is right by default, and 11-secrets.example.yaml is where a real deployment sets one.
+  OPENPAY_OPS_EMAIL: ""

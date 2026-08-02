@@ -11,6 +11,7 @@ import com.openpay.auth.domain.UserRepository;
 import com.openpay.auth.infrastructure.MerchantServiceClient;
 import com.openpay.audit.AuditAction;
 import com.openpay.audit.AuditRecorder;
+import com.openpay.email.EmailNotifier;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -51,6 +52,7 @@ public class UserService {
     private final JwtIssuer jwtIssuer;
     private final ValidationAttemptLimiter attemptLimiter;
     private final AuditRecorder auditRecorder;
+    private final EmailNotifier emailNotifier;
     private final int maxFailedLogins;
     private final int maxFailedLoginsPerSource;
     private final Duration failedLoginWindow;
@@ -66,6 +68,7 @@ public class UserService {
             JwtIssuer jwtIssuer,
             ValidationAttemptLimiter attemptLimiter,
             AuditRecorder auditRecorder,
+            EmailNotifier emailNotifier,
             @Value("${openpay.auth.max-failed-logins:10}") int maxFailedLogins,
             @Value("${openpay.auth.max-failed-logins-per-source:50}") int maxFailedLoginsPerSource,
             @Value("${openpay.auth.failed-login-window:PT15M}") Duration failedLoginWindow,
@@ -77,6 +80,7 @@ public class UserService {
         this.jwtIssuer = jwtIssuer;
         this.attemptLimiter = attemptLimiter;
         this.auditRecorder = auditRecorder;
+        this.emailNotifier = emailNotifier;
         this.maxFailedLogins = maxFailedLogins;
         this.maxFailedLoginsPerSource = maxFailedLoginsPerSource;
         this.failedLoginWindow = failedLoginWindow;
@@ -201,6 +205,18 @@ public class UserService {
             auditRecorder.recordFailure(AuditAction.REFRESH_TOKEN_REUSE_DETECTED,
                     stored.getUserId().toString(), null, null,
                     "A rotated-away refresh token was presented again; all sessions revoked");
+            // Told, not just logged: the account holder is the one person who can say whether this
+            // was really them. A lookup here, not a field carried on RefreshToken, because the
+            // email can change after the token was issued and the alert should go to the current
+            // address.
+            userRepository.findById(stored.getUserId()).ifPresent(user -> emailNotifier.sendBestEffort(
+                    user.getEmail(),
+                    "Security alert: you were signed out everywhere",
+                    "We detected a sign-in token being used a second time after it had already been "
+                            + "renewed once — a sign it may have been copied. As a precaution, every "
+                            + "session on your account was ended and you will need to sign in again "
+                            + "wherever you are using OpenPay. If this was not expected, we recommend "
+                            + "changing your password."));
             throw new InvalidRefreshTokenException();
         }
         if (!stored.isUsable()) {

@@ -35,6 +35,10 @@ Built:
 - rotating refresh tokens with theft detection and silent dashboard renewal, replacing the
   hour-long stateless-only session — see
   [SECURITY-AUDIT.md § Refresh tokens](SECURITY-AUDIT.md#refresh-tokens--a-revocable-session-behind-a-stateless-access-token)
+- email notifications (`libs/common-email`): a security alert to the account holder on
+  refresh-token theft, and an ops alert when a webhook delivery is abandoned, sent async and never
+  on the request thread, against Mailpit locally rather than a real provider — see
+  [README, Email notifications](../README.md#email-notifications)
 
 Deliberately not built:
 

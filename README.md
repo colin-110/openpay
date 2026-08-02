@@ -393,6 +393,28 @@ curl -X POST http://localhost:8081/api/v1/auth/logout -H "Content-Type: applicat
 Full reasoning and the theft-detection design is in
 [SECURITY-AUDIT.md § Refresh tokens](docs/SECURITY-AUDIT.md#refresh-tokens--a-revocable-session-behind-a-stateless-access-token).
 
+## Email notifications
+
+Two events send an email; nothing else does. Both are cases where a webhook or a log line is not
+enough, because the person who needs to know is not the one watching the platform:
+
+- **Refresh-token reuse** (auth-service): the account holder gets a plain-language security alert
+  when their sessions are revoked for suspected theft — see
+  [Sessions and refresh tokens](#sessions-and-refresh-tokens) above. They are the only person who
+  can say whether it was really them.
+- **A webhook delivery is abandoned** (notification-service): an operator address
+  (`OPENPAY_OPS_EMAIL`, unset — and so silent — by default) is told when a merchant's endpoint has
+  failed enough times that delivery gives up. The row survives either way (`DeliveryStatus.ABANDONED`,
+  queryable at `/internal/webhooks/deliveries`); what the email adds is someone actually finding out
+  without going looking.
+
+Neither call blocks the request it fires from — sending is `@Async` on its own small thread pool,
+and a send that fails is logged and swallowed, the same "never break the thing it's reporting on"
+rule `AuditRecorder` already follows for the audit trail. There is no real SMTP provider wired in:
+locally and in Docker Compose, mail goes to [Mailpit](https://github.com/axllent/mailpit) —
+`http://localhost:8025` shows every email actually sent, the same role mock-bank-a and mock-bank-b
+play for acquirers. Point `SMTP_HOST`/`SMTP_PORT` at a real relay to send for real.
+
 ## Payment Methods
 
 A payment can say how it is being paid:
@@ -1114,6 +1136,9 @@ Delivered:
   ingress that publishes three hosts and hides every operator surface
 - k6 load and resilience scenarios, including one that disables an acquirer mid-run and asserts
   that acceptance does not move
+- email notifications: a security alert to the account holder when refresh-token theft is
+  detected, and an ops alert when a merchant's webhook delivery is abandoned — both against a real
+  SMTP send, caught locally by Mailpit rather than a real provider
 
 Every roadmap phase is implemented. What remains open is deliberate scope rather than unfinished
 work — see [docs/roadmap.md](docs/roadmap.md):
@@ -1121,7 +1146,6 @@ work — see [docs/roadmap.md](docs/roadmap.md):
 - **no payout rail.** Settlement batches what a merchant is owed and clears the payable in the
   ledger, and then nothing sends money anywhere. Both acquirers are simulated, so no funds ever
   leave a database.
-- **no email notification.** Merchant delivery is HTTP webhooks only.
 - **no distributed tracing.** Correlation IDs and Loki instead, which answers *what happened* well
   and *where the time went* only coarsely — see
   [ADR-0010](docs/adrs/0010-correlation-id-not-tracing.md).

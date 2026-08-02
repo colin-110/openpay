@@ -22,8 +22,19 @@ spring:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
       acks: all
+  mail:
+    # Same property MailSenderAutoConfiguration itself reads — see common-email. Defaults to the
+    # local Mailpit container in compose; a real deployment points this at a real relay.
+    host: ${SMTP_HOST:localhost}
+    port: ${SMTP_PORT:1025}
+    properties:
+      mail.smtp.connectiontimeout: 2000
+      mail.smtp.timeout: 2000
+      mail.smtp.writetimeout: 2000
 
 openpay:
+  email:
+    from: ${OPENPAY_EMAIL_FROM:ops@openpay.local}
   dlq:
     # The replay tool, on this service because these are the topics it consumes and therefore the
     # dead letters it produces. The list is an allowlist: replay publishes to a topic derived from
@@ -49,6 +60,10 @@ openpay:
     read-timeout: 5s
     batch-size: 50
     poll-interval-ms: 1000
+    # Where the "a merchant's endpoint gave up" alert goes. Empty by default — an address nobody
+    # configured would just mean every abandoned delivery quietly fails to notify anyone twice
+    # over, so this stays off rather than emailing a dead address until it is set.
+    ops-email: ${OPENPAY_OPS_EMAIL:}
   security:
     # A merchant sees its own delivery history, scoped by its credential. The cross-merchant view
     # is operator-only and sits on /internal, where a query parameter cannot widen the scope.

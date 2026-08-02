@@ -43,11 +43,28 @@ base JRE image's build tooling, not the running application. Full table in
 Kubernetes manifests assumed a container that did not exist. It has one now (two-stage, `node:22`
 building into `nginx:1.27-alpine`), wired into both.
 
+### Email notifications
+
+A new shared library, `libs/common-email`, and two emails sent through it — the only two the
+platform sends:
+
+- auth-service tells the account holder when their sessions were revoked for suspected
+  refresh-token theft. They are the only one who can say whether it was really them.
+- notification-service tells an operator (`OPENPAY_OPS_EMAIL`, unset by default) when a webhook
+  delivery is abandoned — a real gap this closes: that row has always survived for inspection, but
+  until now nothing pointed anyone at it.
+
+Both sends are `@Async`, on a small dedicated pool, and a failed send is logged and swallowed —
+the same "never break the thing it's reporting on" rule `AuditRecorder` already follows. No real
+SMTP provider is wired in: locally and in compose, mail goes to a Mailpit container
+(`http://localhost:8025` shows what was actually sent), the same role mock-bank-a and mock-bank-b
+play for acquirers. Full writeup in
+[README § Email notifications](../README.md#email-notifications).
+
 ### Still not built
 
 - A payout rail. Settlement batches what a merchant is owed and clears the payable in the ledger,
   and then nothing sends money anywhere.
-- Email notification. Delivery is HTTP webhooks only.
 - Real acquirers. Both are simulated, so nothing ever leaves a database.
 
 ## 0.2.0 — the remaining phases

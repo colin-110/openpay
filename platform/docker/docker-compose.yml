@@ -75,6 +75,21 @@ services:
       retries: 20
       start_period: 20s
 
+  # Catches every email the platform sends without a real mail provider or credentials, and shows
+  # them at http://localhost:8025. No inbox is real, nothing leaves the machine — the same reason
+  # payments run against mock-bank-service rather than a real acquirer.
+  mailpit:
+    image: axllent/mailpit:v1.22
+    container_name: openpay-mailpit
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8025/api/v1/info"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
   prometheus:
     image: prom/prometheus:v3.5.0
     container_name: openpay-prometheus

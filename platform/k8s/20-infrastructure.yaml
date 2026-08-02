@@ -246,3 +246,55 @@ spec:
         resources:
           requests:
             storage: 10Gi
+
+---
+# Catches every email the platform sends instead of talking to a real provider — the same reason
+# mock-bank-a and mock-bank-b stand in for real acquirers. No inbox here is real and nothing leaves
+# the cluster; a real deployment points SMTP_HOST at an actual relay instead of this Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mailpit
+  namespace: openpay
+spec:
+  selector:
+    app: mailpit
+  ports:
+    - name: smtp
+      port: 1025
+      targetPort: 1025
+    - name: http
+      port: 8025
+      targetPort: 8025
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mailpit
+  namespace: openpay
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mailpit
+  template:
+    metadata:
+      labels:
+        app: mailpit
+    spec:
+      containers:
+        - name: mailpit
+          image: axllent/mailpit:v1.22
+          ports:
+            - containerPort: 1025
+            - containerPort: 8025
+          readinessProbe:
+            httpGet: { path: /api/v1/info, port: 8025 }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { memory: 128Mi }
+      # No volume: losing this pod loses whatever was sitting in the fake inbox, which is the
+      # correct trade for something that exists to be looked at during a demo, not relied on.
