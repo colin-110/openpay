@@ -1,7 +1,56 @@
 # OpenPay
 
-OpenPay is a payment gateway portfolio project built to demonstrate realistic backend
-architecture, distributed systems patterns, and production engineering practices.
+A payment gateway, built the way a real one has to work: eleven services, one Kafka event
+backbone, a double-entry ledger a database trigger enforces, and money handled as integer minor
+units end to end. Every payment goes through idempotency, risk screening, provider failover, and a
+transactional outbox — not because a demo needs it, but because a system that moves money doesn't
+get to skip any of them.
+
+This is a portfolio project, not a production system, and it says so throughout — every
+architectural trade-off is written down with the alternative it gave up and why, every known
+limitation is stated rather than hidden (see [Status](#status)), and every claim in this README has
+been exercised against the running system, not just written down: the load numbers in
+[tests/performance/baseline.md](tests/performance/baseline.md) are from a real k6 run, and the
+Kubernetes deployment was walked through an actual login and an actual payment on a real cluster,
+not validated as YAML.
+
+**Start here:**
+
+- [Getting Started](#getting-started) — one command, the whole platform
+- [Architecture](docs/ARCHITECTURE.md) — what every component is, and what breaks when one dies
+- [Status](#status) — what's built, and what's deliberately not
+
+<details>
+<summary><strong>Table of contents</strong></summary>
+
+- [Services](#services)
+- [Credentials](#credentials)
+- [Getting Started](#getting-started)
+- [API Walkthrough](#api-walkthrough)
+- [Merchant Dashboard](#merchant-dashboard)
+- [Sessions and refresh tokens](#sessions-and-refresh-tokens)
+- [Email notifications](#email-notifications)
+- [Payment Methods](#payment-methods)
+- [Acquirer Attempts](#acquirer-attempts)
+- [Endpoints](#endpoints)
+- [Idempotency](#idempotency)
+- [How a Payment Actually Flows](#how-a-payment-actually-flows)
+- [Payment State Machine](#payment-state-machine)
+- [The Ledger](#the-ledger)
+- [Refunds](#refunds)
+- [Observability](#observability)
+- [The Audit Trail](#the-audit-trail)
+- [Routing Rules](#routing-rules)
+- [Risk Screening](#risk-screening)
+- [Settlement](#settlement)
+- [Merchant Webhooks](#merchant-webhooks)
+- [Event Delivery](#event-delivery)
+- [Testing](#testing)
+- [Repository Layout](#repository-layout)
+- [Status](#status)
+- [Documentation](#documentation)
+
+</details>
 
 ## Services
 
@@ -297,11 +346,12 @@ A React SPA in `web/dashboard`. It is a client of the same public API a merchant
 against — no private endpoints and no database of its own — so anything the dashboard can do, a
 merchant can do over HTTP.
 
-Three sections:
+Five sections:
 
 - **Overview** — captured volume, success rate, refunded value, and how many payments are still
   with an acquirer, over the most recent window of traffic. Figures state the window they cover
-  rather than implying they cover everything.
+  rather than implying they cover everything, and are summed **per currency, then joined** rather
+  than added together as raw integers — a merchant is not guaranteed to transact in only one.
 - **Payments** — the full list, with the method each customer used, filtered by status on the server
   and paged on the server. Searching takes a whole payment ID, because an ID is a UUID and a
   substring search is not something the API can honestly answer.
@@ -315,7 +365,10 @@ Three sections:
 Selecting a payment opens a detail drawer: summary, the acquirer attempts behind it, an activity
 timeline built from the timestamps the API actually returns, the refunds against it, and the refund
 action itself. The open payment is part of the URL (`#/payments/<id>`), so a link to one payment is
-a link somebody can send.
+a link somebody can send, and the drawer remounts on that ID rather than reusing state across two
+different payments — the one thing in this dashboard that moves money does not get to run on a
+stale fetch. Issuing a refund is itself two steps: type an amount, then confirm the exact figure
+before it sends, the same pattern any real payments console gates a money-movement action behind.
 
 The attempts section is fetched separately from the payment, so a router outage costs that panel
 one section instead of the whole drawer — and it says the attempts could not be read rather than
