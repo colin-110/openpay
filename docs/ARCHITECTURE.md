@@ -5,6 +5,8 @@ What every component is, what happens on each request, and what breaks when a pi
 - [1. The shape of the system](#1-the-shape-of-the-system)
 - [2. Trust boundaries](#2-trust-boundaries)
 - [3. What happens when you…](#3-what-happens-when-you)
+  - [3.6.1 Refresh and theft detection](#361-refresh-and-theft-detection)
+  - [3.9 …email notifications](#39-email-notifications)
 - [4. The building blocks](#4-the-building-blocks)
 - [5. Failure modes](#5-failure-modes)
 - [6. Data model](#6-data-model)
@@ -76,7 +78,14 @@ Read that diagram as three layers. **Synchronous, merchant-facing**: everything 
 gateway, which answers in milliseconds. **Asynchronous, event-driven**: everything through Kafka,
 which is how a payment gets from `CREATED` to `CAPTURED` without the merchant doing anything.
 **Outbound**: the two places the platform talks to the outside world — the router calling acquirers
-and notification-service calling merchants.
+and notification-service calling merchants, plus a third if you count email (3.9) — through Mailpit
+locally, a real relay in a real deployment.
+
+Not shown above: TLS terminates at the edge (Caddy in Compose, the Kubernetes Ingress in
+`platform/k8s`), in front of the gateway, auth-service's login/refresh/logout paths, webhook-service,
+and the dashboard. Traffic between services inside the cluster is plain HTTP — a deliberate,
+documented boundary, not an oversight; see
+[SECURITY-AUDIT.md, finding 12](SECURITY-AUDIT.md#12-no-tls-anywhere--info).
 
 ---
 
@@ -299,11 +308,38 @@ gateway's merchant paths demand a credential the user does not have yet.
 2. **If no user exists, BCrypt is still run against a dummy hash.** Without that, a missing account
    returns faster than a wrong password, and the endpoint becomes a way to enumerate who has one.
 3. Failures are counted per email by `ValidationAttemptLimiter`.
-4. On success: an HS256 JWT carrying `sub`, `merchantId`, `email`, `role`, 1 h expiry.
+4. On success: an HS256 JWT carrying `sub`, `merchantId`, `email`, `role`, 15 min expiry — **and a
+   refresh token** alongside it, a separate 30-day credential the dashboard uses to renew the
+   session silently in the background. See [3.6.1](#361-refresh-and-theft-detection).
 
 Every service that accepts sessions holds the same secret and verifies **locally** — no call back to
 auth-service per request. The cost is that a disabled user stays valid until expiry; the expiry is
-short to bound it.
+short (15 minutes, not the hour it used to be) precisely because the refresh token below makes a
+short one free: the dashboard renews before it lapses, so nobody is ever staring at a login screen
+because a token expired mid-session.
+
+#### 3.6.1 Refresh and theft detection
+
+The refresh token is opaque and random (32 bytes), hashed the same way an API key secret is —
+SHA-256, never stored in the plain — and single-use: `POST /api/v1/auth/refresh` trades it for a
+new access token *and* a new refresh token, marking the one presented as spent.
+
+That single-use property is what makes replay detectable. A refresh token is either used once by
+its rightful owner, or — if presented a second time after already being rotated away — that is the
+signature of a copy existing somewhere it shouldn't. `UserService.refresh` treats that case as
+theft, not as a race: it revokes every active session the user has (not just the one replayed) and
+emails the account holder a security alert (see [3.9](#39-email-notifications)), on the theory that
+whoever has the stolen token might be holding more than one session's worth of access.
+
+The revocation itself runs in its own transaction (`SessionRevoker`, `REQUIRES_NEW`), not as a
+method on `UserService` — a same-class call would go through Spring's proxy only in theory, and in
+practice bypasses it, meaning the revocation would share the caller's transaction and get undone by
+the very rollback the theft-detection exception triggers next. Found by testing the actual
+replay-then-check-the-other-session scenario, not by reading the code.
+
+`POST /api/v1/auth/logout` revokes one named token and is idempotent — logging out a token that is
+already gone is success, not an error, since the caller's goal ("this token no longer works") is
+already true either way.
 
 ### 3.7 …settle
 
@@ -320,6 +356,25 @@ must stay exactly zero.
 notification-service consumes `payment.status-updated.v1` and `refund.succeeded.v1`, fetches the
 merchant's URL and signing secret, signs the payload with HMAC-SHA256, and POSTs. Failures retry
 with exponential backoff (5 s → 6 h, 8 attempts), and every attempt is recorded in the delivery log.
+
+### 3.9 …email notifications
+
+Two events send an email, and nothing else does — both cases where a webhook or a log line reaches
+the wrong audience, because the person who needs to know isn't watching the platform:
+
+- **Refresh-token reuse** (auth-service → the account holder). Covered in
+  [3.6.1](#361-refresh-and-theft-detection).
+- **A webhook delivery is abandoned** (notification-service → an operator address,
+  `OPENPAY_OPS_EMAIL`, unset and therefore silent by default). The delivery row already survives
+  for inspection at `/internal/webhooks/deliveries` either way; the email is what makes someone
+  actually go look at it instead of it waiting for a merchant to complain.
+
+Both go through `libs/common-email`: sent `@Async` on a small dedicated pool, so a slow SMTP relay
+never adds latency to a login or a dispatch cycle, and a failed send is logged and swallowed rather
+than propagated — the same "never break the thing it's reporting on" rule the audit trail
+(4.8) already follows. Locally and in Docker Compose, mail lands in a Mailpit container
+(`http://localhost:8025`) rather than a real provider, the same role mock-bank-a and mock-bank-b
+play for acquirers.
 
 ---
 
@@ -491,7 +546,9 @@ event-driven consumer delays work; it does not lose it.
 Each service, its tables, and the constraint that matters most.
 
 **auth-service** — `api_keys` (prefix + SHA-256 hash; plaintext returned exactly once and never
-stored), `users` (BCrypt hash, email lowercased and unique), `audit_logs`.
+stored), `users` (BCrypt hash, email lowercased and unique), `refresh_tokens` (SHA-256 hash, a
+self-referencing `replaced_by` that is how a rotated-away token is told apart from one that simply
+expired), `audit_logs`.
 
 **merchant-service** — `merchants` (unique `merchant_code`, webhook URL and signing secret),
 `audit_logs`. Two audit tables rather than one shared: a central audit database would make every
