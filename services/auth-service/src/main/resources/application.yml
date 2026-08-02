@@ -15,6 +15,14 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+      # Lettuce's own default is 60 seconds — found by actually pausing Redis and watching the
+      # attempt limiter hang for a full minute per call before its already-correct fail-open
+      # catch block ever ran. ValidationAttemptLimiter catching DataAccessException was never
+      # the gap; a caller waiting a minute for that catch block to fire is functionally an
+      # outage regardless of what happens after it. Short enough that fail-open reads as
+      # instant, long enough not to trip on ordinary jitter to a colocated container.
+      timeout: 250ms
+      connect-timeout: 250ms
   mail:
     # Same property MailSenderAutoConfiguration itself reads — see common-email. Defaults to the
     # local Mailpit container in compose; a real deployment points this at a real relay.

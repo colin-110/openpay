@@ -5,6 +5,12 @@ spring:
     redis:
       host: ${REDIS_HOST:localhost}
       port: ${REDIS_PORT:6379}
+      # See auth-service's application.yml for why this is set explicitly: Lettuce's own default
+      # is 60 seconds, which turns "the rate limiter fails open" into "the rate limiter hangs for
+      # a minute and then fails open" — found by pausing the Redis container and watching it
+      # happen, not by reading the code.
+      timeout: 250ms
+      connect-timeout: 250ms
 
 openpay:
   rate-limit:
