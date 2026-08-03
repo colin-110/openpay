@@ -85,7 +85,16 @@ public class SecurityAutoConfiguration {
                 .baseUrl(properties.getAuthBaseUrl())
                 .requestFactory(requestFactory)
                 .build();
-        return new HttpAuthServiceClient(restClient);
+        AuthServiceClient client = new HttpAuthServiceClient(restClient);
+
+        // Wrapped rather than built into the HTTP client, so "how do we ask auth-service" and "how
+        // long do we trust the answer" stay separable — and so a TTL of zero gives back exactly the
+        // uncached client, with no caching code on the path at all.
+        Duration cacheTtl = properties.getApiKeyCacheTtl();
+        if (cacheTtl == null || cacheTtl.isZero() || cacheTtl.isNegative()) {
+            return client;
+        }
+        return new CachingAuthServiceClient(client, cacheTtl);
     }
 
     /**

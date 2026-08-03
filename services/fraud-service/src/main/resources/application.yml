@@ -5,6 +5,21 @@ spring:
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:openpay_fraud}
     username: ${DB_USERNAME:openpay}
     password: ${DB_PASSWORD:openpay}
+    hikari:
+      # Sized per service rather than left on HikariCP's default of 10. Nine services share
+      # one PostgreSQL, so these ceilings are chosen against its max_connections (200, set in
+      # docker-compose.yml) with room for every pool to burst at once.
+      maximum-pool-size: 20
+      # The important one. HikariCP opens minimum-idle connections eagerly and defaults it to
+      # maximum-pool-size, which is why this stack sat at 96 of 100 connections while doing
+      # nothing at all. Two per service at rest, growing on demand.
+      minimum-idle: 2
+      # Return a connection to the pool rather than holding it open forever, so a service that
+      # goes quiet gives its connections back to the ones that are busy.
+      idle-timeout: 60000
+      max-lifetime: 900000
+      # Fail fast instead of queueing behind an exhausted pool for the default 30 seconds.
+      connection-timeout: 5000
   jpa:
     open-in-view: false
     hibernate:

@@ -34,6 +34,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @Service
 public class PaymentService {
@@ -47,6 +48,7 @@ public class PaymentService {
     private final ObjectMapper objectMapper;
     private final FraudScreeningClient fraudScreeningClient;
     private final PaymentMetrics metrics;
+    private final TransactionTemplate transactionTemplate;
 
     public PaymentService(
             PaymentRepository paymentRepository,
@@ -54,16 +56,41 @@ public class PaymentService {
             OutboxWriter outboxWriter,
             ObjectMapper objectMapper,
             FraudScreeningClient fraudScreeningClient,
-            PaymentMetrics metrics) {
+            PaymentMetrics metrics,
+            TransactionTemplate transactionTemplate) {
         this.paymentRepository = paymentRepository;
         this.paymentEventRepository = paymentEventRepository;
         this.outboxWriter = outboxWriter;
         this.objectMapper = objectMapper;
         this.fraudScreeningClient = fraudScreeningClient;
         this.metrics = metrics;
+        this.transactionTemplate = transactionTemplate;
     }
 
-    @Transactional
+    /**
+     * Deliberately <strong>not</strong> {@code @Transactional}.
+     *
+     * <p>Screening is a synchronous HTTP call to fraud-service. When this method held the
+     * transaction, a pooled database connection was acquired before that call and sat idle for its
+     * entire duration — a network round-trip's worth of a resource there are only twenty-five of.
+     * By Little's Law that hold time is a direct divisor of write throughput, so paying for the
+     * screening latency twice (once in the response, once in connection occupancy) capped the
+     * whole service well below what the database could actually take.
+     *
+     * <p>Nothing about correctness changes. The idempotency replay check is a read, the screening
+     * call is external, and the payment row and its outbox row are still written inside one
+     * transaction — which is the invariant that actually matters. Two concurrent creations with
+     * the same key are still settled by the unique index, exactly as before; that path was always
+     * the real guard, because two requests could interleave between the SELECT and the INSERT even
+     * when they shared a transaction.
+     *
+     * <p>The write uses {@link TransactionTemplate} rather than a second {@code @Transactional}
+     * method on this class, and that is not a style preference. Spring's transaction support is
+     * proxy-based: a call from one method of a bean to another goes straight to the target object
+     * and never passes through the proxy, so the annotation would be silently ignored and the
+     * payment would commit without its outbox row. Programmatic demarcation has no such trap —
+     * the transaction is where the code says it is.
+     */
     public PaymentResult createPayment(UUID merchantId, String idempotencyKey, CreatePaymentRequest request) {
         log.info("Processing create payment for merchantId={} idempotencyKey={}", merchantId, idempotencyKey);
         String fingerprint = fingerprint(request);
@@ -95,42 +122,58 @@ public class PaymentService {
             throw new PaymentBlockedException(screening.ruleName());
         }
 
-        try {
-            Payment payment = paymentRepository.saveAndFlush(new Payment(
-                    paymentId,
-                    merchantId,
-                    idempotencyKey,
-                    fingerprint,
-                    request.amount(),
-                    request.currency(),
-                    method,
-                    screening.status()));
+        // The part that actually needs a transaction: the payment row and its outbox row,
+        // committed together or not at all. Returns null when a concurrent request won the unique
+        // constraint, because that transaction is already doomed and the winner has to be read
+        // from a fresh one.
+        PaymentResult result = transactionTemplate.execute(status -> {
+            try {
+                Payment payment = paymentRepository.saveAndFlush(new Payment(
+                        paymentId,
+                        merchantId,
+                        idempotencyKey,
+                        fingerprint,
+                        request.amount(),
+                        request.currency(),
+                        method,
+                        screening.status()));
 
-            recordEvent(payment, "PAYMENT_CREATED");
+                recordEvent(payment, "PAYMENT_CREATED");
 
-            if (payment.isHeld()) {
-                // Deliberately no PAYMENT_CREATED event. Publishing it is what starts routing, and
-                // a payment held for review must not reach an acquirer. The release path is
-                // FraudDecisionListener, driven by fraud.check-completed.v1.
-                log.info("Holding payment id={} for review on rule '{}'", paymentId, screening.ruleName());
-            } else {
-                // Same transaction as the payment row: the event cannot escape without the payment,
-                // and the payment cannot commit without the event.
-                outboxWriter.append(AGGREGATE_TYPE, OpenPayTopics.PAYMENT_CREATED, payment.getId(), new PaymentCreated(
-                        payment.getId(), payment.getMerchantId(), payment.getAmount(), payment.getCurrency()));
-                log.info("Created payment id={} merchantId={}", payment.getId(), merchantId);
+                if (payment.isHeld()) {
+                    // Deliberately no PAYMENT_CREATED event. Publishing it is what starts routing,
+                    // and a payment held for review must not reach an acquirer. The release path is
+                    // FraudDecisionListener, driven by fraud.check-completed.v1.
+                    log.info("Holding payment id={} for review on rule '{}'", paymentId, screening.ruleName());
+                } else {
+                    // Same transaction as the payment row: the event cannot escape without the
+                    // payment, and the payment cannot commit without the event.
+                    outboxWriter.append(AGGREGATE_TYPE, OpenPayTopics.PAYMENT_CREATED, payment.getId(),
+                            new PaymentCreated(payment.getId(), payment.getMerchantId(),
+                                    payment.getAmount(), payment.getCurrency()));
+                    log.info("Created payment id={} merchantId={}", payment.getId(), merchantId);
+                }
+
+                metrics.paymentCreated(payment.getCurrency(), payment.getFraudStatus());
+                return new PaymentResult(toResponse(payment), true);
+            } catch (DataIntegrityViolationException exception) {
+                // A concurrent request won the unique constraint on (merchant_id, idempotency_key).
+                // The insert is already marked rollback-only by the time this is caught, so the
+                // winner has to be read after this transaction ends rather than inside it.
+                log.info("Concurrent request for idempotencyKey={}, returning the winning payment",
+                        idempotencyKey);
+                status.setRollbackOnly();
+                return null;
             }
+        });
 
-            metrics.paymentCreated(payment.getCurrency(), payment.getFraudStatus());
-            return new PaymentResult(toResponse(payment), true);
-        } catch (DataIntegrityViolationException exception) {
-            // A concurrent request won the unique constraint on (merchant_id, idempotency_key).
-            log.info("Concurrent request for idempotencyKey={}, returning the winning payment", idempotencyKey);
-            Payment winner = paymentRepository.findByMerchantIdAndIdempotencyKey(merchantId, idempotencyKey)
-                    .orElseThrow(() -> new IllegalStateException(
-                            "Unique constraint fired but no payment found for key " + idempotencyKey));
-            return new PaymentResult(replay(winner, idempotencyKey, fingerprint), false);
+        if (result != null) {
+            return result;
         }
+        Payment winner = paymentRepository.findByMerchantIdAndIdempotencyKey(merchantId, idempotencyKey)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Unique constraint fired but no payment found for key " + idempotencyKey));
+        return new PaymentResult(replay(winner, idempotencyKey, fingerprint), false);
     }
 
     @Transactional(readOnly = true)

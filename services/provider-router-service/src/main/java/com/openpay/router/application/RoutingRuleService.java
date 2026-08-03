@@ -68,8 +68,7 @@ public class RoutingRuleService {
      */
     @Transactional(readOnly = true)
     public Optional<String> baseUrlFor(String providerName) {
-        return ruleRepository.findAllByOrderByPriorityAsc().stream()
-                .filter(rule -> rule.getProviderName().equals(providerName))
+        return ruleRepository.findByProviderNameOrderByPriorityAsc(providerName).stream()
                 .map(RoutingRule::getBaseUrl)
                 .findFirst();
     }

@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -32,6 +34,9 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.transaction.support.SimpleTransactionStatus;
+import org.springframework.transaction.support.TransactionCallback;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @ExtendWith(MockitoExtension.class)
 class PaymentServiceTest {
@@ -57,9 +62,21 @@ class PaymentServiceTest {
     void setUp() {
         ObjectMapper objectMapper = new ObjectMapper();
         objectMapper.findAndRegisterModules();
+        // Runs the callback inline on the calling thread. These are unit tests with mocked
+        // repositories, so there is no real transaction to demarcate — what matters is that the
+        // code inside the template still executes, and that setRollbackOnly() on the
+        // concurrent-duplicate path is observable rather than throwing.
+        // lenient: the tests that refuse a payment before it is ever written — a BLOCKED screening,
+        // an idempotent replay — never reach the transaction at all, and strict stubbing would
+        // rightly call this unused there.
+        TransactionTemplate transactionTemplate = mock(TransactionTemplate.class);
+        lenient().when(transactionTemplate.execute(any())).thenAnswer(invocation ->
+                invocation.getArgument(0, TransactionCallback.class)
+                        .doInTransaction(new SimpleTransactionStatus()));
+
         paymentService = new PaymentService(
                 paymentRepository, paymentEventRepository, outboxWriter, objectMapper, fraudScreeningClient,
-                new PaymentMetrics(new SimpleMeterRegistry()));
+                new PaymentMetrics(new SimpleMeterRegistry()), transactionTemplate);
     }
 
     @Test

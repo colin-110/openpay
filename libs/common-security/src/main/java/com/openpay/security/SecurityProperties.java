@@ -61,6 +61,15 @@ public class SecurityProperties {
 
     private Duration readTimeout = Duration.ofSeconds(3);
 
+    /**
+     * How long a <em>successful</em> API key validation is remembered before auth-service is asked
+     * again. This is a revocation window: for up to this long, a key that has just been revoked
+     * still works. Five seconds buys back a network round-trip on every single authenticated
+     * request while keeping that window shorter than a human can act in. Set to zero to disable
+     * caching and call auth-service every time.
+     */
+    private Duration apiKeyCacheTtl = Duration.ofSeconds(5);
+
     public String getAuthBaseUrl() {
         return authBaseUrl;
     }
@@ -151,6 +160,14 @@ public class SecurityProperties {
 
     public Duration getReadTimeout() {
         return readTimeout;
+    }
+
+    public Duration getApiKeyCacheTtl() {
+        return apiKeyCacheTtl;
+    }
+
+    public void setApiKeyCacheTtl(Duration apiKeyCacheTtl) {
+        this.apiKeyCacheTtl = apiKeyCacheTtl;
     }
 
     public void setReadTimeout(Duration readTimeout) {

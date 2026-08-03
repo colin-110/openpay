@@ -2,6 +2,18 @@ services:
   postgres:
     image: postgres:15-alpine
     container_name: openpay-postgres
+    # shared_buffers plus per-connection work_mem across up to 200 connections.
+    mem_limit: 512m
+    # Nine services share this one instance, each with its own database but all drawing from the
+    # same global connection limit. At PostgreSQL's default max_connections=100 and HikariCP's
+    # default pool of 10 opened eagerly, the stack idled at 96 of 100 connections — four away from
+    # "FATAL: sorry, too many clients already", and with no room for a service to restart and
+    # rebuild its pool while the others still hold theirs. 200 leaves headroom for the pools
+    # configured in each service's application.yml to burst under load.
+    command:
+      - postgres
+      - -c
+      - max_connections=200
     environment:
       POSTGRES_USER: openpay
       POSTGRES_PASSWORD: openpay
@@ -40,6 +52,8 @@ services:
     restart: "no"
 
   redis:
+    # Small keyspace: rate-limit counters and login-throttle buckets, all short-lived.
+    mem_limit: 128m
     image: redis:8-alpine
     container_name: openpay-redis
     ports:
@@ -48,6 +62,8 @@ services:
       - redis-data:/data
 
   kafka:
+    # The heaviest infrastructure JVM here; below this it struggles under the webhook spike.
+    mem_limit: 1g
     image: apache/kafka:4.0.0
     container_name: openpay-kafka
     ports:
@@ -79,6 +95,8 @@ services:
   # them at http://localhost:8025. No inbox is real, nothing leaves the machine — the same reason
   # payments run against mock-bank-service rather than a real acquirer.
   mailpit:
+    # Holds captured mail in memory for local inspection only.
+    mem_limit: 64m
     image: axllent/mailpit:v1.22
     container_name: openpay-mailpit
     ports:
@@ -91,6 +109,8 @@ services:
       retries: 10
 
   prometheus:
+    # Scrapes twelve targets at a short interval; the TSDB is the memory here.
+    mem_limit: 384m
     image: prom/prometheus:v3.5.0
     container_name: openpay-prometheus
     ports:
@@ -99,6 +119,8 @@ services:
       - ../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
   grafana:
+    # Renders dashboards, stores nothing itself.
+    mem_limit: 192m
     image: grafana/grafana:12.1.1
     container_name: openpay-grafana
     ports:
@@ -121,6 +143,8 @@ services:
       - loki
 
   loki:
+    # Log ingestion, retention kept short in this deployment.
+    mem_limit: 256m
     image: grafana/loki:3.5.3
     container_name: openpay-loki
     ports:
@@ -133,6 +157,8 @@ services:
   # Ships container logs to Loki. Docker service discovery rather than the Loki logging driver,
   # which would have to be installed as a plugin on every machine before anything worked.
   promtail:
+    # Tails container logs and forwards; almost stateless.
+    mem_limit: 96m
     image: grafana/promtail:3.5.3
     container_name: openpay-promtail
     command: -config.file=/etc/promtail/promtail.yml

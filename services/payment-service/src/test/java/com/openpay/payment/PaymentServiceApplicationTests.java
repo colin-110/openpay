@@ -9,6 +9,7 @@ import com.openpay.outbox.OutboxWriter;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.transaction.support.TransactionTemplate;
 
 @SpringBootTest(properties = {
         "openpay.outbox.enabled=false",
@@ -33,6 +34,15 @@ class PaymentServiceApplicationTests {
 
     @MockBean
     private OutboxWriter outboxWriter;
+
+    // Excluding DataSourceAutoConfiguration also removes the transaction manager, and without one
+    // Spring Boot does not auto-configure the TransactionTemplate that PaymentService now injects
+    // to write a payment and its outbox row together. Mocking the manager is not enough — @MockBean
+    // registers after auto-configuration has already evaluated @ConditionalOnSingleCandidate — so
+    // the template itself is supplied. This context proves the wiring holds, not that transactions
+    // work; PaymentPersistenceIT covers the real thing against a real database.
+    @MockBean
+    private TransactionTemplate transactionTemplate;
 
     @Test
     void contextLoads() {
