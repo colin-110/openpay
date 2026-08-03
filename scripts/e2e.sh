@@ -188,10 +188,19 @@ check "merchant cannot self-capture a payment" 404   "$(code -X POST "$GATEWAY_U
 echo "== Asynchronous provider flow =="
 # Routed, dispatched, and completed by provider callback with no further client action.
 final_status=""
+# The sleep is load-bearing, which is the opposite of how it looks. Without it this loop waits for
+# "40 requests" rather than for a duration, so how long the asynchronous flow is actually given
+# depends on how fast the API answers — and making the platform faster shortened the wait. That is
+# exactly how it broke: a round of latency work cut per-request time enough that forty polls
+# elapsed before the second acquirer callback had been relayed, and the payment was still
+# AUTHORIZED when the loop gave up. A test whose timeout shrinks as the system improves reports a
+# regression precisely when there isn't one. The review-release loop further down always slept;
+# this one was simply missed.
 for _ in $(seq 1 40); do
   final_status=$(body "$GATEWAY_URL/api/v1/payments/$PID" -H "$KEY_HEADER" | jget status)
   [ "$final_status" = "CAPTURED" ] && break
   [ "$final_status" = "FAILED" ] && break
+  sleep 1
 done
 check "payment reaches CAPTURED with no client action" CAPTURED "$final_status"
 
