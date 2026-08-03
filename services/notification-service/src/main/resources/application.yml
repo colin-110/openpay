@@ -94,6 +94,13 @@ openpay:
       - /internal/dlq
 
 server:
+  tomcat:
+    # Tomcat's default is 200. With a database pool of far fewer, the surplus threads
+    # cannot do anything except queue for a connection — they add context switching and
+    # hide backpressure, turning "the database is saturated" into "everything is slow".
+    # Sized just above the pool so there is room to accept and hand off, not to pile up.
+    threads:
+      max: 25
   port: 8088
   shutdown: graceful
 

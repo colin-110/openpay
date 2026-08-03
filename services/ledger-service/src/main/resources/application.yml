@@ -22,6 +22,16 @@ spring:
       connection-timeout: 5000
   jpa:
     open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          # A payment writes three rows — the payment, its event, and its outbox row — and without
+          # batching each is its own round trip to PostgreSQL. Batching sends them together.
+          batch_size: 30
+        # Both are required for batching to actually happen: Hibernate will not batch inserts it
+        # has interleaved with updates, and order_inserts groups them by table first.
+        order_inserts: true
+        order_updates: true
     hibernate:
       ddl-auto: validate
   flyway:
@@ -60,6 +70,13 @@ openpay:
       - /internal/dlq
 
 server:
+  tomcat:
+    # Tomcat's default is 200. With a database pool of far fewer, the surplus threads
+    # cannot do anything except queue for a connection — they add context switching and
+    # hide backpressure, turning "the database is saturated" into "everything is slow".
+    # Sized just above the pool so there is room to accept and hand off, not to pile up.
+    threads:
+      max: 30
   port: 8086
   shutdown: graceful
 

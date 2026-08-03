@@ -22,6 +22,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.PageRequest;
+import com.openpay.fraud.infrastructure.RedisVelocitySource;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -37,6 +40,7 @@ public class FraudService {
     private final OutboxWriter outboxWriter;
     private final FraudProperties properties;
     private final MeterRegistry meterRegistry;
+    private final RedisVelocitySource redisVelocity;
 
     public FraudService(
             FraudRuleRepository ruleRepository,
@@ -44,13 +48,20 @@ public class FraudService {
             RuleEngine ruleEngine,
             OutboxWriter outboxWriter,
             FraudProperties properties,
-            MeterRegistry meterRegistry) {
+            MeterRegistry meterRegistry,
+            ObjectProvider<StringRedisTemplate> redisTemplate) {
         this.ruleRepository = ruleRepository;
         this.decisionRepository = decisionRepository;
         this.ruleEngine = ruleEngine;
         this.outboxWriter = outboxWriter;
         this.properties = properties;
         this.meterRegistry = meterRegistry;
+        // Composed here rather than in a @Configuration because this is the only class that can
+        // supply the fallback: the database counter needs the repository, which this class owns.
+        // An ObjectProvider so a context with no Redis — the unit tests, and any deployment that
+        // turns it off — still starts and simply counts from PostgreSQL instead.
+        StringRedisTemplate redis = redisTemplate.getIfAvailable();
+        this.redisVelocity = redis == null ? null : new RedisVelocitySource(redis, databaseVelocitySource());
     }
 
     /**
@@ -90,6 +101,13 @@ public class FraudService {
 
         try {
             decisionRepository.saveAndFlush(decision);
+            // After the rules have run, never before: they ask how many payments came *before*
+            // this one, and counting it first would trip every threshold one payment early.
+            if (redisVelocity != null) {
+                redisVelocity.record(
+                        request.merchantId(), request.amount(), request.paymentId(),
+                        properties.getVelocityRetention());
+            }
         } catch (DataIntegrityViolationException exception) {
             // A concurrent screen of the same payment won the unique constraint on payment_id.
             // Its answer is as good as this one, and it has already published the event.
@@ -232,7 +250,18 @@ public class FraudService {
         }
     }
 
+    /**
+     * Redis when it is there, the database when it is not.
+     *
+     * <p>The database version is kept as the fallback rather than deleted: it is exact, it needs no
+     * warm-up, and having it means losing Redis costs latency instead of letting velocity rules
+     * silently stop firing.
+     */
     private VelocitySource velocitySource() {
+        return redisVelocity == null ? databaseVelocitySource() : redisVelocity;
+    }
+
+    private VelocitySource databaseVelocitySource() {
         return new VelocitySource() {
             @Override
             public long countForMerchant(UUID merchantId, Duration window) {

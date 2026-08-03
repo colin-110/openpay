@@ -2,7 +2,7 @@ package com.openpay.notification.infrastructure;
 
 import com.openpay.notification.application.NotificationProperties;
 import java.util.UUID;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import com.openpay.security.InternalHttpClients;
 import org.springframework.web.client.RestClient;
 
 /**
@@ -25,12 +25,10 @@ public class MerchantConfigClient {
     private final String internalToken;
 
     public MerchantConfigClient(NotificationProperties properties) {
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
-        factory.setReadTimeout((int) properties.getReadTimeout().toMillis());
         this.restClient = RestClient.builder()
                 .baseUrl(properties.getMerchantBaseUrl())
-                .requestFactory(factory)
+                .requestFactory(InternalHttpClients.pooled(
+                        properties.getConnectTimeout(), properties.getReadTimeout(), 25))
                 .build();
         this.internalToken = properties.getInternalToken();
     }

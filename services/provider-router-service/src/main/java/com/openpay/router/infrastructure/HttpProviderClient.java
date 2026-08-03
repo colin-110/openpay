@@ -5,8 +5,8 @@ import java.util.Map;
 import java.util.UUID;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
+import com.openpay.security.InternalHttpClients;
 import org.springframework.web.client.RestClient;
 
 @Component
@@ -17,10 +17,10 @@ public class HttpProviderClient implements ProviderClient {
     public HttpProviderClient(RouterProperties properties) {
         // A bounded read timeout is what turns a hung acquirer into a failover instead of a
         // request that never returns.
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
-        factory.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
-        factory.setReadTimeout((int) properties.getReadTimeout().toMillis());
-        this.restClient = RestClient.builder().requestFactory(factory).build();
+        this.restClient = RestClient.builder()
+                .requestFactory(InternalHttpClients.pooled(
+                        properties.getConnectTimeout(), properties.getReadTimeout(), 100))
+                .build();
     }
 
     @Override

@@ -15,4 +15,19 @@ public class FraudProperties {
     public void setReviewPageSize(int reviewPageSize) {
         this.reviewPageSize = reviewPageSize;
     }
+
+    /**
+     * How long a payment stays in the Redis velocity counters. Must comfortably exceed the longest
+     * window any rule uses, or a rule would be counting against a set that has already forgotten
+     * the traffic it cares about. Ten minutes covers the seeded rules many times over.
+     */
+    private java.time.Duration velocityRetention = java.time.Duration.ofMinutes(10);
+
+    public java.time.Duration getVelocityRetention() {
+        return velocityRetention;
+    }
+
+    public void setVelocityRetention(java.time.Duration velocityRetention) {
+        this.velocityRetention = velocityRetention;
+    }
 }

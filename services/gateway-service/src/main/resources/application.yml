@@ -54,6 +54,11 @@ openpay:
         target: ${NOTIFICATION_SERVICE_BASE_URL:http://localhost:8088}
 
 server:
+  tomcat:
+    # The gateway holds no database pool of its own; its threads are waiting on
+    # downstream HTTP, so a larger pool is the right shape here.
+    threads:
+      max: 200
   port: 8080
   shutdown: graceful
 

@@ -10,7 +10,6 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.core.Ordered;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
@@ -77,13 +76,12 @@ public class SecurityAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(AuthServiceClient.class)
     public AuthServiceClient authServiceClient(SecurityProperties properties) {
-        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-        requestFactory.setConnectTimeout((int) properties.getConnectTimeout().toMillis());
-        requestFactory.setReadTimeout((int) properties.getReadTimeout().toMillis());
-
+        // Pooled: this runs on every authenticated request that misses the cache below, and an
+        // unpooled client would open a TCP connection to auth-service for each one.
         RestClient restClient = RestClient.builder()
                 .baseUrl(properties.getAuthBaseUrl())
-                .requestFactory(requestFactory)
+                .requestFactory(InternalHttpClients.pooled(
+                        properties.getConnectTimeout(), properties.getReadTimeout(), 100))
                 .build();
         AuthServiceClient client = new HttpAuthServiceClient(restClient);
 

@@ -1,6 +1,15 @@
 spring:
   application:
     name: fraud-service
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      # Same short timeouts as auth-service and gateway-service, and for the same reason: Lettuce
+      # defaults to a 60-second command timeout, which would turn "fall back to counting in
+      # PostgreSQL" into "hang for a minute, then fall back".
+      timeout: 250ms
+      connect-timeout: 250ms
   datasource:
     url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:openpay_fraud}
     username: ${DB_USERNAME:openpay}
@@ -22,6 +31,16 @@ spring:
       connection-timeout: 5000
   jpa:
     open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          # A payment writes three rows — the payment, its event, and its outbox row — and without
+          # batching each is its own round trip to PostgreSQL. Batching sends them together.
+          batch_size: 30
+        # Both are required for batching to actually happen: Hibernate will not batch inserts it
+        # has interleaved with updates, and order_inserts groups them by table first.
+        order_inserts: true
+        order_updates: true
     hibernate:
       ddl-auto: validate
   flyway:
@@ -59,10 +78,25 @@ openpay:
       - /internal/fraud/rules
 
 server:
+  tomcat:
+    # Tomcat's default is 200. With a database pool of far fewer, the surplus threads
+    # cannot do anything except queue for a connection — they add context switching and
+    # hide backpressure, turning "the database is saturated" into "everything is slow".
+    # Sized just above the pool so there is room to accept and hand off, not to pile up.
+    threads:
+      max: 50
   port: 8089
   shutdown: graceful
 
 management:
+  health:
+    redis:
+      # Redis is an accelerator here, not a dependency: velocity counting falls back to exact
+      # PostgreSQL counts when it is unreachable, so an outage costs latency and nothing else.
+      # Left enabled, the auto-configured indicator marks this service DOWN, its container fails
+      # its healthcheck, and everything depending on fraud-service refuses to start — turning a
+      # graceful degradation into exactly the outage the fallback exists to prevent.
+      enabled: false
   endpoints:
     web:
       exposure:

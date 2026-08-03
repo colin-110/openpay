@@ -6,7 +6,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import com.openpay.security.InternalHttpClients;
 import org.springframework.web.client.RestClient;
 
 @Configuration
@@ -23,12 +23,13 @@ public class FraudScreeningConfiguration {
             @Value("${openpay.fraud.base-url:http://localhost:8089}") String baseUrl,
             @Value("${openpay.fraud.fail-open:true}") boolean failOpen,
             @Value("${openpay.security.internal-token:}") String internalToken) {
-        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
-        requestFactory.setConnectTimeout((int) Duration.ofMillis(500).toMillis());
-        requestFactory.setReadTimeout((int) Duration.ofSeconds(1).toMillis());
-
+        // Called once per payment creation, in the merchant's request path.
         return new FraudScreeningClient(
-                RestClient.builder().baseUrl(baseUrl).requestFactory(requestFactory).build(),
+                RestClient.builder()
+                        .baseUrl(baseUrl)
+                        .requestFactory(InternalHttpClients.pooled(
+                                Duration.ofMillis(500), Duration.ofSeconds(1), 100))
+                        .build(),
                 internalToken,
                 failOpen);
     }
