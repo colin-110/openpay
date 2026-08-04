@@ -15,32 +15,40 @@ import { Counter, Rate } from 'k6/metrics';
 import {
   GATEWAY,
   ROUTER,
-  provisionMerchant,
+  provisionMerchants,
+  merchantsForRate,
+  merchantFor,
   merchantHeaders,
   adminHeaders,
   safeAmount,
 } from './lib/setup.js';
+import { scenario } from 'k6/execution';
 
 const OUTAGE_AT = Number(__ENV.OUTAGE_AT_SECONDS || 40);
 const DURATION_SECONDS = Number(__ENV.DURATION_SECONDS || 120);
+const RATE = Number(__ENV.RATE || 20);
 
 const accepted = new Counter('payments_accepted');
 const acceptedDuringOutage = new Counter('payments_accepted_during_outage');
 const acceptanceRate = new Rate('payment_acceptance_rate');
+const heldForReview = new Counter('payments_held_for_review');
 
 export const options = {
   scenarios: {
     steady: {
       executor: 'constant-arrival-rate',
-      rate: 20,
+      rate: RATE,
       timeUnit: '1s',
       duration: `${DURATION_SECONDS}s`,
       preAllocatedVUs: 40,
       maxVUs: 200,
     },
   },
+  setupTimeout: '10m',
   summaryTrendStats: ['min', 'med', 'avg', 'p(90)', 'p(95)', 'p(99)', 'max'],
   thresholds: {
+    // Nothing may be held, or the acceptance figure below stops meaning what it says.
+    payments_held_for_review: ['count<1'],
     // The whole claim, as a number. Losing an acquirer must not cost a single accepted payment:
     // creation does not touch an acquirer at all, and routing happens afterwards, asynchronously.
     payment_acceptance_rate: ['rate>0.999'],
@@ -51,7 +59,7 @@ export const options = {
 };
 
 export function setup() {
-  const merchant = provisionMerchant('outage');
+  const merchants = provisionMerchants('outage', merchantsForRate(RATE));
 
   const rules = http.get(`${ROUTER}/internal/routing-rules`, adminHeaders());
   if (rules.status !== 200) {
@@ -63,7 +71,7 @@ export function setup() {
     throw new Error('no enabled rule for mock-bank-a; nothing to take out of rotation');
   }
 
-  return { ...merchant, ruleId: target.id, startedAt: Date.now() };
+  return { merchants, ruleId: target.id, startedAt: Date.now() };
 }
 
 export default function (data) {
@@ -82,17 +90,25 @@ export default function (data) {
     check(disabled, { 'acquirer taken out of rotation': (r) => r.status === 200 });
   }
 
+  const merchant = merchantFor(data.merchants, scenario.iterationInTest);
   const response = http.post(
     `${GATEWAY}/api/v1/payments`,
     JSON.stringify({ amount: safeAmount(), currency: 'INR' }),
     {
-      ...merchantHeaders(data.apiKey, `k6-outage-${__VU}-${__ITER}-${Date.now()}`),
+      ...merchantHeaders(merchant.apiKey, `k6-outage-${__VU}-${__ITER}-${Date.now()}`),
       tags: { name: 'create' },
     }
   );
 
   const ok = response.status === 201;
   acceptanceRate.add(ok);
+  // This test is the one where a held payment is not merely uncounted but actively misleading.
+  // The claim being checked is "losing an acquirer costs latency, not payments" — and a payment
+  // held for review never goes near an acquirer, so it would satisfy the acceptance threshold
+  // while proving nothing whatsoever about failover.
+  if (ok && response.json('fraudStatus') === 'HELD') {
+    heldForReview.add(1);
+  }
   if (ok) {
     accepted.add(1);
     if ((Date.now() - data.startedAt) / 1000 > OUTAGE_AT) {

@@ -1,6 +1,29 @@
 spring:
   application:
     name: mock-bank-service
+  task:
+    execution:
+      pool:
+        # Sized deliberately, because the default is a trap for exactly this workload.
+        #
+        # Spring Boot's default task executor is 8 core threads with an *unbounded* queue, and
+        # scheduleOutcome() sleeps twice — once before AUTHORIZED and again before CAPTURED — so
+        # each callback pair occupies a thread for roughly 2 x callback-delay (600ms by default).
+        # Eight threads therefore ceiling out at about 13 payments a second no matter what the
+        # platform is capable of, and everything above that piles into a queue with no limit,
+        # growing memory and adding latency that looks like the platform being slow to capture.
+        #
+        # This is a simulated acquirer, so its throughput is not a property worth defending — but
+        # it must not be the bottleneck, because every load test measures the asynchronous flow
+        # through it. 64 threads sleeping is a few megabytes of stack and takes the ceiling to
+        # around 100 payments a second, past where the write path itself gives way on this host.
+        core-size: 64
+        max-size: 64
+        # Bounded, and callers run the task when it is full. Back-pressure onto the caller is the
+        # right answer for a test double: it slows the acquirer down, which is what a real one
+        # under load would do, instead of silently queueing work it will deliver minutes late.
+        queue-capacity: 2000
+      thread-name-prefix: bank-callback-
 
 openpay:
   bank:

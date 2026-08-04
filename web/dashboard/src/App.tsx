@@ -7,7 +7,7 @@ import { PaymentDrawer } from "./PaymentDrawer";
 import { Payments } from "./Payments";
 import { Refunds } from "./Refunds";
 import { Settlements } from "./Settlements";
-import { shortId } from "./format";
+import { shortId, initialsFor } from "./format";
 import {
   DevelopersIcon,
   HomeIcon,
@@ -219,7 +219,7 @@ function Console({ session, onSignOut }: { session: Session; onSignOut: () => vo
 
   const current = VIEWS.find((candidate) => candidate.id === route.view) ?? VIEWS[0];
   const groups = [...new Set(VIEWS.map((view) => view.group))];
-  const initials = session.email.slice(0, 2).toUpperCase();
+  const initials = initialsFor(session.email);
 
   return (
     <div className="shell">

@@ -10,6 +10,13 @@ public class KafkaErrorHandlingProperties {
 
     private long retryIntervalMs = 1000;
 
+    /**
+     * Records claimed per poll. Kafka's default is 500; see
+     * {@link KafkaErrorHandlingAutoConfiguration#boundedPollSize} for why that default livelocks a
+     * consumer that is behind rather than merely slowing it down.
+     */
+    private int maxPollRecords = 50;
+
     public long getMaxRetries() {
         return maxRetries;
     }
@@ -24,5 +31,13 @@ public class KafkaErrorHandlingProperties {
 
     public void setRetryIntervalMs(long retryIntervalMs) {
         this.retryIntervalMs = retryIntervalMs;
+    }
+
+    public int getMaxPollRecords() {
+        return maxPollRecords;
+    }
+
+    public void setMaxPollRecords(int maxPollRecords) {
+        this.maxPollRecords = maxPollRecords;
     }
 }

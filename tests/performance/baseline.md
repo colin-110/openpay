@@ -35,7 +35,105 @@ datastores, and a broker sharing 12 vCPUs. That matters for reading the numbers 
 here is as likely to be host contention as it is application design, and the notes say which for
 each finding rather than leaving that to guesswork.
 
+## `stress.js` — run of 2026-08-03, after the merchant-pool and warm-up fixes
+
+The first measurement taken with every payment actually being a payment. Default tiers, 45s each,
+45s warm-up ramped to the top tier, merchant pool sized from the rate, **stock
+`RATE_LIMIT_PER_WINDOW=30`** (no longer raised — see
+[the perf README](README.md#stressjs--finding-where-it-actually-breaks)).
+
+Three runs of the identical script, taken while chasing an unrelated broker fault. The failure rate
+per tier:
+
+| Tier | Run A | Run B | Run C |
+| --- | --- | --- | --- |
+| 20/s | 0.0% | 0.0% | 0.0% |
+| 50/s | 0.0% | 0.0% | 0.0% |
+| 100/s | 10.0% | 0.0% | **9.7%** |
+| 150/s | 41.4% | 4.6% | **0.0%** |
+
+**Up to 50/s this host is reliably clean. Above it, no number here is worth quoting.** Run C had
+150/s passing perfectly while 100/s failed 9.7% — the tiers invert, which cannot be a property of
+the platform and is the signature of the measurement being swamped by the host. Twelve vCPUs are
+running twelve JVMs, Postgres, Kafka, Redis and the load generator's own container, and above about
+50 requests a second the dominant variable is which of those the scheduler favours that minute.
+
+So the honest reading of this table is a floor, not a ceiling: **at least 50 payments a second,
+sustained, with zero failures and p95 well inside the threshold.** Where it actually breaks is not
+knowable from this machine, and the earlier draft of this section — which read "the real ceiling is
+around 100 payments a second" — was drawn from a single run and should not have been stated. That
+is the same mistake as the original baseline, made again with better inputs.
+
+Anything firmer needs the k6 scripts pointed at the Kubernetes manifests on hardware that is not
+also running the system under test. Nothing in the code changes for that; only the number does.
+
+For what it is worth, at 150/s payment-service's connection pool was observed at its maximum of 25
+with acquisition timeouts recorded, so the write path's pool is a plausible first constraint to
+look at when someone does run this properly. Nine services share one PostgreSQL, so raising it is a
+trade rather than a free win.
+
+### The auth-cache regression this run found
+
+The first attempt at this table failed 10% at 100/s and **41.4% at 150/s**, with 1,089 gateway
+`validate-key` read timeouts. That was a bug introduced by the stale-while-revalidate fix itself:
+its background refresh executor had two threads, which is ample for the one merchant the load tests
+used to drive and hopelessly undersized for a realistic pool. Refresh work scales with the number
+of distinct **keys**, not with the request rate — 126 merchants on a 5-second TTL need a refresh
+roughly every 40ms. The queue backed up, entries aged past the stale grace faster than they could be
+renewed, and requests fell through to the synchronous path, where they hit the read timeout and the
+gateway, failing closed, turned them into refused payments.
+
+Fixed by sizing the executor for key count and renewing at 75% of the TTL rather than waiting for
+expiry, so under steady traffic an entry is never served stale at all. Same run afterwards: 100/s
+went to 0.0% failures and 150/s to 4.6%, and gateway auth failures fell from 1,089 to 492.
+
+Worth recording rather than quietly fixing, because both halves are the same lesson: **every test in
+`CachingAuthServiceClientTest` used a single API key, and every load scenario used a single
+merchant.** A fleet of one hides whole categories of bug, and it hid this one in two places at once.
+
 ## `payment-create.js`
+
+> [!WARNING]
+> **Everything recorded below predates two fixes, and both of them change what these numbers mean.
+> Do not compare a current run against this section — re-record it first.**
+>
+> 1. **Every run below drove a single merchant**, so after roughly the first hundred payments the
+>    seeded `merchant-velocity-burst` rule held the rest for review. A held payment skips the
+>    `PAYMENT_CREATED` publish entirely — no routing, no acquirer, no ledger — and still returns
+>    201. The great majority of the "payments" in these tables therefore did substantially less
+>    work than a payment does, which means these figures **flatter** the platform.
+> 2. **Every run below started cold.** Each row is described as a fresh run against a stack rebuilt
+>    from source, and the ordering artefact that produces is large enough to invert the results —
+>    see [The knee was an artefact](#the-knee-was-an-artefact) below.
+>
+> Both are fixed in the scripts (a merchant pool, a warm-up stage, and a threshold that fails a run
+> if anything is held). The account below is kept rather than deleted because the reasoning in it —
+> the threshold bug, the Redis timeout — is still correct and still worth reading.
+
+### The knee was an artefact
+
+The claim below is that the knee is between 50 and 100 requests a second. It is not, and the
+evidence is three runs of **the same 50/s tier** against the same stack, differing only in what ran
+before them:
+
+| State before the run | p50 | p95 | p99 | Achieved | Errors |
+| --- | --- | --- | --- | --- | --- |
+| Cold stack, second tier after 20/s | 22ms | **3637ms** | **6130ms** | 46.9/s | 0.00% |
+| Immediately after a full stress run | 14ms | **25ms** | **35ms** | 50.0/s | 0.00% |
+| After ~100 seconds idle (JIT still hot) | 15ms | 103ms | **2721ms** | 49.0/s | 0.05% |
+
+A 145× spread in p95 at one rate. The third row is the important one: with the JVMs still hot, the
+tail cliff comes back after a couple of minutes of quiet, so this is not a one-time startup cost —
+it re-arms whenever traffic stops, which is what happens after a deploy, a scale-out, or overnight.
+
+It also produced real refusals rather than just slow responses. The 0.05% were gateway →
+auth-service `validate-key` read timeouts, and the gateway fails closed, so a legitimate payment
+was refused. Root cause was a cache stampede: `CachingAuthServiceClient` had a 5-second TTL and no
+request collapsing, so at expiry every in-flight request for a key missed together and hit the one
+service every request must consult. Fixed by serving stale while a single background refresh runs.
+
+With a warm-up stage in front, the tiers behave the way a queueing ceiling should — 20/s at 49ms
+p95 and 50/s at 46ms p95, monotonic and boring.
 
 ### Run of 2026-08-03 — with p99, and with the threshold bug fixed
 
@@ -49,8 +147,10 @@ against a stack rebuilt from source, with the per-merchant rate limit raised (se
 | 50/s | 49.95/s | 3,000 | 43.0ms | 184ms | 295ms | 494ms | 0.00% |
 | 100/s | 97.77/s | 5,884 | 105ms | **1.89s** | **3.00s** | 4.72s | 0.00% |
 
-**The knee is between 50 and 100 requests a second on this host.** Note what does *not* happen at
-100/s: nothing fails. `http_req_failed` is 0.00% across all three rows — every payment is still
+**The knee is between 50 and 100 requests a second on this host.** — *This conclusion is now known
+to be wrong; see [The knee was an artefact](#the-knee-was-an-artefact) above. The reasoning that
+follows about latency-versus-errors is still sound, and is why it is left here.* Note what does
+*not* happen at 100/s: nothing fails. `http_req_failed` is 0.00% across all three rows — every payment is still
 accepted and still correct. What degrades is latency, by an order of magnitude, plus 119 iterations
 that k6 could not start on schedule at all. That distinction matters: this is a queueing ceiling,
 not a correctness failure, and a test that only watched the error rate would have called the 100/s
@@ -369,6 +469,31 @@ across currencies. It does not, in this seed data.
   that the guess was corrected, not just the fix.
 - Re-run at the same 50/s rate after the fix: 0% failures, 113ms p95, on the identical host. The
   host was never the ceiling; the missing timeout was.
+- **The bug none of these tests could ever have found.** Every script on this page drives sustained
+  load, and load is precisely the condition under which the following cannot happen — so it took
+  reading the payments table of a stack that had merely been left alone. Taken from a three-hour-old
+  deployment:
+
+  | Gap before the payment | `fraud_status` |
+  | --- | --- |
+  | 33s after start | `UNSCREENED` |
+  | 40s (traffic flowing) | `ALLOWED` |
+  | 2m 24s idle | `UNSCREENED` |
+  | seconds apart | `ALLOWED` ×6 |
+  | 3h 02m idle | `UNSCREENED` |
+
+  Three for three: the first payment after an idle gap skipped risk screening entirely. Screening
+  answers in ~35ms warm, but the path goes cold after roughly two minutes of quiet and overruns
+  payment-service's 1s read timeout — which **fails open**, so the result is not an error but a
+  captured payment recorded as never checked. `ScreeningWarmUp` already existed and covered exactly
+  one case, cold *start*; the far larger case was cold *idle*, and it left the startup fix looking
+  effective while the window was open essentially all the time. Fixed by running the same warm-up on
+  a 30s timer — inside HikariCP's 60s `idle-timeout` and the caller's 30s connection eviction.
+
+  Verified the way it was found, by idling rather than by loading: four separate 200s+ idle windows
+  after the fix, each followed by one payment. Worth stating plainly as a gap in this page —
+  a performance suite that only ever measures a busy system is blind to every failure that needs
+  quiet, and this platform will spend most of its life quiet.
 
 ## Known bottlenecks
 

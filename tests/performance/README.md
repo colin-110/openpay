@@ -12,10 +12,34 @@ docker compose -f platform/docker/docker-compose.yml -f platform/docker/docker-c
 k6 run tests/performance/payment-create.js
 ```
 
-`OPENPAY_ADMIN_TOKEN` must be set: every scenario onboards its own throwaway merchant in `setup()`,
-and admin endpoints fail closed without it. A run with no credential would produce a beautiful
-latency curve for 401 responses, which is worse than no number at all — so the scripts refuse to
-start instead.
+`OPENPAY_ADMIN_TOKEN` must be set: every scenario onboards its own throwaway merchants in
+`setup()`, and admin endpoints fail closed without it. A run with no credential would produce a
+beautiful latency curve for 401 responses, which is worse than no number at all — so the scripts
+refuse to start instead.
+
+## Two things every scenario now does, and why
+
+**A pool of merchants, not one.** This is the correction to a bug that made most of the numbers
+here mean something other than what they said. The seeded `merchant-velocity-burst` rule holds a
+merchant's payments for review after 100 in 60 seconds, and every scenario used to drive a single
+merchant — so about five seconds into a 20/s run, *every payment after that* was held. A held
+payment deliberately skips the `PAYMENT_CREATED` publish, so it never routes, never reaches an
+acquirer and never touches the ledger, and it returns 201, so k6 counted it as a clean success. A
+measured stress run showed **17,017 payments held against 1,508 created**: 92% of the load was
+exercising the review path while the summary claimed to be measuring the write path.
+
+`merchantsForRate()` now sizes a pool so no single merchant approaches the limit, iterations are
+spread across it by global iteration counter, and **every scenario fails if even one payment is
+held**. Real traffic spreads across thousands of merchants and does not trip a per-merchant
+velocity rule, so the fix is to look like real traffic rather than to switch the rule off.
+
+**A warm-up stage.** Also a correction. Three runs of the *same* 50/s tier against the same stack
+gave p95 3637ms as the first load step from idle, 25ms immediately after a full run, and 103ms
+with a 2.7s p99 after 100 seconds idle — a 145× spread at one rate, decided entirely by what ran
+before it. Without a warm-up the first tier pays for JIT compilation and connection-pool growth on
+behalf of every tier after it, which is why the old baseline showed low rates as *slower* than
+high ones. `stress.js` ramps to its top tier before measuring anything; `-e WARMUP=0` measures the
+cold path deliberately, which is a legitimate and different question.
 
 ## The scenarios
 
@@ -94,15 +118,16 @@ and takes the stack with it. With the cap, the same saturation shows up as `drop
 the summary — the same finding, without losing the run to get it. Raise both together on hardware
 that can take it.
 
-Raise the per-merchant rate limit for this one, the same as any run pushing a single merchant past
-30 writes / 5s intentionally:
+**The per-merchant rate limit no longer needs raising**, and this used to say the opposite. Load is
+spread across enough merchants to stay under the fraud velocity rule, which incidentally puts each
+merchant at around one request a second even at the top tier — far under the stock 30 writes / 5s.
+Measured: a 50/s run against the default `RATE_LIMIT_PER_WINDOW=30` passes every threshold at p95
+245ms.
 
-```bash
-RATE_LIMIT_PER_WINDOW=10000 docker compose -f platform/docker/docker-compose.yml \
-  -f platform/docker/docker-compose.apps.yml up -d gateway-service
-```
-
-and put it back (remove the override, `up -d gateway-service` again) once done.
+Worth stating plainly, because the old instruction was itself a quiet distortion: a single merchant
+sending 150 writes a second is not a shape any limiter should permit, and disabling the limiter to
+allow it meant the run no longer resembled traffic the platform would ever accept. If you find
+yourself needing the override again, the pool is too small — that is the thing to fix.
 
 ### `soak.js` — what a short run can't see
 
@@ -151,6 +176,7 @@ if this script is force-killed rather than interrupted normally, check `docker p
 | --- | --- | --- |
 | `payment_create_duration` p95 | < 1s | Above a second, a customer is watching a spinner |
 | `http_req_failed` | < 1% | Anything higher is a real failure, not noise |
+| `payments_held_for_review` | 0 | A held payment returns 201 without exercising the path being measured |
 | webhook p95 under spike | < 2s | A callback retries; a customer does not |
 | `payment_acceptance_rate` during outage | > 99.9% | Losing an acquirer must not lose a payment |
 
@@ -167,6 +193,20 @@ panels say more than the k6 summary does:
 - **Acquirers out of rotation.** During `provider-outage.js` this should go to 1 and stay there
   until teardown.
 
+And one thing neither Grafana nor k6 will tell you, which is worth a terminal of its own during any
+long run:
+
+```bash
+docker exec openpay-kafka /opt/kafka/bin/kafka-consumer-groups.sh --bootstrap-server localhost:9092 --describe --group payment-service
+```
+
+**Lag that is frozen at an exact number is worse news than lag that is climbing.** Climbing means a
+consumer is behind. Frozen — especially with a blank `CONSUMER-ID` — means it is not consuming at
+all, and the only other symptom is payments quietly stopping at `CREATED` while every container
+reports healthy and every HTTP call returns 201. That is not hypothetical; it is
+[ARCHITECTURE.md § 5.1](../../docs/ARCHITECTURE.md#51-the-failure-this-table-did-not-have), and a
+k6 run during it looks perfect right up until the acceptance suite fails.
+
 ## Recording a baseline
 
 [`baseline.md`](baseline.md) has the shape to fill in, and it is empty on purpose: a baseline copied
@@ -177,9 +217,11 @@ write down what you saw.
 
 - **Kafka throughput.** These tests drive the synchronous API, and the event backbone is exercised
   only as a side effect. Saturating the broker needs a producer aimed at it directly.
-- **Database contention beyond one merchant.** Each run uses a single merchant, so the
-  `(merchant_id, idempotency_key)` index is hotter than it would be with real traffic spread across
-  thousands of them.
+- **Realistic merchant cardinality.** Runs now spread across a pool sized to stay under the
+  velocity rule — tens to low hundreds of merchants — rather than the one they used to use. That
+  is enough to stop the rule firing and to take the heat off a single
+  `(merchant_id, idempotency_key)` index slot, but it is still far short of the thousands a real
+  deployment would have.
 - **True multi-hour runs.** `soak.js` supports it (`-e DURATION=2h`), but `baseline.md`'s recorded
   run is 4 minutes — long enough to prove the mechanism works, not long enough to be confident
   about a leak that takes hours to show up. Worth running long before trusting it as that kind of

@@ -88,8 +88,11 @@ class AbandonedDeliveryEmailIT {
         WebhookDelivery reloaded = deliveryRepository.findById(delivery.getId()).orElseThrow();
         assertThat(reloaded.getStatus()).isEqualTo(DeliveryStatus.ABANDONED);
 
+        // Thirty seconds for the same reason as SecurityAlertEmailIT: this waits on an
+        // asynchronous email crossing a container boundary, and a ten-second budget only holds on
+        // an idle machine. Polling means a healthy run is no slower for the larger number.
         JsonNode message = await()
-                .atMost(Duration.ofSeconds(10))
+                .atMost(Duration.ofSeconds(30))
                 .pollInterval(Duration.ofMillis(200))
                 .until(this::findLatestMessage, (m) -> m != null);
 
