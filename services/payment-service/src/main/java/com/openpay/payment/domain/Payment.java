@@ -51,6 +51,19 @@ public class Payment {
     @Column(name = "fraud_status", nullable = false, length = 20)
     private FraudStatus fraudStatus;
 
+    /**
+     * Set only while this payment is waiting on asynchronous screening, and cleared the moment a
+     * decision lands.
+     *
+     * <p>Null therefore means "not waiting on a machine" — either screening already answered, or
+     * this is a rule hold waiting on a person, or the deployment screens synchronously and the
+     * question never arises. That distinction is the whole reason the column exists: a payment
+     * waiting minutes for a human is normal, and a payment waiting minutes for fraud-service is an
+     * incident, and both are {@link FraudStatus#HELD}.
+     */
+    @Column(name = "screening_requested_at")
+    private OffsetDateTime screeningRequestedAt;
+
     @Version
     @Column(nullable = false)
     private Integer version;
@@ -140,7 +153,21 @@ public class Payment {
                     "Payment " + id + " is " + fraudStatus + ", not held for review");
         }
         this.fraudStatus = resolved;
+        // Whatever it was waiting for has arrived. Clearing this here rather than at each call site
+        // is what keeps "is this payment stuck?" answerable by looking at one column: an operator
+        // closing a review by hand also ends the wait, and a marker left behind would report a
+        // resolved payment as stuck forever.
+        this.screeningRequestedAt = null;
         this.updatedAt = OffsetDateTime.now();
+    }
+
+    /** Marks this payment as waiting on asynchronous screening, from now. */
+    public void awaitAsynchronousScreening() {
+        this.screeningRequestedAt = OffsetDateTime.now();
+    }
+
+    public OffsetDateTime getScreeningRequestedAt() {
+        return screeningRequestedAt;
     }
 
     public Integer getVersion() {
