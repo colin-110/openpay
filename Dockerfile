@@ -5,7 +5,7 @@
 # are declared in the runtime stage rather than at the top: an ARG invalidates every layer after
 # it, and declaring them early would rebuild the whole project nine times.
 
-FROM maven:3.9-eclipse-temurin-21 AS build
+FROM maven:3-eclipse-temurin-24 AS build
 WORKDIR /build
 
 # Poms first. Dependencies change far less often than source, so this layer survives most edits and
