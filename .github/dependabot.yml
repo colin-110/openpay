@@ -1,0 +1,103 @@
+####
+# Dependency updates, opened as pull requests the CI pipeline then has to agree with.
+#
+# This exists because of SECURITY-AUDIT.md finding 13: a scan found 30 known CVEs, five of them
+# critical, in what the then-current Spring Boot patch pulled in. That was found by hand and fixed
+# by hand, and nothing at all stopped it happening again — the versions do not rot on a schedule
+# anyone was watching. This is the part that watches.
+#
+# Grouped rather than one PR per artifact. Spring Boot's BOM moves dozens of managed versions
+# together, and eleven services share it; ungrouped, a single Boot patch would open a wall of pull
+# requests that all have to be merged in lockstep to be coherent, which is how update automation
+# gets muted.
+####
+version: 2
+
+updates:
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for the whole Spring ecosystem: its parts are version-locked in practice, and
+      # splitting them produces PRs that cannot pass CI on their own.
+      spring:
+        patterns:
+          - "org.springframework*"
+          - "org.springframework.boot*"
+      # Everything else, batched by how risky it is to take. Patch and minor updates of test-only
+      # tooling are the ones worth taking without much thought; majors are held out so they arrive
+      # as their own PR and get read.
+      test-tooling:
+        patterns:
+          - "org.testcontainers*"
+          - "org.junit*"
+          - "org.mockito*"
+          - "org.assertj*"
+          - "org.awaitility*"
+        update-types:
+          - minor
+          - patch
+      other:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "org.springframework*"
+          - "org.springframework.boot*"
+          - "org.testcontainers*"
+          - "org.junit*"
+          - "org.mockito*"
+          - "org.assertj*"
+          - "org.awaitility*"
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+
+  - package-ecosystem: npm
+    directory: /web/dashboard
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react*"
+      dev-tooling:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+
+  # The workflows themselves pin actions by major tag, and those move too — a pinned action with a
+  # known vulnerability is the same class of problem as a pinned library with one.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+
+  # Both Dockerfiles build on base images that get security patches independently of anything in
+  # this repository.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+
+  - package-ecosystem: docker
+    directory: /web/dashboard
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies

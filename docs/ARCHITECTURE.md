@@ -35,6 +35,7 @@ needs an answer now) or from Kafka (when it needs to know something happened).
 | notification-service | 8088 | `openpay_notification` | Signed outbound webhooks to merchants, with retries. |
 | fraud-service | 8089 | `openpay_fraud` | Risk rules, screening decisions, and the review queue. |
 | mock-bank-service | 9001, 9002 | — | Two simulated acquirers. One codebase, run twice. |
+| demo-storefront | 8090 | — | A pretend shop. A client of the public API, holding an API key server-side exactly as a merchant would. |
 | web/dashboard | 5173 | — | React SPA. A client of the public API, nothing more. |
 
 Shared libraries in `libs/`: `common-observability` (correlation IDs), `common-security` (the three
@@ -96,11 +97,24 @@ Four kinds of caller, and the system treats them very differently.
 | Caller | Credential | Checked by | Reaches |
 | --- | --- | --- | --- |
 | Merchant server | `X-Api-Key` | `ApiKeyAuthenticationFilter` → auth-service | Payments, refunds, own settlements, own deliveries |
+| Customer's browser | `X-Api-Key`, publishable (`opk_pub_`) | The same filter, then `requireTokenize` | Tokenisation, and nothing else |
 | Dashboard user | `Authorization: Bearer` | `JwtAuthenticationFilter` (local signature check) | The same paths as an API key |
 | Platform operator | `X-Admin-Token` | `AdminTokenFilter` (constant-time compare) | Merchants, API keys, dashboard users, webhook-secret rotation |
 | Platform operator | `X-Ops-Token` | `AdminTokenFilter` (constant-time compare) | Ledger, settlement runs, cross-merchant deliveries |
 | Another service | `X-Internal-Token` | `AdminTokenFilter` (constant-time compare) | Router attempts, merchant webhook config |
 | Acquirer | HMAC-SHA256 over `timestamp.body` | `SignatureVerifier` | Callbacks only |
+
+**The publishable key is the odd one out**, because it is the only credential on this platform that
+is *supposed* to be readable by people who are not the merchant. It sits in a checkout page. Every
+other row in that table describes a secret; this one describes a capability so narrow that
+publishing it costs nothing — it can exchange a card number for a single-use token and it is refused
+by `requireRead` and `requireWrite` everywhere else.
+
+Getting that boundary wrong is subtle in one specific way worth naming: merchant scoping is *not*
+sufficient here. Every other credential is already confined to one merchant's data and that is the
+whole protection. For a key visible to every visitor, "confined to this shop's payments" would mean
+any customer could list every order the shop had ever taken. Which is why authority is checked on
+reads and not only on writes — the allowlists live in `ApiKeyPrincipal`.
 
 The three operator/service tiers are separate secrets on purpose. The line between them is *does
 this create a credential* — not *is this sensitive*. The ledger is highly sensitive and sits on the
@@ -534,7 +548,8 @@ for the full account.
 | One acquirer | Router fails over on the next attempt; breaker opens after 3 | Everything |
 | Both acquirers | Payments sit in `PENDING_PROVIDER` until one returns | Reads, refund creation |
 | provider-router-service | New payments stop dispatching; attempts panel returns 503 | Payment reads and writes |
-| Kafka | Outbox rows accumulate unpublished and drain on recovery. **Nothing is lost** | All synchronous reads and writes |
+| Kafka, cleanly down | Outbox rows accumulate unpublished and drain on recovery. **Nothing is lost** | All synchronous reads and writes |
+| Kafka, degraded but up | See [5.1](#51-the-failure-this-table-did-not-have) — the dangerous one, because nothing reports it | Everything synchronous, deceptively |
 | auth-service | API-key auth fails → `503 auth_unavailable`. Sessions keep working — they verify locally | Dashboard traffic |
 | webhook-service | Callbacks are refused; acquirers retry | Everything else |
 | ledger-service | Events queue in Kafka, applied on recovery | Everything else |
@@ -546,6 +561,52 @@ for the full account.
 
 The pattern: **the synchronous path is small and the asynchronous path is durable.** Losing an
 event-driven consumer delays work; it does not lose it.
+
+### 5.1 The failure this table did not have
+
+Every row above assumes a component either works or is *gone*. The failure that actually happened
+here was neither, and it is worth writing down because none of the platform's existing defences saw
+it and none of them would have.
+
+The broker was configured `mem_limit: 1g` while `apache/kafka` defaults its heap to `-Xmx1G` — so
+the JVM heap alone was the entire container, leaving nothing for metaspace, thread stacks, or the
+direct byte buffers Kafka uses for every network read. The container sat at 93% memory. It did not
+crash, and it did not fail its health check: `kafka-topics.sh --list` answered perfectly well
+throughout.
+
+What broke instead was one internal write path. The group coordinator's writes to
+`__consumer_offsets` began timing out after 5 seconds, so `SyncGroup` returned
+`COORDINATOR_NOT_AVAILABLE`, so every consumer group rebalanced — and then rebalanced again, every
+five seconds, never reaching a stable assignment. The observable symptoms:
+
+- Consumer lag frozen at an exact number, indefinitely.
+- Generation ids climbing steadily (138 → 145 → 220 over minutes).
+- `CONSUMER-ID` blank in `kafka-consumer-groups --describe`, seconds after a service logged
+  "Successfully joined group".
+- Payments accepted normally and then stopping at `CREATED`, forever.
+- **Not one error, in any service, at any level.** Every container healthy, every HTTP call 201.
+
+Three things about it are worth keeping:
+
+1. **It needed a backlog to appear.** A quiet broker at 93% memory is fine. It only tipped over
+   once load had put enough in the offsets topic to make those writes expensive — which means the
+   trigger is an outage or a traffic spike, and the thing that breaks is the recovery.
+2. **A broker restart did not fix it.** The load was still on disk, so it returned to the same
+   state within seconds. That is what distinguishes it from a transient.
+3. **`fault-injection.sh` cannot find this.** It pauses a container and asserts recovery with no
+   traffic — a *clean* failure. This was a degraded one under load, which is the gap
+   [README limitation 3](../README.md#can-be-fixed--i-know-how-its-scope-not-skill) names as "no
+   chaos under concurrent load", made concrete.
+
+Fixed by sizing the heap to half the container (`KAFKA_HEAP_OPTS: -Xmx512m -Xms512m` — a smaller
+heap is what Kafka wants anyway, since it leans on the OS page cache rather than the JVM), by
+capping `max.poll.records` at 50 so a backlog drains rather than exhausting the poll interval, and
+by giving the broker a volume so its log and offsets survive a recreate. Memory went 93% → 34%,
+coordinator timeouts to zero, and the backlog drained.
+
+**The lesson for the table above: "what dies" is the easy half.** A component that is up, healthy,
+and quietly failing one internal operation is the case the health check is blind to by
+construction, and the only signal that existed here was consumer lag — which nothing was watching.
 
 ---
 
