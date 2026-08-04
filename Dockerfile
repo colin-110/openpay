@@ -37,7 +37,7 @@ COPY services services
 # inside the build for Testcontainers, and would repeat on every image.
 RUN mvn -B -DskipTests package
 
-FROM eclipse-temurin:21-jre AS runtime
+FROM eclipse-temurin:25-jre AS runtime
 
 # Which module this image runs. Declared here so the build stage above stays shared and cached.
 ARG MODULE
