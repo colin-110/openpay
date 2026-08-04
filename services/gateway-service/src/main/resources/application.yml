@@ -35,6 +35,11 @@ openpay:
       - /api/v1/settlements
       - /api/v1/webhooks
       - /api/v1/protected
+      # Authenticated like the rest, but the key presented here is usually the publishable one,
+      # which is readable by anyone who opens the checkout page. What keeps that safe is not this
+      # list but ApiKeyPrincipal: a publishable key carries tokens:create, which is refused by
+      # requireRead and requireWrite everywhere else on the platform.
+      - /api/v1/tokens
   gateway:
     connect-timeout: 2s
     read-timeout: 10s
@@ -52,6 +57,12 @@ openpay:
         target: ${SETTLEMENT_SERVICE_BASE_URL:http://localhost:8087}
       - path-prefix: /api/v1/webhooks
         target: ${NOTIFICATION_SERVICE_BASE_URL:http://localhost:8088}
+      # Tokenisation, called by the customer's browser rather than by a merchant's server. It is
+      # the one path here a card number travels, and routing it through the gateway like everything
+      # else is deliberate: it gets the same authentication, the same rate limit and the same
+      # correlation id, and vault-service never needs to be exposed directly.
+      - path-prefix: /api/v1/tokens
+        target: ${VAULT_SERVICE_BASE_URL:http://localhost:8091}
 
 server:
   tomcat:

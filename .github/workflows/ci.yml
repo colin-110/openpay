@@ -42,8 +42,15 @@ jobs:
       # which start a real PostgreSQL and, for the dead-letter tests, a real Kafka through
       # Testcontainers using the runner's Docker daemon. Those are what actually prove the JPA
       # entities match the Flyway migrations and that a poison message reaches its DLQ.
+      #
+      # `-fae` (fail at end) is load-bearing, not tidiness. Maven's default is to stop the reactor
+      # at the first failing module, and auth-service is ninth of eighteen — so a single flaky test
+      # there took the integration suites for payment, ledger, settlement, router, fraud,
+      # notification and merchant with it, unrun and unreported. The build was red either way; the
+      # difference is whether the report says which of them were actually exercised. Failures still
+      # fail the job.
       - name: Build and verify with Maven
-        run: ./mvnw -B clean verify
+        run: ./mvnw -B -fae clean verify
 
       - name: Upload test results
         if: always()
@@ -196,6 +203,8 @@ jobs:
           - notification-service
           - fraud-service
           - mock-bank-service
+          - vault-service
+          - demo-storefront
 
     steps:
       - name: Checkout repository

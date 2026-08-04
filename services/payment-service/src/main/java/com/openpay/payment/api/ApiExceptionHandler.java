@@ -8,6 +8,7 @@ import com.openpay.payment.application.RefundNotFoundException;
 import com.openpay.payment.domain.InvalidPaymentTransitionException;
 import com.openpay.payment.infrastructure.AttemptsUnavailableException;
 import com.openpay.payment.infrastructure.ScreeningUnavailableException;
+import com.openpay.payment.infrastructure.TokenNotRedeemableException;
 import com.openpay.security.InsufficientAuthorityException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
@@ -47,6 +48,15 @@ public class ApiExceptionHandler {
         // 422 rather than 400: the request is well formed, but the payment's state or remaining
         // refundable balance will not permit it.
         return build(HttpStatus.UNPROCESSABLE_ENTITY, "refund_not_allowed", exception.getMessage(), request);
+    }
+
+    @ExceptionHandler(TokenNotRedeemableException.class)
+    public ResponseEntity<ErrorResponse> handleTokenNotRedeemable(
+            TokenNotRedeemableException exception, HttpServletRequest request) {
+        // 422, like a refused refund: the request is well formed, the token in it just cannot be
+        // spent. Most often this is a customer who left the checkout open past the token's fifteen
+        // minutes, which is a "start again" rather than an error anyone needs to investigate.
+        return build(HttpStatus.UNPROCESSABLE_ENTITY, "token_not_redeemable", exception.getMessage(), request);
     }
 
     @ExceptionHandler(InsufficientAuthorityException.class)

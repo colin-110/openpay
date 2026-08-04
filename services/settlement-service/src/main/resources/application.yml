@@ -2,7 +2,11 @@ spring:
   application:
     name: settlement-service
   datasource:
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:openpay_settlement}
+    # pgjdbc parses and plans a statement afresh until it has seen it prepareThreshold
+    # times (default 5), then switches to a server-side prepared statement. Every query
+    # this platform runs is one of a small fixed set, so there is nothing to be gained by
+    # waiting - promote on first use and keep a larger cache per connection.
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:openpay_settlement}?prepareThreshold=1&preparedStatementCacheQueries=256&preparedStatementCacheSizeMiB=5
     username: ${DB_USERNAME:openpay}
     password: ${DB_PASSWORD:openpay}
     hikari:

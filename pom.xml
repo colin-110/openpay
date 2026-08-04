@@ -30,6 +30,8 @@
         <module>services/notification-service</module>
         <module>services/fraud-service</module>
         <module>services/mock-bank-service</module>
+        <module>services/vault-service</module>
+        <module>services/demo-storefront</module>
     </modules>
 
     <properties>
@@ -57,6 +59,7 @@
         <testcontainers.docker.api.version>1.44</testcontainers.docker.api.version>
         <maven.compiler.release>${java.version}</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <jacoco.version>0.8.13</jacoco.version>
     </properties>
 
     <dependencyManagement>
@@ -137,6 +140,79 @@
                     </execution>
                 </executions>
             </plugin>
+            <!--
+              Coverage, measured over both suites rather than just the unit tests.
+
+              Separate destFiles and a merged report on purpose: most of what proves this platform
+              works lives in the *IT tests — that a payment survives a real PostgreSQL, that a
+              poison message reaches its DLQ — and a unit-tests-only number would report the
+              best-tested parts of the codebase as the worst. `report-aggregate` in a dedicated
+              module is the other way to do this; per-module reports were chosen because each
+              service is independently deployable and a blended monorepo percentage would hide a
+              service with no tests behind eleven that have them.
+
+              Deliberately no `check` rule with a minimum. A threshold picked now, against no
+              baseline, would either be low enough to pass everything (decoration) or high enough
+              to fail the build on the first honest measurement (noise someone disables). Measure
+              first, then set one that means something.
+            -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>prepare-unit</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                        <configuration>
+                            <destFile>${project.build.directory}/jacoco-unit.exec</destFile>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>prepare-integration</id>
+                        <goals>
+                            <goal>prepare-agent-integration</goal>
+                        </goals>
+                        <configuration>
+                            <destFile>${project.build.directory}/jacoco-it.exec</destFile>
+                        </configuration>
+                    </execution>
+                    <!--
+                      Merge before reporting, so a class exercised only by an IT is not counted as
+                      uncovered in a report drawn from the unit run alone.
+                    -->
+                    <execution>
+                        <id>merge-all</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>merge</goal>
+                        </goals>
+                        <configuration>
+                            <fileSets>
+                                <fileSet>
+                                    <directory>${project.build.directory}</directory>
+                                    <includes>
+                                        <include>jacoco-*.exec</include>
+                                    </includes>
+                                </fileSet>
+                            </fileSets>
+                            <destFile>${project.build.directory}/jacoco-merged.exec</destFile>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>report-all</id>
+                        <phase>verify</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                        <configuration>
+                            <dataFile>${project.build.directory}/jacoco-merged.exec</dataFile>
+                            <outputDirectory>${project.reporting.outputDirectory}/jacoco</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
         <pluginManagement>
             <plugins>
@@ -162,6 +238,11 @@
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-failsafe-plugin</artifactId>
                     <version>3.5.3</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.jacoco</groupId>
+                    <artifactId>jacoco-maven-plugin</artifactId>
+                    <version>${jacoco.version}</version>
                 </plugin>
             </plugins>
         </pluginManagement>

@@ -8,6 +8,7 @@ import com.openpay.auth.domain.ApiKeyRepository;
 import com.openpay.auth.infrastructure.MerchantServiceClient;
 import com.openpay.audit.AuditAction;
 import com.openpay.audit.AuditRecorder;
+import com.openpay.security.ApiKeyPrincipal;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -27,6 +28,19 @@ public class ApiKeyService {
 
     private static final String ACTIVE_STATUS = "ACTIVE";
     private static final String KEY_PREFIX_PREFIX = "opk_";
+    /**
+     * Publishable keys are visibly different, on purpose.
+     *
+     * <p>A secret key and a page-visible key are the same shape otherwise, and the moment somebody
+     * is looking at one in a log, a bug report or a screenshot, the only question worth answering
+     * quickly is "how bad is this?". {@code opk_pub_} answers it without a database lookup. It is
+     * the same reason Stripe ships {@code pk_} and {@code sk_} rather than one opaque format, and
+     * it costs four characters.
+     *
+     * <p>Derived from the scope rather than asked for separately: a key that may only tokenise is
+     * publishable, and those are not two independent facts that could drift apart.
+     */
+    private static final String PUBLISHABLE_PREFIX_PREFIX = "opk_pub_";
     private static final int PREFIX_RANDOM_BYTES = 6;
     private static final int SECRET_RANDOM_BYTES = 32;
 
@@ -67,7 +81,9 @@ public class ApiKeyService {
             throw new InvalidApiKeyRequestException("expiresAt must be in the future");
         }
 
-        String keyPrefix = KEY_PREFIX_PREFIX + randomHex(PREFIX_RANDOM_BYTES);
+        boolean publishable = ApiKeyPrincipal.PUBLISHABLE_SCOPE.equals(request.scope());
+        String keyPrefix =
+                (publishable ? PUBLISHABLE_PREFIX_PREFIX : KEY_PREFIX_PREFIX) + randomHex(PREFIX_RANDOM_BYTES);
         String secret = randomHex(SECRET_RANDOM_BYTES);
         String apiKey = keyPrefix + "." + secret;
 

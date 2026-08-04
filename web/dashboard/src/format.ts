@@ -145,3 +145,29 @@ export function titleCase(status: string): string {
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
     .join(" ");
 }
+
+/**
+ * Two letters for the avatar, taken from the person's name rather than the raw string.
+ *
+ * The obvious `email.slice(0, 2)` is wrong for any address that does not begin with a name, and
+ * the demo seeder produced exactly that: it prefixed a run id, so `232f9ebc-owner@openpay.test`
+ * rendered an avatar reading "23".
+ *
+ * Splitting on separators and dropping the segments that contain digits, rather than splitting on
+ * every non-letter — a hex run id like `232f9ebc` is mostly letters, so the naive version picked
+ * "FE" out of the middle of it, which looks like a name and is not one.
+ */
+export function initialsFor(email: string): string {
+  const localPart = (email ?? "").split("@")[0] ?? "";
+  const named = localPart
+    .split(/[.\-_+]+/)
+    .filter((segment) => segment.length > 0 && !/\d/.test(segment));
+
+  if (named.length === 0) {
+    return "?";
+  }
+  if (named.length === 1) {
+    return named[0].slice(0, 2).toUpperCase();
+  }
+  return (named[0][0] + named[1][0]).toUpperCase();
+}

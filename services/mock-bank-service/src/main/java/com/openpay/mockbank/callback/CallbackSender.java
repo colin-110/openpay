@@ -2,7 +2,9 @@ package com.openpay.mockbank.callback;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.openpay.mockbank.domain.BankProperties;
+import java.net.http.HttpClient;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.HexFormat;
@@ -12,6 +14,8 @@ import javax.crypto.spec.SecretKeySpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.ClientHttpRequestFactory;
+import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
@@ -37,7 +41,32 @@ public class CallbackSender {
     public CallbackSender(BankProperties properties, ObjectMapper objectMapper) {
         this.properties = properties;
         this.objectMapper = objectMapper;
-        this.restClient = RestClient.builder().build();
+        // Pooled and bounded, like every other client that crosses a service boundary here.
+        //
+        // This is a simulated acquirer, but it is not a toy in the one way that matters: it is what
+        // drives every payment from CREATED to CAPTURED in every load test and every demo, so if it
+        // is the slowest thing in the loop then the asynchronous flow being measured is really this
+        // class. Unpooled, it opened a fresh TCP connection to webhook-service for every callback —
+        // 400 a second during webhook-spike.js — and with no read timeout a webhook-service that
+        // stopped answering would hold an @Async thread forever rather than failing and freeing it.
+        this.restClient = RestClient.builder()
+                .requestFactory(pooledFactory())
+                .build();
+    }
+
+    /**
+     * The JDK's own client rather than {@code SimpleClientHttpRequestFactory}, because that one is
+     * built on {@code HttpURLConnection} and does not pool — which is the thing being fixed. This
+     * one keeps connections alive and reuses them, and needs no dependency mock-bank does not
+     * already have.
+     */
+    private static ClientHttpRequestFactory pooledFactory() {
+        JdkClientHttpRequestFactory factory = new JdkClientHttpRequestFactory(
+                HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(2)).build());
+        // Generous, because a callback that is merely slow should still land — the platform treats
+        // a lost callback as a stuck payment. Bounded, because "forever" is not a timeout.
+        factory.setReadTimeout(Duration.ofSeconds(10));
+        return factory;
     }
 
     @Async

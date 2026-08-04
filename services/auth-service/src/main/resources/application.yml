@@ -2,7 +2,11 @@ spring:
   application:
     name: auth-service
   datasource:
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:openpay_auth}
+    # pgjdbc parses and plans a statement afresh until it has seen it prepareThreshold
+    # times (default 5), then switches to a server-side prepared statement. Every query
+    # this platform runs is one of a small fixed set, so there is nothing to be gained by
+    # waiting - promote on first use and keep a larger cache per connection.
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:openpay_auth}?prepareThreshold=1&preparedStatementCacheQueries=256&preparedStatementCacheSizeMiB=5
     username: ${DB_USERNAME:openpay}
     password: ${DB_PASSWORD:openpay}
     hikari:
@@ -10,10 +14,17 @@ spring:
       # one PostgreSQL, so these ceilings are chosen against its max_connections (200, set in
       # docker-compose.yml) with room for every pool to burst at once.
       maximum-pool-size: 25
-      # The important one. HikariCP opens minimum-idle connections eagerly and defaults it to
-      # maximum-pool-size, which is why this stack sat at 96 of 100 connections while doing
-      # nothing at all. Two per service at rest, growing on demand.
-      minimum-idle: 2
+      # HikariCP opens minimum-idle connections eagerly and defaults it to maximum-pool-size,
+      # which is why this stack once sat at 96 of 100 connections while doing nothing at all.
+      # Most services therefore rest at 2 and grow on demand.
+      #
+      # This one does not, and it is the exception on purpose. Every authenticated request in the
+      # platform consults auth-service, so it is the only pool whose cold-start cost is paid by
+      # every other service at once: a measured run found `validate-key` read timeouts during the
+      # ramp, and the gateway fails closed, so those became refused payments rather than slow
+      # ones. Eight idle connections is a few megabytes of PostgreSQL backend to make the first
+      # burst after a quiet period behave like the hundredth.
+      minimum-idle: 8
       # Return a connection to the pool rather than holding it open forever, so a service that
       # goes quiet gives its connections back to the ones that are busy.
       idle-timeout: 60000

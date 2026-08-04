@@ -56,8 +56,14 @@ x-service-defaults: &service-defaults
     OPENPAY_OPS_TOKEN: ${OPENPAY_OPS_TOKEN:?set OPENPAY_OPS_TOKEN before starting the stack}
     # Containers deliver webhooks to real hosts, so the loopback exemption stays off.
     ALLOW_LOOPBACK_WEBHOOKS: "false"
-    # Browser origin allowed to call the gateway and auth-service. Required: both refuse every
+    # Browser origins allowed to call the gateway and auth-service. Required: both refuse every
     # cross-origin request when it is unset, rather than trusting a default nobody chose.
+    #
+    # Two origins now, not one. The dashboard was the only browser that talked to the platform
+    # until the checkout began tokenising cards — and tokenising means the customer's browser
+    # posts to the gateway from the shop's origin, which is the whole reason the shop's server
+    # never sees a card number. The shop is listed here for that one endpoint's sake; it presents
+    # a publishable key, which ApiKeyPrincipal refuses everywhere else.
     OPENPAY_DASHBOARD_ORIGINS: ${OPENPAY_DASHBOARD_ORIGINS:?set OPENPAY_DASHBOARD_ORIGINS before starting the stack}
     # Backs the gateway rate limit and the auth attempt throttle. Both fail open if it is
     # unreachable, so this is a degradation, not an outage.
@@ -70,6 +76,7 @@ x-service-defaults: &service-defaults
     SETTLEMENT_SERVICE_BASE_URL: http://settlement-service:8087
     NOTIFICATION_SERVICE_BASE_URL: http://notification-service:8088
     FRAUD_SERVICE_BASE_URL: http://fraud-service:8089
+    VAULT_SERVICE_BASE_URL: http://vault-service:8091
     # Mailpit: catches outbound email locally instead of talking to a real SMTP provider. Viewable
     # at http://localhost:8025.
     SMTP_HOST: mailpit
@@ -282,6 +289,27 @@ services:
       <<: *app-healthcheck
       test: ["CMD-SHELL", "curl -fsS http://localhost:8089/actuator/health || exit 1"]
 
+  # The only service that ever sees a card number, and the only one with no database at all.
+  # Tokens live in Redis and expire on their own; nothing here is persisted. See VaultApplication
+  # for why that boundary is a service rather than a package.
+  vault-service:
+    <<: *service-defaults
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        MODULE: services/vault-service
+        ARTIFACT: vault-service
+    container_name: openpay-vault-service
+    environment:
+      <<: *common-env
+    ports: ["8091:8091"]
+    depends_on:
+      redis: {condition: service_healthy}
+    healthcheck:
+      <<: *app-healthcheck
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8091/actuator/health || exit 1"]
+
   gateway-service:
     <<: *service-defaults
     build:
@@ -304,6 +332,7 @@ services:
       auth-service: {condition: service_healthy}
       payment-service: {condition: service_healthy}
       merchant-service: {condition: service_healthy}
+      vault-service: {condition: service_healthy}
     healthcheck:
       <<: *app-healthcheck
       test: ["CMD-SHELL", "curl -fsS http://localhost:8080/actuator/health || exit 1"]
@@ -372,6 +401,103 @@ services:
       <<: *app-healthcheck
       test: ["CMD-SHELL", "curl -fsS http://localhost:9002/actuator/health || exit 1"]
 
+  # A shop that does not exist, taking payments that really happen.
+  #
+  # Its only reason to be here is that everything else in this stack demonstrates the platform to
+  # someone who already knows what a payment gateway is. This is the one thing you can hand to
+  # someone who does not: click Pay, watch the payment reach CAPTURED on its own, then find it in
+  # the dashboard.
+  #
+  # STOREFRONT_API_KEY is empty unless you set it — scripts/seed-demo.sh prints one. The shop says
+  # so on its own front page rather than failing with a 401 that reads like the platform is broken.
+  # Runs for two seconds, mints the demo merchant's credentials, and exits. Holds the admin token
+  # so that the shop does not have to — see platform/docker/demo/provision.sh for why that
+  # distinction is the whole point rather than fussiness.
+  demo-provisioner:
+    profiles: ["shop"]
+    image: curlimages/curl:8.11.1
+    container_name: openpay-demo-provisioner
+    # Root, unlike every long-running service here, which all run as uid 10001. This one exists to
+    # write a file into a fresh named volume, and Docker creates those owned by root — so the
+    # image's own unprivileged `curl_user` cannot write to it. Normal for an init container: it
+    # runs for two seconds, touches one file, and exits. The services that stay up do not.
+    user: "0:0"
+    environment:
+      OPENPAY_ADMIN_TOKEN: ${OPENPAY_ADMIN_TOKEN:?set OPENPAY_ADMIN_TOKEN before starting the stack}
+      GATEWAY_BASE_URL: http://gateway-service:8080
+      AUTH_SERVICE_BASE_URL: http://auth-service:8081
+    volumes:
+      - ./demo/provision.sh:/provision.sh:ro
+      - demo-credentials:/demo
+    entrypoint: ["sh", "/provision.sh"]
+    depends_on:
+      gateway-service: {condition: service_healthy}
+      auth-service: {condition: service_healthy}
+    restart: "no"
+
+  demo-storefront:
+    <<: *service-defaults
+    # Behind a profile, so a plain `up -d` brings up the platform and not the shop. It is not part
+    # of the platform: it is a merchant integration, which on a real deployment lives on its own
+    # host entirely (docker-compose.storefront.yml, and step 6 of docs/DEPLOY.md). Having it start
+    # with everything else quietly says otherwise.
+    #
+    # `docker compose ... --profile shop up -d` starts the shop and its provisioner together, and
+    # that is now all anybody has to do — the credentials it needs are minted by demo-provisioner
+    # below and read from a shared volume, rather than pasted in by hand.
+    profiles: ["shop"]
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      args:
+        MODULE: services/demo-storefront
+        ARTIFACT: demo-storefront
+    container_name: openpay-demo-storefront
+    environment:
+      <<: *common-env
+      STOREFRONT_PORT: 8090
+      # Through the front door, like any merchant: authenticated at the gateway and rate limited
+      # there too. Talking straight to payment-service would demo a system nobody runs.
+      GATEWAY_BASE_URL: http://gateway-service:8080
+      # STOREFRONT_API_KEY and STOREFRONT_PUBLISHABLE_KEY are deliberately absent here, and their
+      # absence is load-bearing rather than an oversight.
+      #
+      # They used to be declared as `${STOREFRONT_API_KEY:-}`, which sets the variable to an empty
+      # string when nothing supplies it — and Spring ranks an environment variable above an imported
+      # file regardless of whether it has a value. So an unset key did not fall through to what
+      # demo-provisioner had written; it silently beat it, and the shop came up reporting that it
+      # had no credentials while holding a file containing two. Not declaring them is what lets the
+      # import below be the source.
+      #
+      # To run this shop with keys of your own, use docker-compose.storefront.yml, where both are
+      # required and neither can be empty.
+      #
+      # The page tokenises the card against the gateway itself, so it needs an address a browser can
+      # actually resolve — hence localhost here rather than the service name above.
+      GATEWAY_PUBLIC_URL: ${STOREFRONT_GATEWAY_PUBLIC_URL:-http://localhost:8080}
+      # A browser URL, so localhost — this is rendered into a link the viewer clicks, not called
+      # from inside the network.
+      DASHBOARD_URL: ${STOREFRONT_DASHBOARD_URL:-http://localhost:5173}
+      # Reads whatever demo-provisioner wrote. `optional:` so that setting the keys by hand still
+      # works and a missing file is not a startup failure — the shop already says on its own front
+      # page when it has no key, which is a far better error than a stack trace.
+      #
+      # The env vars above still win where they are set: Spring ranks environment variables above
+      # an imported file, so a real deployment passing real keys is unaffected by this existing.
+      SPRING_CONFIG_IMPORT: optional:file:/demo/demo.properties
+    volumes:
+      - demo-credentials:/demo:ro
+    ports: ["8090:8090"]
+    depends_on:
+      gateway-service: {condition: service_healthy}
+      # Waits for the provisioner to have finished, not merely started. Spring reads its
+      # configuration once at boot, so a credentials file that appears a second later would be
+      # invisible until the next restart.
+      demo-provisioner: {condition: service_completed_successfully}
+    healthcheck:
+      <<: *app-healthcheck
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8090/actuator/health || exit 1"]
+
   # TLS termination at the edge, matching platform/k8s/40-ingress.yaml's four-host split exactly.
   # Nothing behind it changes: gateway-service, auth-service, webhook-service, and dashboard stay
   # on plain HTTP, unaware anything is proxying them. See platform/docker/caddy/Caddyfile and
@@ -397,4 +523,8 @@ services:
       dashboard: {condition: service_healthy}
 
 volumes:
+  # The demo merchant's credentials, written once by demo-provisioner and read by the shop. A named
+  # volume rather than a bind mount so the file never lands in the working tree, where a real API
+  # key would be one `git add -A` away from being published.
+  demo-credentials:
   caddy-data:

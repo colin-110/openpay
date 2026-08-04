@@ -2,7 +2,11 @@ spring:
   application:
     name: payment-service
   datasource:
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:openpay_payment}
+    # pgjdbc parses and plans a statement afresh until it has seen it prepareThreshold
+    # times (default 5), then switches to a server-side prepared statement. Every query
+    # this platform runs is one of a small fixed set, so there is nothing to be gained by
+    # waiting - promote on first use and keep a larger cache per connection.
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:openpay_payment}?prepareThreshold=1&preparedStatementCacheQueries=256&preparedStatementCacheSizeMiB=5
     username: ${DB_USERNAME:openpay}
     password: ${DB_PASSWORD:openpay}
     hikari:
@@ -10,10 +14,15 @@ spring:
       # one PostgreSQL, so these ceilings are chosen against its max_connections (200, set in
       # docker-compose.yml) with room for every pool to burst at once.
       maximum-pool-size: 25
-      # The important one. HikariCP opens minimum-idle connections eagerly and defaults it to
-      # maximum-pool-size, which is why this stack sat at 96 of 100 connections while doing
-      # nothing at all. Two per service at rest, growing on demand.
-      minimum-idle: 2
+      # HikariCP opens minimum-idle connections eagerly and defaults it to maximum-pool-size,
+      # which is why this stack once sat at 96 of 100 connections while doing nothing at all.
+      # Most services therefore rest at 2 and grow on demand.
+      #
+      # The write path rests higher, for the same reason auth-service does: growing the pool from
+      # cold happens exactly when a burst arrives, and the requests that pay for it are the ones
+      # at the front of that burst. Six is enough to absorb a normal ramp without holding
+      # connections nine other services could be using.
+      minimum-idle: 6
       # Return a connection to the pool rather than holding it open forever, so a service that
       # goes quiet gives its connections back to the ones that are busy.
       idle-timeout: 60000
@@ -70,6 +79,11 @@ openpay:
     # Read-only, and only when a merchant opens one payment: the router owns its attempt history
     # and this service asks rather than keeping a second copy of it.
     base-url: ${PROVIDER_ROUTER_BASE_URL:http://localhost:8085}
+  vault:
+    # Where a payment token is spent. Unlike the fraud gate below, this call does not fail open:
+    # a vault that cannot be reached means the instrument behind a token is unknown, and accepting
+    # the caller's own description of it instead is exactly what redeeming the token prevents.
+    base-url: ${VAULT_SERVICE_BASE_URL:http://localhost:8091}
   fraud:
     base-url: ${FRAUD_SERVICE_BASE_URL:http://localhost:8089}
     # What to do when screening cannot be reached. Open by default: refusing every payment on the
@@ -77,6 +91,20 @@ openpay:
     # losses it would prevent. Payments that go through this way are recorded as UNSCREENED rather
     # than ALLOWED, so the window is visible afterwards. Set false to stop taking payments instead.
     fail-open: ${FRAUD_FAIL_OPEN:true}
+    # Screen before the response (false) or after it (true).
+    #
+    # Synchronous is the default and the stronger contract: a payment the rules refuse is never
+    # persisted and the merchant is told 422 immediately. Asynchronous returns 201 as soon as the
+    # payment is durable and screens afterwards, which takes a network round trip out of the
+    # merchant's request at the cost of a refusal arriving after the acknowledgement. Both keep
+    # the property that matters — nothing reaches an acquirer until screening has allowed it.
+    async: ${FRAUD_ASYNC:false}
+    # Only read when async is on. How long a payment may wait for a screening answer before it is
+    # treated as stalled, re-requested, and counted in openpay_payments_awaiting_screening. Two
+    # minutes is far longer than screening takes and short enough to alert on within an incident.
+    async-deadline: ${FRAUD_ASYNC_DEADLINE:PT2M}
+    async-sweep-ms: ${FRAUD_ASYNC_SWEEP_MS:30000}
+    async-sweep-batch: 100
   outbox:
     relay-enabled: true
     poll-interval-ms: 500

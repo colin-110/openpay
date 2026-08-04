@@ -97,8 +97,14 @@ class SecurityAlertEmailIT {
         assertThatThrownBy(() -> userService.refresh(login.refreshToken()))
                 .isInstanceOf(InvalidRefreshTokenException.class);
 
+        // Thirty seconds rather than ten, and the extra twenty cost nothing: Awaitility polls, so
+        // a healthy run still finishes the moment the mail lands. The budget only decides how long
+        // a *failure* takes to report — and at ten seconds this test failed on a loaded host while
+        // passing in isolation on the same machine, which is the worst kind of red build. An
+        // asynchronous email crossing a container boundary does not have a wall-clock guarantee,
+        // and CI is exactly the contended host that finds that out.
         JsonNode message = await()
-                .atMost(Duration.ofSeconds(10))
+                .atMost(Duration.ofSeconds(30))
                 .pollInterval(Duration.ofMillis(200))
                 .until(() -> findMessageTo(email), (m) -> m != null);
 

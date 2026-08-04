@@ -21,7 +21,9 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -45,6 +47,9 @@ class LedgerPostingIT {
 
     @Autowired
     private EntityManager entityManager;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     @Test
     void postsBothSidesOfACapture() {
@@ -195,6 +200,109 @@ class LedgerPostingIT {
                     .executeUpdate();
             entityManager.flush();
         }).hasMessageContaining("append-only");
+    }
+
+    @Test
+    void anUnbalancedTransactionIsRefusedByTheDatabaseNotJustByTheService() {
+        UUID transactionId = UUID.randomUUID();
+
+        // Deliberately bypassing LedgerService, because that is the whole point. validate() already
+        // refuses this — but it is one method in one service, and a second writer, a migration or a
+        // psql session would walk straight past it. An unbalanced journal cannot be repaired by a
+        // later correction, so the rule belongs where nothing can route around it.
+        // hasStackTraceContaining, not hasMessageContaining: the failure surfaces as Spring's
+        // TransactionSystemException with the PSQLException nested underneath, and asserting on
+        // the outer message alone would fail even though the constraint worked.
+        assertThatThrownBy(() -> insertRawUnbalancedTransaction(transactionId, 5_000L, 4_000L))
+                .hasStackTraceContaining("does not balance");
+
+        // And nothing was left behind: the constraint is deferred to COMMIT, so the whole
+        // transaction rolls back rather than the credit surviving on its own.
+        assertThat(transactionRepository.findById(transactionId)).isEmpty();
+    }
+
+    @Test
+    void aOneSidedTransactionIsRefusedByTheDatabase() {
+        // Only a debit. The most likely shape for a real bug — a posting that builds one leg and
+        // then throws, or a consumer that writes half a transfer — and the one an "entries must
+        // come in pairs" check would miss if it only counted rows rather than summing them.
+        assertThatThrownBy(() -> insertRawUnbalancedTransaction(UUID.randomUUID(), 5_000L, 0L))
+                .hasStackTraceContaining("does not balance");
+    }
+
+    @Test
+    void aBalancedTransactionStillCommitsWithTheConstraintInPlace() {
+        // The other half of the check, and the one that would catch the constraint being written
+        // as a plain row trigger: entries are inserted one at a time, so a transaction is
+        // unbalanced in between its two rows. A non-deferred trigger would refuse every posting
+        // the platform has ever made, and only a test that posts a *valid* one would notice.
+        UUID merchantId = UUID.randomUUID();
+        LedgerTransaction transaction =
+                ledgerService.post(capture(UUID.randomUUID(), UUID.randomUUID(), merchantId, 7_777));
+
+        assertThat(entryRepository.findByTransactionId(transaction.getId())).hasSize(2);
+    }
+
+    /**
+     * Writes a transaction and its entries with raw SQL, skipping every application-level check.
+     *
+     * <p>Driven through a TransactionTemplate rather than {@code @Transactional} on this method:
+     * the annotation is applied by a proxy, and a method called from inside the same class does
+     * not go through one, so it would silently do nothing. That is not a hypothetical — the first
+     * version of this test was written that way, ran with no transaction at all, and reported the
+     * constraint as broken when it was working perfectly.
+     *
+     * <p>The commit is the point. This constraint is DEFERRABLE INITIALLY DEFERRED, so it fires
+     * when the transaction commits, not when a row is inserted — which is exactly what lets a
+     * posting be unbalanced in between writing its debit and its credit.
+     */
+    private void insertRawUnbalancedTransaction(UUID transactionId, long debit, long credit) {
+        new TransactionTemplate(transactionManager).execute(status -> {
+            UUID accountId = ensureAccount();
+            entityManager.createNativeQuery("""
+                    INSERT INTO ledger_transactions (id, event_id, reference_type, reference_id, currency,
+                                                     description, created_at)
+                    VALUES (:id, :eventId, 'PAYMENT', :referenceId, 'USD', 'raw insert', now())
+                    """)
+                    .setParameter("id", transactionId)
+                    .setParameter("eventId", UUID.randomUUID())
+                    .setParameter("referenceId", UUID.randomUUID())
+                    .executeUpdate();
+
+            insertRawEntry(transactionId, accountId, "DEBIT", debit);
+            insertRawEntry(transactionId, accountId, "CREDIT", credit);
+            return null;
+        });
+    }
+
+    private void insertRawEntry(UUID transactionId, UUID accountId, String direction, long amount) {
+        if (amount == 0) {
+            // ck_entry_amount_positive forbids a zero row, so a "transaction for zero" is
+            // expressed as no entries on that side at all.
+            return;
+        }
+        entityManager.createNativeQuery("""
+                INSERT INTO ledger_entries (id, transaction_id, account_id, direction, amount, currency, created_at)
+                VALUES (:id, :transactionId, :accountId, :direction, :amount, 'USD', now())
+                """)
+                .setParameter("id", UUID.randomUUID())
+                .setParameter("transactionId", transactionId)
+                .setParameter("accountId", accountId)
+                .setParameter("direction", direction)
+                .setParameter("amount", amount)
+                .executeUpdate();
+    }
+
+    private UUID ensureAccount() {
+        UUID accountId = UUID.randomUUID();
+        entityManager.createNativeQuery("""
+                INSERT INTO ledger_accounts (id, account_code, merchant_id, currency, account_type, created_at)
+                VALUES (:id, :code, NULL, 'USD', 'ASSET', now())
+                """)
+                .setParameter("id", accountId)
+                .setParameter("code", "RAW_TEST_" + accountId.toString().substring(0, 8))
+                .executeUpdate();
+        return accountId;
     }
 
     @Test

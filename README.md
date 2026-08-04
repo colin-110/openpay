@@ -89,7 +89,9 @@ walked through an actual login and an actual payment on a real cluster, not vali
 | `settlement-service` | 8087 | `openpay_settlement` | Accrues payables on capture and batches them into merchant payouts. |
 | `notification-service` | 8088 | `openpay_notification` | Delivers signed webhooks to merchants, with retries and a delivery log. |
 | `fraud-service` | 8089 | `openpay_fraud` | Screens payments against rules held in a table, and owns the review queue. |
+| `vault-service` | 8091 | — | Turns a card into a single-use token. The only service that sees a card number, and the only one with no database at all. |
 | `mock-bank-service` | 9001 / 9002 | — | Simulated acquirers. One codebase, run twice as `mock-bank-a` and `mock-bank-b`. |
+| `demo-storefront` | 8090 | — | A shop that does not exist, taking payments that really happen. Holds its API key server-side, exactly as a merchant integration must. |
 
 Shared code lives in `libs/`: `common-observability` (correlation IDs), `common-security`
 (API key and admin token authentication, applied per path by configuration), `common-kafka`
@@ -104,7 +106,13 @@ Four kinds of caller, five kinds of credential:
 
 - **Merchant API key** (`X-Api-Key`) — for payment traffic. Issued by auth-service, presented by
   merchants. Merchant identity is derived from the validated key and never read from a
-  client-supplied header.
+  client-supplied header. This one is a secret and must stay on a server.
+- **Publishable key** (`X-Api-Key`, prefix `opk_pub_`) — the only credential here meant to be
+  *read by strangers*. It goes in a checkout page, where anyone can lift it out of the developer
+  tools, and the security model is not "nobody will look": it carries scope `tokens:create`, which
+  may exchange a card for a single-use token and is refused by every read and write path on the
+  platform. A different prefix on purpose, so that a key in a log or a screenshot answers "how bad
+  is this?" without a database lookup.
 - **Dashboard session** (`Authorization: Bearer`) — for people. A 15-minute HS256 JWT issued by
   `POST /api/v1/auth/login`, accepted on exactly the same paths as an API key. Downstream code
   never learns which of the two was used: a payment read is scoped to a merchant either way.
@@ -179,7 +187,7 @@ docker compose -f platform/docker/docker-compose.yml -f platform/docker/docker-c
 ```
 
 Services start in dependency order and wait on each other's health checks, so the first run takes a
-few minutes (building twelve images) and then everything is up:
+few minutes (building thirteen images) and then everything is up:
 
 | | |
 | --- | --- |
@@ -187,6 +195,28 @@ few minutes (building twelve images) and then everything is up:
 | Dashboard | `http://localhost:5173` |
 | Grafana | `http://localhost:3000` |
 | Prometheus | `http://localhost:9090` |
+
+The demo storefront is deliberately **not** in that list. It is a merchant integration rather than
+part of the platform — on a real deployment it belongs on its own host entirely
+([Deploying](docs/DEPLOY.md#6-the-shop-on-a-second-host)) — so it sits behind a compose profile and
+starts in its own step:
+
+```bash
+docker compose -f platform/docker/docker-compose.yml -f platform/docker/docker-compose.apps.yml --profile shop up -d
+```
+
+That is the whole setup. A one-shot `demo-provisioner` container onboards a demo merchant, mints
+the shop's two API keys and a dashboard login, writes them to a volume the shop reads, and exits.
+Nothing is pasted anywhere by hand.
+
+The provisioner holds the admin token so that the shop does not have to, which is the point rather
+than an implementation detail: a merchant integration that could onboard merchants and mint
+credentials would not be demonstrating anything about how merchants actually work.
+
+The shop is then at `http://localhost:8090`. Put something in the basket, pay with one of the test
+cards it offers, and watch the payment reach captured on its own — then follow the link to the
+dashboard, whose credentials the shop prints on its own page, and find the same payment from the
+merchant's side.
 
 Tear it down with:
 
@@ -369,6 +399,30 @@ platform was still draining the previous one. Both sets of numbers are kept in
 [baseline.md](tests/performance/baseline.md) rather than the inconvenient one deleted, because
 "the load generator's schedule changed the answer by 20×" is a more useful thing to know than a
 single tidy figure.
+
+> [!IMPORTANT]
+> **This table has been superseded, and the honest number is lower.** Every run above drove a
+> single merchant, so the seeded `merchant-velocity-burst` rule (100 payments per merchant per
+> minute) held the great majority of them for review. A held payment is deliberately *not*
+> announced for routing — no acquirer, no ledger, no settlement — and it still returns 201, so k6
+> counted it as a success. These figures measured roughly a tenth of the work a payment does.
+>
+> Re-measured across a pool of merchants, with every payment doing the whole job — three runs of
+> the identical script, failure rate per tier:
+>
+> | Tier | Run A | Run B | Run C |
+> | --- | --- | --- | --- |
+> | 20/s | 0.0% | 0.0% | 0.0% |
+> | 50/s | 0.0% | 0.0% | 0.0% |
+> | 100/s | 10.0% | 0.0% | 9.7% |
+> | 150/s | 41.4% | 4.6% | 0.0% |
+>
+> **At least 50 payments a second, sustained, with zero failures — and this host cannot honestly
+> say more than that.** Above 50/s the tiers invert between runs (Run C passed 150/s cleanly while
+> failing 100/s), which is the measurement being swamped by a host running twelve JVMs, three
+> datastores and the load generator on twelve shared vCPUs. A ceiling needs hardware that is not
+> also the system under test. Full account, including the two bugs the re-measurement found, in
+> [baseline.md](tests/performance/baseline.md#stressjs--run-of-2026-08-03-after-the-merchant-pool-and-warm-up-fixes).
 
 ### Resilience — the claims, tested
 
@@ -1255,6 +1309,7 @@ tests/
   notification-service/
   fraud-service/
   mock-bank-service/
+  demo-storefront/
 web/
   dashboard/
 ```
@@ -1346,39 +1401,35 @@ rather than blended into one list of caveats.
 | --- | --- | --- |
 | **No real money moves.** Both acquirers are simulated and settlement clears a payable without sending funds anywhere. | Real acquiring needs a licensed entity, a bank relationship, and PCI-DSS scope. Not obtainable for a portfolio project. | A real acquirer sandbox (Razorpay/Stripe/Adyen) behind the existing `ProviderClient` interface — the routing, failover, and callback verification are already written against that seam, so it is an adapter, not a rewrite. |
 | **No PCI compliance.** Card data is captured as a network + last four and nothing else. | Compliance is an audited organisational process, not a code property. | Keep the current design (store nothing worth stealing) and put a real tokenisation vault in front. The data model already assumes it. |
-| **Throughput numbers are laptop numbers.** ~50 payments/second sustained on one host running all 22 containers. | Twelve JVMs, Postgres, Kafka, and Redis are sharing 12 vCPUs. The ceiling measured is the host's, not the architecture's. | Run the same k6 scripts against the existing Kubernetes manifests on real nodes. Nothing in the code changes; only the number does. |
+| **Throughput numbers are laptop numbers.** At least 50 payments/second clean on one host running all 22 containers; above that, run-to-run variance on this hardware exceeds the signal, so no ceiling is claimed. | Twelve JVMs, Postgres, Kafka, and Redis are sharing 12 vCPUs. The ceiling measured is the host's, not the architecture's. | Run the same k6 scripts against the existing Kubernetes manifests on real nodes. Nothing in the code changes; only the number does. |
 | **Fraud rules are a rule engine, not a model.** Threshold, velocity, and repeated-amount rules. | A real risk model needs labelled fraud data that doesn't exist for synthetic traffic. | Keep the rules as the fast deterministic path and add a scored model behind the same `FraudDecision` interface. |
 
 ### Can be fixed — I know how, it's scope not skill
 
 Roughly in the order I'd actually do them:
 
-1. **The fraud call sits inside the payment transaction.** Screening is a synchronous HTTP call
-   made while the database transaction is open, so it holds a connection while it waits. It is
-   bounded (500ms connect, 1s read) and it fails open, but bounded is not free and it is the single
-   biggest structural contributor to p99 on the write path. **Fix:** screen *before* opening the
-   transaction, or move to a two-phase `CREATED → SCREENED` flow driven by the event backbone that
-   already exists.
-2. **Key validation is a network call on every single request.** The gateway asks auth-service to
-   validate the API key per request, uncached. **Fix:** a short-TTL (5–10s) local cache of key
-   hash → merchant + scope. The trade-off is real and worth stating: revocation would take up to
-   the TTL to take effect, which is why it isn't already done.
-3. **No distributed tracing.** Correlation IDs answer *what happened* but not *where the time
-   went*. Given the p95 finding at 100 req/s below, this is now the thing I'd most want.
+1. **No distributed tracing.** Correlation IDs answer *what happened* but not *where the time
+   went*. Given how much of the latency work below came down to guessing which hop was slow and
+   then proving it by elimination, this is the thing I'd most want next.
    **Fix:** OpenTelemetry spans across the gateway → payment → fraud hop.
    ([ADR-0010](docs/adrs/0010-correlation-id-not-tracing.md) explains why it was deferred.)
-4. **The soak test is four minutes, not four hours.** Long enough to prove the mechanism, far too
+2. **The soak test is four minutes, not four hours.** Long enough to prove the mechanism, far too
    short to trust as evidence about a slow leak. **Fix:** `-e DURATION=4h` and actually watch it.
-5. **Single-merchant load only.** Every k6 run drives one merchant, so the
-   `(merchant_id, idempotency_key)` index is hotter than real traffic would make it, and
-   per-merchant velocity rules fire in a way they wouldn't across thousands of merchants.
-   **Fix:** provision N merchants in `setup()` and pick one per iteration.
-6. **No chaos under concurrent load.** `fault-injection.sh` proves fail-open and recovery, but one
+3. **No chaos under concurrent load.** `fault-injection.sh` proves fail-open and recovery, but one
    dependency at a time with no traffic. The interesting case — Redis dying *during* a 200/s run —
-   isn't covered by anything yet.
-7. **No consumer-contract tests.** Services agree on JSON payload shapes in `common-kafka`, and
+   isn't covered by anything yet. **This is no longer hypothetical:** the one genuinely nasty
+   failure found in this codebase was a Kafka broker that stayed up, stayed healthy, and quietly
+   stopped committing consumer offsets under a backlog, silently freezing every payment at
+   `CREATED` with no error anywhere. `fault-injection.sh` cannot find that class of bug by
+   construction — it tests clean failures, and this was a degraded one under load. Written up in
+   [ARCHITECTURE.md § 5.1](docs/ARCHITECTURE.md#51-the-failure-this-table-did-not-have).
+4. **No consumer-contract tests.** Services agree on JSON payload shapes in `common-kafka`, and
    `EventCodecTest` pins forward-compatibility, but nothing fails when a producer removes a field a
    consumer still reads. **Fix:** Pact, or schema-registry-backed contracts.
+5. **No coverage threshold.** JaCoCo now measures both suites and merges them into one report per
+   module, but nothing fails a build for dropping. A number picked before there was a baseline
+   would either pass everything or fail the first honest measurement, so the gate waits until
+   there is something real to set it against.
 
 ### What I'd tell a reviewer to look at first
 

@@ -69,6 +69,10 @@ public class PaymentController {
     public PaymentResponse getPayment(
             @RequestAttribute(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE) ApiKeyPrincipal principal,
             @PathVariable("paymentId") UUID paymentId) {
+        // Merchant scoping is not the whole authorisation check any more. A publishable key is
+        // valid, and belongs to this merchant, and still must not read a payment — it lives in a
+        // checkout page where anyone can lift it.
+        principal.requireRead("read payments");
         return paymentService.getPayment(principal.merchantId(), paymentId);
     }
 
@@ -82,6 +86,7 @@ public class PaymentController {
     public List<PaymentAttemptView> attempts(
             @RequestAttribute(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE) ApiKeyPrincipal principal,
             @PathVariable("paymentId") UUID paymentId) {
+        principal.requireRead("read acquirer attempts");
         paymentService.getPayment(principal.merchantId(), paymentId);
         return providerRouterClient.attemptsFor(paymentId, principal.merchantId());
     }
@@ -92,6 +97,7 @@ public class PaymentController {
             @RequestParam(name = "page", defaultValue = "0") int page,
             @RequestParam(name = "size", defaultValue = "20") int size,
             @RequestParam(name = "status", required = false) PaymentStatus status) {
+        principal.requireRead("list payments");
         Pageable pageable = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), MAX_PAGE_SIZE));
         return paymentService.listPayments(principal.merchantId(), status, pageable);
     }

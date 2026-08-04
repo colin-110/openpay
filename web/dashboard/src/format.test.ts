@@ -10,6 +10,7 @@ import {
   titleCase,
   toMajorUnits,
   toMinorUnits,
+  initialsFor,
 } from "./format";
 
 describe("formatAmount", () => {
@@ -164,5 +165,23 @@ describe("methodFamily", () => {
 
   it("upper-cases UPI rather than title-casing it to Upi", () => {
     expect(methodFamily({ ...BLANK_METHOD, type: "upi" })).toBe("UPI");
+  });
+});
+
+describe("initialsFor", () => {
+  it("takes the first letters of a person's name, not of the raw string", () => {
+    expect(initialsFor("owner@openpay.test")).toBe("OW");
+    expect(initialsFor("colin.thomas@openpay.test")).toBe("CT");
+    expect(initialsFor("anita_r@openpay.test")).toBe("AR");
+  });
+
+  it("skips a leading run id rather than rendering it as a name", () => {
+    // The demo seeder used to produce exactly this, and the avatar read "23".
+    expect(initialsFor("232f9ebc-owner@openpay.test")).toBe("OW");
+  });
+
+  it("falls back rather than showing digits when there is no name to take", () => {
+    expect(initialsFor("12345@openpay.test")).toBe("?");
+    expect(initialsFor("")).toBe("?");
   });
 });

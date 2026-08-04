@@ -2,7 +2,6 @@ package com.openpay.fraud.application;
 
 import com.openpay.events.OpenPayTopics;
 import com.openpay.events.payload.FraudCheckCompleted;
-import com.openpay.events.payload.FraudCheckRequested;
 import com.openpay.fraud.domain.DecisionOutcome;
 import com.openpay.fraud.domain.FraudDecision;
 import com.openpay.fraud.domain.FraudDecisionRepository;
@@ -18,6 +17,7 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -41,6 +41,22 @@ public class FraudService {
     private final FraudProperties properties;
     private final MeterRegistry meterRegistry;
     private final RedisVelocitySource redisVelocity;
+
+    /**
+     * The enabled rules, re-read at most once a second.
+     *
+     * <p>This is a handful of rows that change when an operator edits them and at no other time,
+     * and it was being SELECTed on every payment. A short TTL rather than invalidate-on-write
+     * because fraud-service can run more than one replica: a write handled by one instance is
+     * invisible to the others, so the TTL — not the eviction — is what actually makes them agree.
+     * One second is short enough that enabling a rule feels immediate and long enough to take the
+     * query off the hot path entirely.
+     */
+    private final AtomicReference<CachedRules> cachedRules = new AtomicReference<>();
+    private static final long RULES_TTL_NANOS = java.time.Duration.ofSeconds(1).toNanos();
+
+    private record CachedRules(List<FraudRule> rules, long expiresAtNanos) {
+    }
 
     public FraudService(
             FraudRuleRepository ruleRepository,
@@ -80,7 +96,7 @@ public class FraudService {
             return existing.get();
         }
 
-        List<FraudRule> rules = ruleRepository.findByEnabledTrueOrderByPriorityAsc();
+        List<FraudRule> rules = enabledRules();
         Optional<RuleMatch> match = ruleEngine.firstMatch(rules, request, velocitySource());
 
         DecisionOutcome outcome = match
@@ -117,16 +133,17 @@ public class FraudService {
                             "Unique constraint fired but no decision found for payment " + request.paymentId()));
         }
 
-        // Same transaction as the decision row, so a held payment can never exist without the event
-        // that will eventually release it.
-        outboxWriter.append(AGGREGATE_TYPE, OpenPayTopics.FRAUD_CHECK_REQUESTED, request.paymentId(),
-                new FraudCheckRequested(
-                        request.paymentId(),
-                        request.merchantId(),
-                        request.amount(),
-                        request.currency(),
-                        request.paymentMethodType()));
-
+        // fraud.check-requested.v1 is deliberately NOT published here, though it used to be.
+        //
+        // Nothing ever consumed it — it was a write-only announcement that screening had happened,
+        // published under a name that says the opposite. Since payment-service began publishing it
+        // as the actual request in asynchronous mode, emitting it again from here would feed this
+        // service's own listener: screen, publish, consume, screen. Idempotency bounds that at one
+        // wasted round rather than a true loop, but a wasted round per payment is still a wasted
+        // round per payment, and an event nobody reads is not worth the outbox row.
+        //
+        // The decision itself is announced by fraud.check-completed.v1 below, which payment-service
+        // does consume and which is what actually releases or fails the payment.
         if (outcome.isFinal()) {
             publishCompletion(decision, outcome, false);
         }
@@ -191,6 +208,7 @@ public class FraudService {
         }
         FraudRule rule = ruleRepository.save(
                 new FraudRule(name, type, threshold, windowSeconds, currency, action, priority));
+        invalidateRuleCache();
         log.info("Created fraud rule '{}' ({} {} -> {}) at priority {}",
                 name, type, threshold, action, priority);
         return rule;
@@ -200,6 +218,7 @@ public class FraudService {
     public FraudRule setRuleEnabled(UUID ruleId, boolean enabled) {
         FraudRule rule = ruleRepository.findById(ruleId).orElseThrow(() -> new RuleNotFoundException(ruleId));
         rule.setEnabled(enabled);
+        invalidateRuleCache();
         log.info("Fraud rule '{}' is now {}", rule.getName(), enabled ? "enabled" : "disabled");
         return rule;
     }
@@ -248,6 +267,24 @@ public class FraudService {
             throw new InvalidRuleException("AMOUNT_OVER needs a currency; a minor-unit threshold "
                     + "means nothing without one");
         }
+    }
+
+    private List<FraudRule> enabledRules() {
+        CachedRules current = cachedRules.get();
+        long now = System.nanoTime();
+        if (current != null && current.expiresAtNanos() > now) {
+            return current.rules();
+        }
+        // Detached from the persistence context on purpose: these are handed to the rule engine and
+        // read after this transaction ends, and a lazy field touched then would fail.
+        List<FraudRule> fresh = List.copyOf(ruleRepository.findByEnabledTrueOrderByPriorityAsc());
+        cachedRules.set(new CachedRules(fresh, now + RULES_TTL_NANOS));
+        return fresh;
+    }
+
+    /** Drops the cache so an operator's edit is visible on this instance immediately. */
+    private void invalidateRuleCache() {
+        cachedRules.set(null);
     }
 
     /**

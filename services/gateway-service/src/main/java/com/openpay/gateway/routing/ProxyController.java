@@ -20,12 +20,28 @@ public class ProxyController {
         this.reverseProxy = reverseProxy;
     }
 
+    /**
+     * Every prefix this gateway proxies, and it has to be listed <em>here</em> as well as in
+     * {@code openpay.gateway.routes}.
+     *
+     * <p>The two are not redundant, though they look it: this annotation decides whether Spring
+     * dispatches the request to this controller at all, and the configuration decides where it then
+     * goes. A prefix present in the configuration and missing here never reaches
+     * {@link ReverseProxy} — Spring answers 404 first, and the route sits there looking correct.
+     * That is exactly what happened when {@code /api/v1/tokens} was added, and the symptom was a
+     * 404 from the gateway for a path whose target was configured and healthy.
+     *
+     * <p>Both spellings of each prefix, with and without {@code /**}, because the collection
+     * endpoints ({@code POST /api/v1/payments}) do not match a pattern that requires a trailing
+     * segment.
+     */
     @RequestMapping({
             "/api/v1/payments/**", "/api/v1/payments",
             "/api/v1/refunds/**", "/api/v1/refunds",
             "/api/v1/merchants/**", "/api/v1/merchants",
             "/api/v1/settlements/**", "/api/v1/settlements",
-            "/api/v1/webhooks/**", "/api/v1/webhooks"})
+            "/api/v1/webhooks/**", "/api/v1/webhooks",
+            "/api/v1/tokens/**", "/api/v1/tokens"})
     public ResponseEntity<byte[]> proxy(
             HttpServletRequest request, @RequestBody(required = false) byte[] body) {
 

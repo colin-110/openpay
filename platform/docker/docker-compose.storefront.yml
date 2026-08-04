@@ -1,0 +1,94 @@
+# The shop, on its own host, talking to an OpenPay deployment somewhere else.
+#
+#   docker compose -f platform/docker/docker-compose.storefront.yml up -d
+#
+# This file is deliberately not layered onto docker-compose.yml the way docker-compose.apps.yml is.
+# It is the whole deployment: one container, plus Caddy for TLS. No PostgreSQL, no Kafka, no Redis,
+# no shared network with the platform — because a merchant integrating with a payment gateway has
+# none of those things either. That is the point of running it separately rather than as a
+# thirteenth service in the platform's own compose file: co-located, "the shop talks to the
+# gateway" is indistinguishable from "the shop is part of the gateway", and the one claim this
+# service exists to demonstrate — that an ordinary server-side integration is all it takes — is the
+# claim that arrangement cannot make.
+#
+# What crosses the boundary is exactly what a real integration sends: HTTPS to the public gateway,
+# with an API key in a header. Nothing else. If this host can reach the gateway's TLS port, the
+# integration works; if it cannot, it fails the way a real merchant's would.
+#
+# Requirements on this host: ~512 MB of RAM and outbound HTTPS. It fits in the smallest instance
+# any provider sells.
+
+name: openpay-storefront
+
+services:
+  demo-storefront:
+    # The image CI already publishes on every push to main, tagged by commit sha — see the `images`
+    # job in .github/workflows/ci.yml. Pulling is the reason this host does not need the source, a
+    # JDK, or the 10-20 minutes the Maven reactor takes on a small box.
+    #
+    # To build from source here instead, replace `image:` with:
+    #   build:
+    #     context: ../..
+    #     dockerfile: Dockerfile
+    #     args: { MODULE: services/demo-storefront, ARTIFACT: demo-storefront }
+    image: ghcr.io/${GHCR_OWNER:?set GHCR_OWNER to the GitHub owner the images were pushed under}/demo-storefront:${OPENPAY_TAG:?set OPENPAY_TAG to the commit sha to run}
+    container_name: openpay-demo-storefront
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      JAVA_TOOL_OPTIONS: >-
+        -XX:MaxRAMPercentage=60.0
+        -XX:+UseSerialGC
+        -Xss512k
+        -XX:MaxMetaspaceSize=128m
+      STOREFRONT_PORT: 8090
+      # The *public* gateway, over TLS, by hostname. This is the entire integration: change this
+      # one value and the same shop pays into a different deployment.
+      GATEWAY_BASE_URL: ${OPENPAY_GATEWAY_URL:?set OPENPAY_GATEWAY_URL, e.g. https://pay.example.com}
+      # Issued by scripts/seed-demo.sh against that deployment, and scoped to one merchant. It is
+      # the only credential this host holds, it never reaches a browser, and the worst it can do is
+      # create and read payments for that one merchant. Rotate it by reissuing and restarting.
+      STOREFRONT_API_KEY: ${STOREFRONT_API_KEY:?set STOREFRONT_API_KEY to a key issued by that deployment}
+      # The publishable key, which is rendered into the checkout page and is meant to be. It carries
+      # tokens:create and nothing else, so a visitor who copies it out of the page has gained the
+      # ability to type their own card number into a form. The key above must never appear there.
+      STOREFRONT_PUBLISHABLE_KEY: ${STOREFRONT_PUBLISHABLE_KEY:?set STOREFRONT_PUBLISHABLE_KEY to the publishable key issued by that deployment}
+      # Same gateway, but as the customer's browser must reach it — this is the address the card is
+      # posted to directly. Identical to OPENPAY_GATEWAY_URL here, and deliberately a separate
+      # variable, because they diverge the moment the shop and the gateway share a private network.
+      GATEWAY_PUBLIC_URL: ${OPENPAY_GATEWAY_URL}
+      # A link the visitor clicks, so it is resolved by their browser rather than from in here.
+      DASHBOARD_URL: ${OPENPAY_DASHBOARD_URL:?set OPENPAY_DASHBOARD_URL, e.g. https://dashboard.example.com}
+    # Not published to the host. Caddy is the only way in, so there is no plain-HTTP port sitting
+    # open next to the TLS one for someone to find.
+    expose: ["8090"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8090/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+
+  caddy:
+    image: caddy:2.9-alpine
+    container_name: openpay-storefront-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # The hostname Let's Encrypt will issue for. It has to resolve to this host's public IP
+      # before the first start, or the certificate order fails and Caddy retries with backoff.
+      SHOP_HOSTNAME: ${SHOP_HOSTNAME:?set SHOP_HOSTNAME, e.g. shop.example.com}
+    volumes:
+      - ./caddy/Caddyfile.storefront:/etc/caddy/Caddyfile:ro
+      # Certificates survive a restart. Without this, every `up` re-orders from Let's Encrypt and
+      # runs into the rate limit that exists precisely to stop that.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      demo-storefront: {condition: service_healthy}
+
+volumes:
+  caddy-data:
+  caddy-config:

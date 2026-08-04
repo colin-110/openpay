@@ -11,23 +11,29 @@
 //   k6 run tests/performance/stress.js
 //   k6 run -e STAGE_DURATION=1m tests/performance/stress.js   # slower, steadier read per stage
 //
-// The platform's own per-merchant write rate limit (30 requests / 5s, ~6/s) is far below every
-// tier above the first here on purpose — this test provisions a merchant and, like
-// payment-create.js, is measuring the write path itself, not the limiter in front of it. Raise
-// it for the run:
+// The platform's per-merchant write rate limit (30 requests / 5s, ~6/s) no longer needs raising
+// for this, and that is a side effect of the merchant pool rather than a change to the limiter.
+// Load is spread across enough merchants to stay under the fraud velocity rule, which puts each
+// one at roughly 1 request a second even at the top tier — comfortably under the limit. Measured:
+// a 50/s run against the stock `RATE_LIMIT_PER_WINDOW=30` passes every threshold at p95 245ms.
 //
-//   RATE_LIMIT_PER_WINDOW=10000 docker compose -f platform/docker/docker-compose.yml \
-//     -f platform/docker/docker-compose.apps.yml up -d gateway-service
-//
-// and put it back (unset the override, `up -d gateway-service` again) once done. A stress test
-// that trips the rate limiter first is a test of the rate limiter, not of the rate the write path
-// actually falls over at.
+// This is worth knowing because the old instruction to raise the limit was itself a small lie
+// about what the test measured: a single merchant at 150/s is not a shape any limiter should
+// permit, and turning the limiter off to allow it meant the run no longer resembled traffic the
+// platform would ever accept.
 
 import http from 'k6/http';
 import { check } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 import { scenario } from 'k6/execution';
-import { GATEWAY, provisionMerchant, merchantHeaders, safeAmount } from './lib/setup.js';
+import {
+  GATEWAY,
+  provisionMerchants,
+  merchantsForRate,
+  merchantFor,
+  merchantHeaders,
+  safeAmount,
+} from './lib/setup.js';
 
 const STAGE_DURATION = __ENV.STAGE_DURATION || '45s';
 // The tiers themselves: the first two are already-known-good/known-bad numbers from
@@ -56,11 +62,40 @@ for (const rate of TIERS) {
   failedByStage[rate] = new Counter(`failed_at_${rate}`);
 }
 const overallFailureRate = new Rate('stress_failure_rate');
+const heldForReview = new Counter('payments_held_for_review');
+
+// Warm-up, and it is not a nicety — it is the difference between measuring this platform and
+// measuring its cold start. Three runs of the *same* 50/s tier on the same stack gave p95 3637ms
+// (first load step from idle), 25ms (immediately after a full run), and 103ms with a 2.7s p99
+// (after 100 seconds idle). A 145x spread at one rate, decided entirely by what ran before it.
+// Without this, tier 1 pays for JIT compilation and connection-pool growth on behalf of every
+// tier after it, and the resulting table reads as though low rates are slower than high ones —
+// which is exactly what the recorded baseline showed, and it was an artefact.
+//
+// Ramped to the top tier rather than held at a low rate, because pools have to grow to what the
+// heaviest tier will need, not to what the lightest one does. Set -e WARMUP=0 to measure the
+// cold path deliberately, which is a legitimate thing to want and a different question.
+const WARMUP = __ENV.WARMUP || '45s';
 
 function buildScenarios() {
   const scenarios = {};
   let offsetSeconds = 0;
   const durationSeconds = parseDurationSeconds(STAGE_DURATION);
+  const warmupSeconds = WARMUP === '0' ? 0 : parseDurationSeconds(WARMUP);
+
+  if (warmupSeconds > 0) {
+    scenarios.warmup = {
+      executor: 'ramping-arrival-rate',
+      exec: 'attempt',
+      startRate: 5,
+      timeUnit: '1s',
+      stages: [{ target: Math.max(...TIERS), duration: WARMUP }],
+      preAllocatedVUs: Math.min(Math.max(20, Math.max(...TIERS)), MAX_VUS),
+      maxVUs: MAX_VUS,
+      tags: { stage: 'warmup' },
+    };
+    offsetSeconds += warmupSeconds + 10;
+  }
 
   for (const rate of TIERS) {
     scenarios[`rate_${rate}`] = {
@@ -93,6 +128,9 @@ function parseDurationSeconds(duration) {
 
 export const options = {
   scenarios: buildScenarios(),
+  // The merchant pool is sized from the top tier, so a high-TIERS run onboards a few hundred
+  // merchants before the first request. Seconds, but more than k6's 60s default allows for.
+  setupTimeout: '10m',
   // p(99) is not in k6's default set, and it is the number that actually matters here: p(95)
   // can stay flat while the worst 1% of merchants are already timing out.
   summaryTrendStats: ['min', 'med', 'avg', 'p(90)', 'p(95)', 'p(99)', 'max'],
@@ -110,27 +148,39 @@ export const options = {
 };
 
 export function setup() {
-  return provisionMerchant('stress');
+  // Sized for the heaviest tier, since one pool serves every scenario in the run.
+  return { merchants: provisionMerchants('stress', merchantsForRate(Math.max(...TIERS))) };
 }
 
 export function attempt(data) {
+  const merchant = merchantFor(data.merchants, scenario.iterationInTest);
   const idempotencyKey = `k6-stress-${__VU}-${__ITER}-${Date.now()}`;
   const response = http.post(
     `${GATEWAY}/api/v1/payments`,
     JSON.stringify({ amount: safeAmount(), currency: 'INR' }),
     {
-      ...merchantHeaders(data.apiKey, idempotencyKey),
+      ...merchantHeaders(merchant.apiKey, idempotencyKey),
       tags: { name: 'POST /api/v1/payments', stage: scenario.name },
     }
   );
-
-  createDuration.add(response.timings.duration, { stage: scenario.name });
 
   const ok = check(
     response,
     { 'payment accepted': (r) => r.status === 201 },
     { stage: scenario.name }
   );
+
+  if (ok && response.json('fraudStatus') === 'HELD') {
+    heldForReview.add(1);
+  }
+
+  // Warm-up is excluded from every measurement it could distort — that is the entire reason it
+  // exists. It still drives real load through the real path; it just does not get counted.
+  if (scenario.name === 'warmup') {
+    return;
+  }
+
+  createDuration.add(response.timings.duration, { stage: scenario.name });
   overallFailureRate.add(!ok);
 
   const tierKey = scenario.name.replace('rate_', '');
@@ -174,6 +224,18 @@ export function handleSummary(data) {
   const dropped = data.metrics.dropped_iterations?.values?.count ?? 0;
   lines.push(`dropped iterations (never sent, all tiers): ${dropped}`);
   lines.push(`VU ceiling per tier: ${MAX_VUS}${dropped > 0 ? '  <- reached' : ''}`);
+  lines.push(`warm-up before tier 1: ${WARMUP === '0' ? 'SKIPPED (measuring the cold path)' : WARMUP}`);
+
+  // Loud, because this is the failure that reads as a pass. A held payment returns 201 and never
+  // routes, settles or posts to the ledger — so a run that held everything would show a perfect
+  // table above while having measured almost none of the path it claims to.
+  const held = data.metrics.payments_held_for_review?.values?.count ?? 0;
+  if (held > 0) {
+    lines.push('');
+    lines.push(`!! ${held} payments were HELD for review and did NOT exercise the payment path.`);
+    lines.push('!! The merchant pool is too small for this rate, or a fraud rule changed.');
+    lines.push('!! Treat the latency table above as measuring the review path, not the write path.');
+  }
   lines.push('');
 
   return {

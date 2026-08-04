@@ -11,7 +11,11 @@ spring:
       timeout: 250ms
       connect-timeout: 250ms
   datasource:
-    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:openpay_fraud}
+    # pgjdbc parses and plans a statement afresh until it has seen it prepareThreshold
+    # times (default 5), then switches to a server-side prepared statement. Every query
+    # this platform runs is one of a small fixed set, so there is nothing to be gained by
+    # waiting - promote on first use and keep a larger cache per connection.
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5433}/${DB_NAME:openpay_fraud}?prepareThreshold=1&preparedStatementCacheQueries=256&preparedStatementCacheSizeMiB=5
     username: ${DB_USERNAME:openpay}
     password: ${DB_PASSWORD:openpay}
     hikari:
@@ -19,10 +23,18 @@ spring:
       # one PostgreSQL, so these ceilings are chosen against its max_connections (200, set in
       # docker-compose.yml) with room for every pool to burst at once.
       maximum-pool-size: 20
-      # The important one. HikariCP opens minimum-idle connections eagerly and defaults it to
-      # maximum-pool-size, which is why this stack sat at 96 of 100 connections while doing
-      # nothing at all. Two per service at rest, growing on demand.
-      minimum-idle: 2
+      # HikariCP opens minimum-idle connections eagerly and defaults it to maximum-pool-size,
+      # which is why this stack once sat at 96 of 100 connections while doing nothing at all.
+      # Most services therefore rest at 2 and grow on demand.
+      #
+      # This one rests higher because screening is a *synchronous* call inside the merchant's
+      # request, with a 1s read timeout and fail-open behaviour — so a cold pool does not merely
+      # make the first payment slow, it makes the first payment come back UNSCREENED. Measured:
+      # the very first payment through a freshly started stack timed out and failed open, while
+      # every payment after it screened in 37ms. A demo whose first payment reads "nobody looked
+      # at this" is a bad advertisement for the risk engine, and more importantly it is a real
+      # window in which rules are not being applied.
+      minimum-idle: 6
       # Return a connection to the pool rather than holding it open forever, so a service that
       # goes quiet gives its connections back to the ones that are busy.
       idle-timeout: 60000

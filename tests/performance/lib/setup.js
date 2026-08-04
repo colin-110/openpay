@@ -67,6 +67,60 @@ export function provisionMerchant(label) {
   return { merchantId, apiKey: keyResponse.json('apiKey') };
 }
 
+/**
+ * The seeded `merchant-velocity-burst` rule: 100 payments per merchant per 60 seconds gets the
+ * next one held for review. Mirrored from V1__fraud.sql rather than read at runtime, because a
+ * load test that silently adapted to whatever the rules happen to say would stop being a fixed
+ * measurement.
+ */
+const VELOCITY_LIMIT_PER_MINUTE = 100;
+
+/**
+ * How many merchants a run at this rate needs so that none of them trips the velocity rule.
+ *
+ * Every scenario used to drive a single merchant, and the consequence was not subtle: at 20/s a
+ * merchant crosses 100-per-minute about five seconds in, and *every payment after that* is held
+ * for review. A held payment deliberately skips the PAYMENT_CREATED publish, so it never routes,
+ * never reaches an acquirer and never touches the ledger — and it returns 201, so the run reports
+ * as a clean pass. A measured stress run found 17,017 payments held against 1,508 created: 92% of
+ * the load was exercising the review path while claiming to measure the write path.
+ *
+ * Real traffic spreads across thousands of merchants and does not do this, so the fix is to look
+ * like real traffic rather than to switch the rule off. The 1.4 is headroom for arrival jitter:
+ * k6 distributes iterations across the pool evenly on average, not exactly.
+ */
+export function merchantsForRate(rate) {
+  const minimum = Math.ceil((rate * 60) / VELOCITY_LIMIT_PER_MINUTE);
+  return Math.max(4, Math.ceil(minimum * 1.4));
+}
+
+/**
+ * Onboards a pool of merchants, each with its own key.
+ *
+ * Sequential rather than batched: this runs once in setup() and a few hundred fast local calls
+ * cost a couple of seconds, which is not worth the complexity of doing it concurrently. Scenarios
+ * that provision a large pool should raise `setupTimeout` accordingly.
+ */
+export function provisionMerchants(label, count) {
+  const merchants = [];
+  for (let i = 0; i < count; i++) {
+    merchants.push(provisionMerchant(`${label}-${i}`));
+  }
+  return merchants;
+}
+
+/**
+ * Picks a merchant for this iteration.
+ *
+ * Keyed on the iteration counter rather than at random, so the spread across the pool is even by
+ * construction instead of even on average — random assignment would leave some merchants
+ * meaningfully hotter than others over a short run, which is exactly the condition the pool
+ * exists to avoid.
+ */
+export function merchantFor(merchants, iteration) {
+  return merchants[iteration % merchants.length];
+}
+
 export function merchantHeaders(apiKey, idempotencyKey) {
   return {
     headers: {
@@ -91,7 +145,12 @@ export function adminHeaders() {
  * The default rules hold anything over 50,000 rupees for review and block anything over 500,000.
  * A load test that wandered over either would be measuring the refusal path, and the numbers would
  * look excellent for entirely the wrong reason.
+ *
+ * The spread is wide for a second reason: `repeated-identical-amount` BLOCKs after ten identical
+ * amounts from one merchant in five minutes, which is the card-testing signature. A narrow range
+ * would start colliding at high volume and refuse payments for a reason that has nothing to do
+ * with the thing being measured.
  */
 export function safeAmount() {
-  return 10000 + Math.floor(Math.random() * 100000);
+  return 10000 + Math.floor(Math.random() * 4000000);
 }
