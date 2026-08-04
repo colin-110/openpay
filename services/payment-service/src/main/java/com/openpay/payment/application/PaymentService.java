@@ -29,6 +29,9 @@ import java.util.Optional;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.openpay.events.payload.FraudCheckRequested;
+import com.openpay.payment.infrastructure.VaultClient;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -49,6 +52,25 @@ public class PaymentService {
     private final FraudScreeningClient fraudScreeningClient;
     private final PaymentMetrics metrics;
     private final TransactionTemplate transactionTemplate;
+    private final VaultClient vaultClient;
+
+    /**
+     * Whether screening happens before the response or after it.
+     *
+     * <p>Synchronous is the default and is the stronger contract: a payment the rules refuse is
+     * never persisted and the merchant is told 422 immediately. It costs a network round trip to
+     * fraud-service inside the merchant's request, which on a modest host is most of the response
+     * time.
+     *
+     * <p>Asynchronous returns 201 as soon as the payment is durable and screens afterwards, so a
+     * refused payment is one the merchant was already told about and which subsequently fails.
+     * That is how a good deal of the industry works, and it is a product decision rather than a
+     * technical one — which is why it is a flag and not a rewrite. The safety property that
+     * matters holds either way: nothing reaches an acquirer until screening has allowed it,
+     * because routing starts on PAYMENT_CREATED and that event is only published once the
+     * decision is in.
+     */
+    private final boolean screenAsynchronously;
 
     public PaymentService(
             PaymentRepository paymentRepository,
@@ -57,7 +79,9 @@ public class PaymentService {
             ObjectMapper objectMapper,
             FraudScreeningClient fraudScreeningClient,
             PaymentMetrics metrics,
-            TransactionTemplate transactionTemplate) {
+            TransactionTemplate transactionTemplate,
+            VaultClient vaultClient,
+            @Value("${openpay.fraud.async:false}") boolean screenAsynchronously) {
         this.paymentRepository = paymentRepository;
         this.paymentEventRepository = paymentEventRepository;
         this.outboxWriter = outboxWriter;
@@ -65,6 +89,9 @@ public class PaymentService {
         this.fraudScreeningClient = fraudScreeningClient;
         this.metrics = metrics;
         this.transactionTemplate = transactionTemplate;
+        this.vaultClient = vaultClient;
+        this.screenAsynchronously = screenAsynchronously;
+        log.info("Fraud screening is {}", screenAsynchronously ? "ASYNCHRONOUS (201 before screening)" : "synchronous");
     }
 
     /**
@@ -105,13 +132,21 @@ public class PaymentService {
         // The id is minted here rather than by the database so screening can be keyed on it before
         // anything is written. That is what makes the gate idempotent across a retried creation.
         UUID paymentId = UUID.randomUUID();
-        PaymentMethod method = toPaymentMethod(request.paymentMethod());
-        ScreeningOutcome screening = fraudScreeningClient.screen(
-                paymentId,
-                merchantId,
-                request.amount(),
-                request.currency().toUpperCase(),
-                method == null ? null : method.getType());
+        // Before screening and before anything is written: redeeming can fail, and a payment
+        // refused for a spent token must leave nothing behind — no row, no screening decision, and
+        // no burnt idempotency key that would stop the customer retrying properly.
+        PaymentMethod method = toPaymentMethod(request.paymentMethod(), merchantId);
+        // HELD, not ALLOWED: the payment is durable but not yet cleared, which is exactly what
+        // HELD already means everywhere else in this service — so the release path, the review
+        // queue and applyScreeningOutcome all work unchanged.
+        ScreeningOutcome screening = screenAsynchronously
+                ? new ScreeningOutcome(FraudStatus.HELD, null, "awaiting asynchronous screening")
+                : fraudScreeningClient.screen(
+                        paymentId,
+                        merchantId,
+                        request.amount(),
+                        request.currency().toUpperCase(),
+                        method == null ? null : method.getType());
 
         if (screening.status() == FraudStatus.BLOCKED) {
             // Nothing is persisted. A refused payment is not a payment that happened, and storing
@@ -140,7 +175,22 @@ public class PaymentService {
 
                 recordEvent(payment, "PAYMENT_CREATED");
 
-                if (payment.isHeld()) {
+                if (payment.isHeld() && screenAsynchronously) {
+                    // Same transaction as the payment, so the screening request cannot be lost:
+                    // either both are committed or the payment does not exist. Still no
+                    // PAYMENT_CREATED — routing must not start until screening has allowed it.
+                    //
+                    // Marked as awaiting a machine rather than a human, which is what lets
+                    // StuckScreeningMonitor tell "fraud-service never answered" apart from "an
+                    // operator has not got to this yet". Same transaction again, so a payment
+                    // cannot be waiting without being visible as waiting.
+                    payment.awaitAsynchronousScreening();
+                    outboxWriter.append(AGGREGATE_TYPE, OpenPayTopics.FRAUD_CHECK_REQUESTED, payment.getId(),
+                            new FraudCheckRequested(
+                                    payment.getId(), payment.getMerchantId(), payment.getAmount(),
+                                    payment.getCurrency(), method == null ? null : method.getType()));
+                    log.info("Accepted payment id={} pending asynchronous screening", paymentId);
+                } else if (payment.isHeld()) {
                     // Deliberately no PAYMENT_CREATED event. Publishing it is what starts routing,
                     // and a payment held for review must not reach an acquirer. The release path is
                     // FraudDecisionListener, driven by fraud.check-completed.v1.
@@ -339,11 +389,31 @@ public class PaymentService {
      * Note what is dropped: the instrument token the merchant sent never reaches the entity. It is
      * what the acquirer is given, not something this service has any reason to keep.
      */
-    private PaymentMethod toPaymentMethod(PaymentMethodRequest request) {
-        return request == null
-                ? null
-                : new PaymentMethod(
-                        request.type(), request.network(), request.last4(), request.vpa(), request.bank());
+    /**
+     * What the customer paid with — taken from the vault when a token is supplied, and from the
+     * caller's own description only when one is not.
+     *
+     * <p>A token wins outright: the fields alongside it are ignored rather than merged. Merging
+     * would mean a merchant could tokenise a card and then describe it as something else, and a
+     * payment method that is partly authoritative and partly claimed is one nobody can reason
+     * about. With a token, every field on the payment came from what was actually tokenised.
+     *
+     * <p>Requests with no token keep working exactly as before. That is not a loophole — an
+     * integration that never tokenises has no card number to be authoritative about, and its
+     * self-described method is the only information that exists. It is also what keeps every
+     * existing merchant and the whole acceptance suite working unchanged.
+     */
+    private PaymentMethod toPaymentMethod(PaymentMethodRequest request, UUID merchantId) {
+        if (request == null) {
+            return null;
+        }
+        if (request.token() != null && !request.token().isBlank()) {
+            VaultClient.RedeemedInstrument redeemed = vaultClient.redeem(request.token(), merchantId);
+            return new PaymentMethod(
+                    redeemed.type(), redeemed.network(), redeemed.last4(), redeemed.vpa(), redeemed.bank());
+        }
+        return new PaymentMethod(
+                request.type(), request.network(), request.last4(), request.vpa(), request.bank());
     }
 
     private PaymentResponse toResponse(Payment payment) {

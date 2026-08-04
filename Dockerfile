@@ -27,6 +27,8 @@ COPY services/settlement-service/pom.xml services/settlement-service/
 COPY services/notification-service/pom.xml services/notification-service/
 COPY services/fraud-service/pom.xml services/fraud-service/
 COPY services/mock-bank-service/pom.xml services/mock-bank-service/
+COPY services/vault-service/pom.xml services/vault-service/
+COPY services/demo-storefront/pom.xml services/demo-storefront/
 RUN mvn -B -q dependency:go-offline -DskipTests || true
 
 COPY libs libs

@@ -1,0 +1,58 @@
+spring:
+  application:
+    name: vault-service
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      # Short, like every other Redis client here — Lettuce defaults to 60 seconds. The difference
+      # is what a timeout means: elsewhere Redis is an accelerator and a stall degrades to a slower
+      # path. Here it is the only store there is, so a stall must become a fast, honest failure that
+      # the checkout page can show. A checkout that hangs for a minute is worse than one that says
+      # "try again" in 250ms.
+      timeout: 250ms
+      connect-timeout: 250ms
+
+  # No datasource, deliberately. See VaultApplication: a token must expire on its own, and this
+  # service is the one component that should be incapable of writing an instrument to disk.
+
+openpay:
+  vault:
+    token-ttl: ${VAULT_TOKEN_TTL:PT15M}
+  security:
+    auth-base-url: ${AUTH_SERVICE_BASE_URL:http://localhost:8081}
+    jwt-secret: ${OPENPAY_JWT_SECRET:}
+    # Tokenisation is authenticated with a merchant key — usually the publishable one, which is
+    # readable by anyone who opens the page. ApiKeyPrincipal.requireTokenize is what makes that
+    # safe: a publishable key may mint a token here and can do nothing else anywhere.
+    api-key-paths:
+      - /api/v1/tokens
+    # Redeeming is service-to-service and never reachable from a browser. Different tier on
+    # purpose: minting is a thing strangers may do, spending is not.
+    internal-token: ${OPENPAY_INTERNAL_TOKEN:}
+    internal-paths:
+      - /internal/vault
+
+server:
+  port: ${VAULT_PORT:8091}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  health:
+    redis:
+      # Redis is not an accelerator here, it is the store — so unlike fraud-service, this indicator
+      # stays enabled. A vault that cannot reach Redis genuinely cannot do its job, and should fail
+      # its healthcheck rather than accept cards it has nowhere to put.
+      enabled: true
+
+logging:
+  level:
+    com.openpay.vault: INFO

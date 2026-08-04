@@ -52,7 +52,8 @@ services:
     restart: "no"
 
   redis:
-    # Small keyspace: rate-limit counters and login-throttle buckets, all short-lived.
+    # Small keyspace, all short-lived: rate-limit counters, login-throttle buckets, fraud velocity
+    # counts, and payment tokens.
     mem_limit: 128m
     image: redis:8-alpine
     container_name: openpay-redis
@@ -60,6 +61,17 @@ services:
       - "6379:6379"
     volumes:
       - redis-data:/data
+    # Added when vault-service arrived, because it is the first service for which Redis is the only
+    # store rather than an accelerator. Everything else here degrades when Redis is slow — the rate
+    # limiter fails open, fraud velocity falls back to counting in PostgreSQL — so `service_started`
+    # was honest for them. A vault that came up before Redis was answering would accept a card it
+    # then had nowhere to put, and would do it during exactly the window a demo starts in.
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   kafka:
     # The heaviest infrastructure JVM here; below this it struggles under the webhook spike.
@@ -69,6 +81,24 @@ services:
     ports:
       - "9092:9092"
     environment:
+      # Half the container limit, and the other half is the point.
+      #
+      # apache/kafka defaults to -Xmx1G -Xms1G, which under `mem_limit: 1g` means the heap alone is
+      # the entire container: nothing left for metaspace, thread stacks, or the direct byte buffers
+      # Kafka uses for every network read and write. The container sat at 93% and stayed there, and
+      # the way that failed was not an OutOfMemoryError — it was the group coordinator's writes to
+      # __consumer_offsets timing out after 5s, so SyncGroup returned COORDINATOR_NOT_AVAILABLE and
+      # every consumer group rebalanced on a five-second loop without ever reaching a stable
+      # assignment. Consumer lag froze, payments stopped advancing past CREATED, and no service
+      # logged an error, because from the application's point of view nothing had gone wrong.
+      #
+      # It also did not recover on a broker restart, which is the part worth remembering: the load
+      # that caused it was still on disk, so the broker returned to the same state immediately.
+      #
+      # A smaller heap is not a compromise here, it is what Kafka wants. Brokers keep very little
+      # in the heap and lean on the OS page cache for log segments, so memory handed to the JVM is
+      # memory taken away from the thing that actually serves reads.
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       # Two listeners because a broker can only advertise one address per listener, and the
@@ -84,6 +114,17 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    volumes:
+      # Every other stateful service here has one; this was the exception, and the consequence is
+      # worse than "you lose your test data on a rebuild". The transactional outbox guarantees an
+      # event was handed to the broker and marks the row published — so if the broker then loses it
+      # before a consumer reads it, nothing republishes it, ever. The payment simply stops
+      # advancing, and the outbox correctly reports that it did its job.
+      #
+      # An ephemeral broker also means consumer offsets do not survive a recreate, so the whole
+      # platform silently re-reads or skips depending on auto-offset-reset. For a system whose
+      # central claim is a durable event backbone, the backbone should outlive `docker compose up`.
+      - kafka-data:/var/lib/kafka/data
     healthcheck:
       test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list || exit 1"]
       interval: 10s
@@ -173,6 +214,7 @@ services:
 
 volumes:
   postgres-data:
+  kafka-data:
   redis-data:
   grafana-data:
   loki-data:

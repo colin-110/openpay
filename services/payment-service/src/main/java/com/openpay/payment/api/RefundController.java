@@ -64,6 +64,7 @@ public class RefundController {
     public RefundResponse getRefund(
             @RequestAttribute(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE) ApiKeyPrincipal principal,
             @PathVariable("refundId") UUID refundId) {
+        principal.requireRead("read refunds");
         return refundService.getRefund(principal.merchantId(), refundId);
     }
 
@@ -72,6 +73,7 @@ public class RefundController {
     public List<RefundResponse> listForPayment(
             @RequestAttribute(ApiKeyAuthenticationFilter.PRINCIPAL_ATTRIBUTE) ApiKeyPrincipal principal,
             @RequestParam("paymentId") UUID paymentId) {
+        principal.requireRead("list refunds for a payment");
         return refundService.refundsForPayment(principal.merchantId(), paymentId);
     }
 
@@ -85,6 +87,7 @@ public class RefundController {
             @RequestParam(name = "page", defaultValue = "0") int page,
             @RequestParam(name = "size", defaultValue = "20") int size,
             @RequestParam(name = "status", required = false) RefundStatus status) {
+        principal.requireRead("list refunds");
         Pageable pageable = PageRequest.of(Math.max(page, 0), Math.min(Math.max(size, 1), MAX_PAGE_SIZE));
         return refundService.listRefunds(principal.merchantId(), status, pageable);
     }
