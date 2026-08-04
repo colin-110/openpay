@@ -23,6 +23,7 @@ import com.openpay.payment.domain.PaymentEventRepository;
 import com.openpay.payment.domain.PaymentRepository;
 import com.openpay.payment.domain.PaymentStatus;
 import com.openpay.payment.infrastructure.FraudScreeningClient;
+import com.openpay.payment.infrastructure.VaultClient;
 import com.openpay.payment.infrastructure.FraudScreeningClient.ScreeningOutcome;
 import com.openpay.outbox.OutboxEvent;
 import com.openpay.outbox.OutboxRepository;
@@ -70,6 +71,15 @@ class PaymentPersistenceIT {
      */
     @MockitoBean
     private FraudScreeningClient fraudScreeningClient;
+
+    /**
+     * Stubbed for the same reason as the screening client above, and with one difference that
+     * matters: redeeming a token does <em>not</em> fail open. An unreachable vault refuses the
+     * payment rather than falling back to the caller's description of the card, so a test that left
+     * this to a connection being refused would not assert a fallback — it would simply fail.
+     */
+    @MockitoBean
+    private VaultClient vaultClient;
 
     @Autowired
     private PaymentService paymentService;
@@ -312,6 +322,13 @@ class PaymentPersistenceIT {
     @Test
     void keepsOnlyTheSafeHalfOfAPaymentMethod() {
         UUID merchantId = UUID.randomUUID();
+
+        // The token is spent at the vault, which answers with what was actually tokenised. That
+        // answer is now the authority on the payment method — the fields sent alongside it are
+        // ignored — so it is what this test asserts gets masked and stored.
+        when(vaultClient.redeem("tok_live_do_not_store", merchantId)).thenReturn(
+                new VaultClient.RedeemedInstrument(
+                        "upi", null, null, "colinthomas@okhdfcbank", "HDFC", merchantId));
 
         PaymentResult result = paymentService.createPayment(
                 merchantId,
