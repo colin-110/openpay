@@ -221,7 +221,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push ${{ matrix.service }}
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
@@ -265,7 +265,7 @@ jobs:
       # Its own job rather than a matrix entry above: the dashboard has its own Dockerfile and
       # build context (web/dashboard), not the shared root Dockerfile the backend services use.
       - name: Build and push dashboard
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: web/dashboard
           file: web/dashboard/Dockerfile
