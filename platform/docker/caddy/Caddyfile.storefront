@@ -1,0 +1,24 @@
+# TLS for the separately deployed shop. One host, one upstream.
+#
+# Not the same file as ./Caddyfile: that one fronts the platform's four internal hosts with a local
+# CA on a laptop. This one runs on a different machine, publishes a single public name, and gets a
+# real certificate from Let's Encrypt — which happens automatically given a hostname that already
+# resolves here.
+#
+# The shop is a plain server-rendered page plus two JSON endpoints on its own origin, so there is
+# no CORS configuration here and none is needed: the browser only ever talks to this host, and this
+# host is the only thing that talks to the gateway.
+
+{$SHOP_HOSTNAME} {
+	reverse_proxy demo-storefront:8090
+
+	# The shop deliberately holds a merchant API key. Nothing here should ever be cached by an
+	# intermediary or framed by another site.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+}

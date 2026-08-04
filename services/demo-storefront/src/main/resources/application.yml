@@ -1,0 +1,36 @@
+spring:
+  application:
+    name: demo-storefront
+
+storefront:
+  # The public gateway, exactly as a real merchant would reach it. Not payment-service directly:
+  # the whole point is that this goes through the front door, authenticates, and is rate limited
+  # like any other merchant.
+  gateway-base-url: ${GATEWAY_BASE_URL:http://localhost:8080}
+  # Never rendered into the page. See StorefrontProperties#apiKey for why that matters.
+  api-key: ${STOREFRONT_API_KEY:}
+  # Rendered into the page on purpose — it can mint a payment token and nothing else. The two keys
+  # exist so that exactly one of them can be public.
+  publishable-key: ${STOREFRONT_PUBLISHABLE_KEY:}
+  # Where the *browser* reaches the gateway, which is not gateway-base-url above: that one resolves
+  # inside the container network and a browser cannot resolve it at all.
+  gateway-public-url: ${GATEWAY_PUBLIC_URL:http://localhost:8080}
+  dashboard-url: ${DASHBOARD_URL:http://localhost:5173}
+
+server:
+  port: ${STOREFRONT_PORT:8090}
+  shutdown: graceful
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+logging:
+  level:
+    com.openpay.storefront: INFO

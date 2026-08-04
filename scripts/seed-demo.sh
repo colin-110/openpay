@@ -52,7 +52,20 @@ API_KEY=$(curl -sS -X POST "$AUTH_URL/api/v1/api-keys" -H "$ADMIN" -H "$JSON" \
   -d "{\"merchantId\":\"$MERCHANT_ID\",\"name\":\"dashboard-demo\",\"scope\":\"payments:write\",\"expiresAt\":null}" \
   | json "['apiKey']")
 
-USER_EMAIL="${SUFFIX}-${EMAIL}"
+# The second credential, and the only one meant to be public. It carries tokens:create, which lets
+# it turn a card into a token and is refused everywhere else on the platform — so it is safe in a
+# checkout page, where the key above would let any visitor take and refund payments. Issued here
+# because a shop needs both, and a shop with only one fails at the moment the customer has already
+# typed their card in.
+PUBLISHABLE_KEY=$(curl -sS -X POST "$AUTH_URL/api/v1/api-keys" -H "$ADMIN" -H "$JSON" \
+  -d "{\"merchantId\":\"$MERCHANT_ID\",\"name\":\"storefront-checkout\",\"scope\":\"tokens:create\",\"expiresAt\":null}" \
+  | json "['apiKey']")
+
+# Suffix the domain, not the name. Prefixing produced addresses like
+# "232f9ebc-owner@openpay.test", and the dashboard takes a person's initials from the start of the
+# local part — so the avatar rendered as "23". The run still needs to be unique across repeat
+# seedings; the domain is the honest place to put that.
+USER_EMAIL="${EMAIL%%@*}@${SUFFIX}.${EMAIL#*@}"
 curl -sS -o /dev/null -X POST "$AUTH_URL/api/v1/users" -H "$ADMIN" -H "$JSON" \
   -d "{\"merchantId\":\"$MERCHANT_ID\",\"email\":\"$USER_EMAIL\",\"password\":\"$PASSWORD\",\"role\":\"MERCHANT_ADMIN\"}"
 
@@ -130,9 +143,16 @@ cat <<SUMMARY
 
 Done.
 
-  Merchant   $MERCHANT_ID
-  API key    $API_KEY
-  Dashboard  $USER_EMAIL / $PASSWORD
+  Merchant     $MERCHANT_ID
+  Secret key   $API_KEY
+  Publishable  $PUBLISHABLE_KEY
+  Dashboard    $USER_EMAIL / $PASSWORD
+
+To run the shop, put both keys in platform/docker/.env — the secret one stays on its server, the
+publishable one is rendered into the checkout page:
+
+  STOREFRONT_API_KEY=$API_KEY
+  STOREFRONT_PUBLISHABLE_KEY=$PUBLISHABLE_KEY
 
   ${#PAYMENT_IDS[@]} payments, $refunded refunded, $HELD_COUNT held for review.
 
