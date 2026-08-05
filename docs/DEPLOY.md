@@ -7,25 +7,41 @@ instance it buys nothing.
 
 ## What it needs
 
-Twelve JVMs, PostgreSQL, Kafka, Redis, Prometheus, Grafana, Loki. The declared memory ceilings add
-up to about 9 GB, but those are caps rather than reservations — real usage settles around 6.5–7 GB.
+Thirteen JVMs, PostgreSQL, Kafka, Redis, Prometheus, Grafana, Loki.
 
-Twelve rather than thirteen because `demo-storefront` is not one of them: it is a merchant
-integration, not part of the platform, and [step 6](#6-the-shop-on-a-second-host) puts it on its own
-host. Left in the platform's compose file it would also run here quite happily — it is the smallest
-service in the repository — but that arrangement makes a claim about the architecture that is not
-true.
+**Measured: about 3.7 GB for the twenty containers a payment actually needs**, and roughly 4.1 GB
+with the observability stack switched on. The declared `mem_limit` values add up to more than that
+because they are *ceilings*, not reservations — a JVM sizes its heap as a percentage of the cap and
+only grows into it under pressure.
 
-| | Minimum | Comfortable |
+Take the number from `docker stats` filtered to this stack, not from the raw total. The unfiltered
+figure counts every container on the machine, which is how an earlier draft of this page reported
+3.2 GB — a number that happened to be lower while being measured wrongly:
+
+```bash
+docker stats --no-stream --format "{{.Name}}|{{.MemUsage}}" | grep "^openpay"
+```
+
+The distinction matters when choosing a host. A 4 GB machine runs the lean stack; earlier drafts of
+this page said 8 GB minimum, which would have sent you to a machine twice the size and price.
+
+`demo-storefront` is not among the thirteen: it is a merchant integration, not part of the platform,
+and [step 6](#6-the-shop-on-a-second-host) puts it on its own host. Left in the platform's compose
+file it would run here quite happily — it is the smallest service in the repository — but that
+arrangement makes a claim about the architecture that is not true.
+
+| | Minimum (lean) | Comfortable (with observability) |
 | --- | --- | --- |
-| RAM | 8 GB | 16 GB |
+| RAM | 4 GB | 8 GB |
 | vCPU | 2 | 4 |
 | Disk | 20 GB | 40 GB |
 
-**8 GB works but leaves nothing spare.** On 8 GB, drop Loki and Promtail (`docker compose ... up -d
---scale loki=0 --scale promtail=0`) — they are the least useful of the observability stack for a
-demo and the heaviest after Kafka. Grafana and Prometheus are worth keeping; they are most of the
-visible payoff.
+**4 GB is genuinely enough**, given the 3.7 GB measured above — but it leaves nothing for the
+first build, which compiles the whole Maven reactor and wants more memory than the running stack
+does. Either build elsewhere and pull the images (CI publishes them on every push to `main`), or
+drop Loki and Promtail while building (`docker compose ... up -d --scale loki=0 --scale
+promtail=0`). They are the least useful of the observability stack for a demo and the heaviest
+after Kafka; Grafana and Prometheus are worth keeping, being most of the visible payoff.
 
 Roughly what that costs, running continuously:
 
@@ -111,6 +127,23 @@ dashboard.example.com {
 Set `OPENPAY_DASHBOARD_ORIGINS` to the dashboard's real origin. It is empty by default and an empty
 value refuses every cross-origin request, so the dashboard will silently fail to call the API until
 this matches exactly — scheme included.
+
+**Then set `RATE_LIMIT_TRUST_FORWARDED_FOR=true`, and only once Caddy is actually in front.**
+
+Tokenisation is rate limited per caller as well as per merchant, because a publishable key is
+presented by every visitor rather than by one merchant's server. Behind a proxy, every request's
+remote address is *the proxy's* — so with this left off, every visitor on the internet shares one
+bucket and a per-caller limit of 20 a minute becomes a global one. The symptom is a checkout that
+starts refusing strangers the moment it gets busy, which is the worst possible time.
+
+The reverse is equally wrong: turned on with nothing overwriting `X-Forwarded-For`, any caller can
+reset their own bucket by sending the header. There is no default that is correct in both places,
+so it is a deployment decision rather than a guess:
+
+```bash
+# In platform/docker/.env — correct because step 3 puts Caddy in front.
+RATE_LIMIT_TRUST_FORWARDED_FOR=true
+```
 
 ## 4. Start it
 

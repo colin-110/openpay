@@ -13,10 +13,29 @@ x-service-defaults: &service-defaults
   # and fatal on an 8 GB VM: they oversubscribe, the kernel starts OOM-killing, and the ones that
   # survive are the ones that happened to allocate slowest. Capping the container is what makes the
   # JVM's own sizing honest — see JAVA_TOOL_OPTIONS below, which is a percentage *of this number*.
-  mem_limit: 512m
+  # 512m, and it stays there. Two attempts to shrink it were measured and both were reverted:
+  #
+  #   384m + 96 MB metaspace — fraud-service died with OutOfMemoryError: Metaspace at startup.
+  #                            Spring Boot with JPA, Kafka and Redis loads more classes than that.
+  #   448m + a 45% heap      — started fine, and screening went from ~35ms to 93-196ms warm. On a
+  #                            path with a 1-second timeout that *fails open*, a 3-5x latency
+  #                            regression is not a saving, it is a wider window in which payments
+  #                            go unscreened.
+  #
+  # Memory here is nearly free — it is a ceiling, not a reservation, and an idle service does not
+  # touch it. Latency is not free, and it is what this platform is judged on. Where the two are in
+  # tension, the RAM stays.
+  #
+  # Overridable for anyone deliberately squeezing onto a smaller host, with the trade above stated
+  # so it is a decision rather than a surprise.
+  mem_limit: ${SERVICE_MEM_LIMIT:-512m}
   environment: &common-env
     # 60% of 512m leaves roughly 300 MB of heap with the rest for metaspace, thread stacks, code
     # cache and the JVM itself, which for a Spring Boot service of this size is comfortable.
+    #
+    # The code cache is deliberately *not* capped. Bounding it looks like free memory and is not:
+    # a full code cache makes HotSpot disable the JIT entirely, and a payment path running
+    # interpreted is not a slow service, it is a broken one.
     #
     # SerialGC on purpose, and measured rather than assumed. G1 is the better collector in almost
     # every other setting, but it runs several background threads per JVM and eleven JVMs on one
@@ -32,7 +51,7 @@ x-service-defaults: &service-defaults
     # is throughput the platform simply did not get. Revisit this on a host that is not running
     # twelve JVMs at once; the answer is very likely different there.
     JAVA_TOOL_OPTIONS: >-
-      -XX:MaxRAMPercentage=60.0
+      -XX:MaxRAMPercentage=${JAVA_HEAP_PERCENT:-60.0}
       -XX:+UseSerialGC
       -Xss512k
       -XX:MaxMetaspaceSize=128m
@@ -326,6 +345,10 @@ services:
       # compose up -d gateway-service` sets the variable on the compose CLI and nowhere else, and
       # a stress run quietly measures the rate limiter instead of the write path behind it.
       RATE_LIMIT_PER_WINDOW: ${RATE_LIMIT_PER_WINDOW:-30}
+      # Forwarded for the same reason. Must be true wherever Caddy or another proxy terminates TLS
+      # in front of the gateway, or every visitor is bucketed as the proxy and the per-caller
+      # tokenisation limit becomes a global one. See docs/DEPLOY.md step 3.
+      RATE_LIMIT_TRUST_FORWARDED_FOR: ${RATE_LIMIT_TRUST_FORWARDED_FOR:-false}
     ports: ["8080:8080"]
     depends_on:
       redis: {condition: service_started}
