@@ -88,8 +88,14 @@ class CachingAuthServiceClientTest {
      * instead — "fewer than ten calls" — would have been the cheaper fix and a worse one: exactly
      * one refresh is the property, and a test that tolerates three is a test that would not notice
      * single-flight breaking.
+     *
+     * <p>Used by every test that has to make more than one call <em>inside</em> the stale grace.
+     * At the shared 200ms TTL the grace is also 200ms, and a test that waits on a latch and then
+     * calls again can easily spend longer than that on a loaded machine — at which point the entry
+     * has aged out legitimately, the call goes down the synchronous path, and the failure looks
+     * like the cache is broken when it is behaving exactly as designed.
      */
-    private static final Duration HERD_TTL = Duration.ofSeconds(1);
+    private static final Duration GRACE_TTL = Duration.ofSeconds(1);
 
     @Test
     void collapsesAHerdOfExpiredRequestsIntoASingleRefresh() throws Exception {
@@ -109,10 +115,10 @@ class CachingAuthServiceClientTest {
             return principal;
         });
 
-        try (CachingAuthServiceClient client = new CachingAuthServiceClient(delegate, HERD_TTL)) {
+        try (CachingAuthServiceClient client = new CachingAuthServiceClient(delegate, GRACE_TTL)) {
             client.validateApiKey(API_KEY);
             // Past the TTL, so the entry is stale, and well inside the grace that follows it.
-            Thread.sleep(HERD_TTL.toMillis() + 50);
+            Thread.sleep(GRACE_TTL.toMillis() + 50);
 
             client.validateApiKey(API_KEY);
             assertThat(refreshStarted.await(5, TimeUnit.SECONDS)).isTrue();
@@ -225,9 +231,11 @@ class CachingAuthServiceClientTest {
             throw new AuthServiceUnavailableException("Auth service is unreachable", null);
         });
 
-        try (CachingAuthServiceClient client = new CachingAuthServiceClient(delegate, TTL)) {
+        // GRACE_TTL, not TTL: this makes three calls and waits on a latch between them, all of
+        // which must land inside the stale grace.
+        try (CachingAuthServiceClient client = new CachingAuthServiceClient(delegate, GRACE_TTL)) {
             client.validateApiKey(API_KEY);
-            Thread.sleep(250);
+            Thread.sleep(GRACE_TTL.toMillis() + 50);
 
             client.validateApiKey(API_KEY);
             assertThat(refreshFailed.await(5, TimeUnit.SECONDS)).isTrue();
