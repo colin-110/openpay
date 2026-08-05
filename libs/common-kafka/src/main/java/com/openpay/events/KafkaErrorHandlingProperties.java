@@ -17,6 +17,19 @@ public class KafkaErrorHandlingProperties {
      */
     private int maxPollRecords = 50;
 
+    /**
+     * Consumer threads per listener, per instance.
+     *
+     * <p>Partitions are what allow parallelism; this is what uses it. One instance with concurrency
+     * 3 against a 6-partition topic takes three partitions' worth of work in parallel, and a second
+     * instance takes the rest — so the group scales both by replica and within a replica.
+     *
+     * <p>Three rather than six: a single instance running six consumer threads would leave nothing
+     * for a second replica to pick up, which turns scaling out into a rebalance that changes
+     * nothing. Concurrency beyond the partition count is simply idle threads.
+     */
+    private int listenerConcurrency = 3;
+
     public long getMaxRetries() {
         return maxRetries;
     }
@@ -39,5 +52,13 @@ public class KafkaErrorHandlingProperties {
 
     public void setMaxPollRecords(int maxPollRecords) {
         this.maxPollRecords = maxPollRecords;
+    }
+
+    public int getListenerConcurrency() {
+        return listenerConcurrency;
+    }
+
+    public void setListenerConcurrency(int listenerConcurrency) {
+        this.listenerConcurrency = listenerConcurrency;
     }
 }

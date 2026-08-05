@@ -98,7 +98,14 @@ services:
       # A smaller heap is not a compromise here, it is what Kafka wants. Brokers keep very little
       # in the heap and lean on the OS page cache for log segments, so memory handed to the JVM is
       # memory taken away from the thing that actually serves reads.
-      KAFKA_HEAP_OPTS: "-Xmx512m -Xms512m"
+      #
+      # -Xms is deliberately *not* equal to -Xmx, which it used to be. Matching them makes the JVM
+      # commit the whole heap at startup regardless of need, and that is why this was the largest
+      # container in the stack — 516 MiB held while carrying a handful of events. Growing from 128m
+      # on demand costs an early GC cycle or two and gives most of that back on an idle stack, which
+      # a demo stack is almost all of the time. The ceiling is unchanged, so a load test that
+      # genuinely needs 512m still gets it.
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms128m"
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
       # Two listeners because a broker can only advertise one address per listener, and the
@@ -111,6 +118,25 @@ services:
       KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      # Six partitions per topic, not Kafka's default of one, and this is a scaling ceiling rather
+      # than a tuning knob.
+      #
+      # A consumer group gets at most one active consumer per partition. With one partition, running
+      # a second payment-service does nothing for event throughput: the replica joins the group and
+      # sits idle while the first one does all the work. That directly contradicted
+      # platform/k8s/50-autoscaling.yaml, which scales payment-service and fraud-service on CPU —
+      # the HTTP side would scale and the event side would not, and nothing would say so. Consumer
+      # lag simply would not drain any faster.
+      #
+      # Safe because the producer was already written for it: OutboxRelay publishes keyed by
+      # aggregate id, so every event for one payment lands on the same partition and stays ordered
+      # relative to the others for that payment. Ordering across *different* payments was never
+      # guaranteed and nothing depends on it.
+      #
+      # Six is a compromise: enough headroom to scale a consumer group several times over, small
+      # enough that a single broker on a laptop is not managing hundreds of partition logs for
+      # topics that mostly carry a handful of events.
+      KAFKA_NUM_PARTITIONS: 6
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
@@ -150,6 +176,14 @@ services:
       retries: 10
 
   prometheus:
+    # Behind a profile: `--profile observability` turns the whole telemetry stack on, and it is off
+    # otherwise. Nothing is removed — Prometheus scrapes, Grafana dashboards and Loki queries all
+    # work exactly as before when the profile is enabled — but a demo that only needs to take a
+    # payment no longer pays ~400 MiB and two extra ports for panels nobody is looking at.
+    #
+    # The services themselves still expose /actuator/prometheus whether or not anything is
+    # scraping it, so enabling the profile later needs no restart of anything else.
+    profiles: ["observability"]
     # Scrapes twelve targets at a short interval; the TSDB is the memory here.
     mem_limit: 384m
     image: prom/prometheus:v3.5.0
@@ -160,6 +194,14 @@ services:
       - ../observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
 
   grafana:
+    # Behind a profile: `--profile observability` turns the whole telemetry stack on, and it is off
+    # otherwise. Nothing is removed — Prometheus scrapes, Grafana dashboards and Loki queries all
+    # work exactly as before when the profile is enabled — but a demo that only needs to take a
+    # payment no longer pays ~400 MiB and two extra ports for panels nobody is looking at.
+    #
+    # The services themselves still expose /actuator/prometheus whether or not anything is
+    # scraping it, so enabling the profile later needs no restart of anything else.
+    profiles: ["observability"]
     # Renders dashboards, stores nothing itself.
     mem_limit: 192m
     image: grafana/grafana:12.1.1
@@ -184,6 +226,14 @@ services:
       - loki
 
   loki:
+    # Behind a profile: `--profile observability` turns the whole telemetry stack on, and it is off
+    # otherwise. Nothing is removed — Prometheus scrapes, Grafana dashboards and Loki queries all
+    # work exactly as before when the profile is enabled — but a demo that only needs to take a
+    # payment no longer pays ~400 MiB and two extra ports for panels nobody is looking at.
+    #
+    # The services themselves still expose /actuator/prometheus whether or not anything is
+    # scraping it, so enabling the profile later needs no restart of anything else.
+    profiles: ["observability"]
     # Log ingestion, retention kept short in this deployment.
     mem_limit: 256m
     image: grafana/loki:3.5.3
@@ -198,6 +248,14 @@ services:
   # Ships container logs to Loki. Docker service discovery rather than the Loki logging driver,
   # which would have to be installed as a plugin on every machine before anything worked.
   promtail:
+    # Behind a profile: `--profile observability` turns the whole telemetry stack on, and it is off
+    # otherwise. Nothing is removed — Prometheus scrapes, Grafana dashboards and Loki queries all
+    # work exactly as before when the profile is enabled — but a demo that only needs to take a
+    # payment no longer pays ~400 MiB and two extra ports for panels nobody is looking at.
+    #
+    # The services themselves still expose /actuator/prometheus whether or not anything is
+    # scraping it, so enabling the profile later needs no restart of anything else.
+    profiles: ["observability"]
     # Tails container logs and forwards; almost stateless.
     mem_limit: 96m
     image: grafana/promtail:3.5.3

@@ -12,7 +12,9 @@ import org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.boot.autoconfigure.kafka.DefaultKafkaConsumerFactoryCustomizer;
+import org.springframework.kafka.config.ContainerCustomizer;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.CommonErrorHandler;
 import org.springframework.kafka.listener.DeadLetterPublishingRecoverer;
 import org.springframework.kafka.listener.DefaultErrorHandler;
@@ -92,6 +94,22 @@ public class KafkaErrorHandlingAutoConfiguration {
      * value is a property of how these listeners work, not of any one service, and one service
      * quietly missing the setting is how this comes back.
      */
+    /**
+     * Uses the partitions the broker provides.
+     *
+     * <p>Topics are created with several partitions (see KAFKA_NUM_PARTITIONS in
+     * docker-compose.yml), and a consumer group gets at most one active consumer per partition —
+     * so without this a service would take one partition's worth of work no matter how many
+     * partitions existed. Set centrally for the same reason as the poll size below: it is a
+     * property of how these listeners work rather than of any one service, and one service quietly
+     * missing it is how a consumer group ends up with a straggler nobody notices.
+     */
+    @Bean
+    public ContainerCustomizer<Object, Object, ConcurrentMessageListenerContainer<Object, Object>>
+            listenerConcurrency(KafkaErrorHandlingProperties properties) {
+        return container -> container.setConcurrency(properties.getListenerConcurrency());
+    }
+
     @Bean
     public DefaultKafkaConsumerFactoryCustomizer boundedPollSize(KafkaErrorHandlingProperties properties) {
         return consumerFactory -> consumerFactory.updateConfigs(
