@@ -19,6 +19,20 @@ openpay:
     enabled: ${RATE_LIMIT_ENABLED:true}
     limit: ${RATE_LIMIT_PER_WINDOW:30}
     window: ${RATE_LIMIT_WINDOW:5s}
+    # Tokenisation is limited per caller as well as per merchant, because a publishable key is
+    # presented by every visitor rather than by one merchant server.
+    publishable-limit: ${RATE_LIMIT_PUBLISHABLE:20}
+    publishable-window: ${RATE_LIMIT_PUBLISHABLE_WINDOW:60s}
+    # MUST be true wherever a proxy terminates TLS in front of this service, and false when the
+    # gateway is exposed directly.
+    #
+    # Behind a proxy, every request's remote address is the *proxy's*, so leaving this off would
+    # bucket every visitor on the internet together — turning a per-caller limit of 20/minute into
+    # a global one, and taking the checkout down for everybody the moment it is busy. Left on with
+    # nothing overwriting the header, any caller could reset their own bucket by setting it. There
+    # is no default that is safe in both places, which is why this is a deployment decision and is
+    # called out in docs/DEPLOY.md rather than guessed at here.
+    trust-forwarded-for: ${RATE_LIMIT_TRUST_FORWARDED_FOR:false}
   security:
     auth-base-url: ${AUTH_SERVICE_BASE_URL:http://localhost:8081}
     # Same key auth-service signs with, so a dashboard session is accepted wherever an API key is.
