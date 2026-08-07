@@ -4,7 +4,7 @@
 # Two stages: build with Node, serve the compiled output with plain nginx. The final image
 # contains no Node runtime at all — just static files and a web server.
 
-FROM node:22-alpine AS build
+FROM node:25-alpine AS build
 WORKDIR /build
 
 COPY package.json package-lock.json ./
