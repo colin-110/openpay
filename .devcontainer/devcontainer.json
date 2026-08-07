@@ -1,0 +1,52 @@
+{
+  "name": "OpenPay",
+
+  // A plain Ubuntu base with Docker inside it, rather than a Java image: nothing is compiled on
+  // this container. The Maven reactor builds inside the multi-stage Dockerfile, so a JDK out here
+  // would be an unused several hundred megabytes on the critical path of someone waiting to see
+  // the demo.
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+
+  "features": {
+    // docker-in-docker, not docker-outside-of-docker: the stack publishes ports and Codespaces
+    // forwards them from this container, which only lines up if the daemon is in here too.
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+
+  // Measured at ~3.7 GB running (docs/DEPLOY.md), but the first build compiles the whole reactor
+  // and wants more than the running stack does — which is the documented reason a 4 GB host is
+  // enough to run this and not enough to build it. 16 GB covers both without a swap-thrashing
+  // first impression. 32 GB of storage against ~3 GB of images plus the Maven cache.
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "16gb",
+    "storage": "32gb"
+  },
+
+  "forwardPorts": [8000, 5173],
+  "portsAttributes": {
+    "8000": {
+      "label": "Shop and API",
+      "onAutoForward": "notify"
+    },
+    "5173": {
+      "label": "Merchant dashboard",
+      "onAutoForward": "silent"
+    }
+  },
+
+  // Blocking on purpose. It runs once, during creation, where Codespaces shows its log — so the
+  // ten minutes of image building are visible progress rather than a black screen followed by a
+  // page that does not load yet.
+  "postCreateCommand": "bash .devcontainer/start-demo.sh",
+
+  // Reprints the URLs and the login on every reconnect, because the creation log scrolls away and
+  // a stopped Codespace comes back without it.
+  "postAttachCommand": "bash .devcontainer/start-demo.sh --print-only",
+
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-azuretools.vscode-docker"]
+    }
+  }
+}

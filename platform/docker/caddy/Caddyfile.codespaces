@@ -1,0 +1,47 @@
+# One origin for the whole checkout, which is the only reason this file exists separately from
+# Caddyfile.
+#
+# On a laptop the shop is at localhost:8090 and the gateway at localhost:8080, and the checkout
+# page tokenises across that boundary as a cross-origin request the gateway's CORS filter allows.
+# That arrangement survives being moved to a normal host, because a normal host publishes both
+# ports under one name.
+#
+# GitHub Codespaces does not. It gives every forwarded port its own hostname
+# (<codespace>-8080.app.github.dev, <codespace>-8090.app.github.dev) and puts an authenticating
+# proxy in front of each, so a cross-origin fetch from the shop to the gateway is answered by
+# GitHub's login redirect rather than by the gateway — before any CORS header this platform sets
+# is ever consulted. Making the ports public fixes the authentication and leaves two origins.
+#
+# So collapse them instead: serve the shop and the gateway from one listener, and the tokenisation
+# request becomes same-origin. No CORS involved, and one forwarded port to publish rather than
+# two. Nothing behind this changes — the same containers, on the same plain HTTP, unaware that a
+# proxy has merged their addresses.
+#
+# Plain HTTP here, not `tls internal` like Caddyfile: the Codespaces edge terminates TLS with a
+# real certificate before anything reaches this listener, so minting a second one inside would
+# only add a certificate warning to a connection that is already encrypted.
+
+:8000 {
+	# Order matters, and this block has to come first. auth-service and gateway-service both live
+	# under /api/v1, so the broader /api* matcher below would swallow login if it were declared
+	# first — Caddy takes the first matching handle, not the most specific.
+	#
+	# Session lifecycle only, matching Caddyfile's 8444 block exactly: login, refresh, logout.
+	# auth-service also mints API keys and creates users, and those stay behind the admin token
+	# rather than being published to the internet by a demo.
+	@session path /api/v1/auth/login /api/v1/auth/refresh /api/v1/auth/logout
+	handle @session {
+		reverse_proxy auth-service:8081
+	}
+
+	# The merchant API, including /api/v1/tokens — which is the one the checkout page calls from
+	# the browser, and the whole reason for merging these origins.
+	handle /api/* {
+		reverse_proxy gateway-service:8080
+	}
+
+	# Everything else is the shop itself.
+	handle {
+		reverse_proxy demo-storefront:8090
+	}
+}

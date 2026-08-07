@@ -6,15 +6,23 @@ units end to end. Every payment goes through tokenisation, idempotency, risk scr
 failover, and a transactional outbox — not because a demo needs it, but because a system that moves
 money doesn't get to skip any of them.
 
-**See it in one command.** A shop, a real card number, and a payment that reaches captured on its
-own — then the same payment from the merchant's side:
+**See it without installing anything.** One click opens the whole platform in a browser — twenty-two
+containers, the shop, and the merchant dashboard, running on GitHub's machine rather than yours:
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/colin-110/openpay)
+
+First build takes about ten minutes, and the shop's URL is printed when it finishes.
+
+**Or in one command locally**, if you have Docker. A shop, a real card number, and a payment that
+reaches captured on its own — then the same payment from the merchant's side:
 
 ```bash
-docker compose -f platform/docker/docker-compose.yml -f platform/docker/docker-compose.apps.yml --profile shop up -d
+./scripts/demo.sh
 ```
 
-Then open **http://localhost:8090**. Nothing to configure — the demo merchant, its API keys and a
-dashboard login are minted at startup, and the shop prints the login on its own page.
+Then open **http://localhost:8090**. Nothing to configure — credentials are generated on first run,
+and the demo merchant, its API keys and a dashboard login are minted at startup, with the shop
+printing the login on its own page.
 
 - [The problem this solves](#the-problem-this-solves) — the six ways taking a payment goes wrong
 - [Measured performance](#measured-performance) — real k6 runs, including the one that corrected an earlier claim

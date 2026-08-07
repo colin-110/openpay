@@ -10,6 +10,21 @@ WORKDIR /build
 COPY package.json package-lock.json ./
 RUN npm ci
 
+# Vite inlines env at build time, so the API origin has to be known here rather than at run time.
+# Unset, src/api.ts falls back to localhost:8080 — correct for a laptop and for any host that
+# publishes the gateway on the same origin the dashboard is served from, which is the common case
+# described above. It is wrong wherever each port gets its own hostname: GitHub Codespaces and
+# Cloud Run both do that, and there the dashboard would call a localhost:8080 that is the
+# recruiter's own machine, not the gateway. Passing these turns that into a deployment decision
+# instead of a silent 'nothing loads'. Still no secrets: these are public origins by definition,
+# visible in any devtools network tab.
+ARG VITE_API_BASE
+ARG VITE_AUTH_BASE
+ARG VITE_ENVIRONMENT_LABEL
+ENV VITE_API_BASE=${VITE_API_BASE}
+ENV VITE_AUTH_BASE=${VITE_AUTH_BASE}
+ENV VITE_ENVIRONMENT_LABEL=${VITE_ENVIRONMENT_LABEL}
+
 COPY . .
 RUN npm run build
 

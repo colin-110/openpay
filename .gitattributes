@@ -1,0 +1,24 @@
+# Shell scripts must keep LF, whatever the checkout platform does by default.
+#
+# This is not a style preference. Every .sh here is mounted into a Linux container and executed
+# there — platform/docker/demo/provision.sh is bind-mounted into curlimages/curl and run as the
+# demo provisioner. Git's core.autocrlf=true, which is the default on Windows, rewrites these to
+# CRLF on checkout, and the container then runs a script whose every line ends in a carriage
+# return: `sh` carries the \r into arguments and filenames, and a shebang becomes a request for an
+# interpreter named "/bin/sh\r" that does not exist.
+#
+# The repository blobs were already LF; it was the working copy that differed, so this file changes
+# what lands on disk rather than what is stored. Run `git add --renormalize .` after adding it.
+*.sh text eol=lf
+
+# Same reasoning: read inside containers, not by Windows tooling.
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+Caddyfile* text eol=lf
+mvnw text eol=lf
+
+# Windows-only by definition, and PowerShell is content either way — pinned so it does not flip
+# back and forth depending on who cloned it.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf

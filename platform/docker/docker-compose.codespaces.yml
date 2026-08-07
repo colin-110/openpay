@@ -1,0 +1,64 @@
+# Overlay that makes the demo work when every port has a different hostname.
+#
+# Layered on top of docker-compose.yml and docker-compose.apps.yml, and it changes three things:
+# the shop and the gateway get merged onto one origin (see caddy/Caddyfile.codespaces), the
+# dashboard is told at build time where the API actually is, and the TLS Caddy is stood down
+# because the Codespaces edge already terminates TLS with a real certificate.
+#
+# Written for Codespaces but not specific to it. Any host that publishes each service on its own
+# name — Cloud Run, a per-service ingress, a tunnel like ngrok or cloudflared — has the same
+# problem and can use this file by setting the same variables.
+#
+# The values live in platform/docker/.env, not here. Compose interpolates every file it loads
+# before merging them, so a `${VAR:?}` in docker-compose.apps.yml still fails when unset even if
+# this overlay would have overridden it. That makes .env the only workable single source, and
+# leaves this file holding structural changes only. .devcontainer/start-demo.sh writes it:
+#
+#   OPENPAY_PUBLIC_URL              https:// origin of port 8000 (the shop and the API)
+#   OPENPAY_DASHBOARD_ORIGINS       https:// origin of port 5173 (the dashboard)
+#   STOREFRONT_GATEWAY_PUBLIC_URL   same as OPENPAY_PUBLIC_URL — same-origin tokenisation
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.apps.yml \
+#                  -f docker-compose.codespaces.yml --profile shop up -d
+
+services:
+  # Stood down rather than deleted. Compose has no way to remove a service in an overlay, but a
+  # profile nothing requests keeps it out of `up` while leaving it available to anyone who wants
+  # the four-host TLS split here too: `--profile tls`.
+  caddy:
+    profiles: ["tls"]
+
+  # The single origin. Same image as caddy above, different config and one published port.
+  edge:
+    image: caddy:2.9-alpine
+    container_name: openpay-edge
+    restart: unless-stopped
+    mem_limit: 64m
+    profiles: ["shop"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./caddy/Caddyfile.codespaces:/etc/caddy/Caddyfile:ro
+    depends_on:
+      gateway-service: {condition: service_healthy}
+      auth-service: {condition: service_healthy}
+      demo-storefront: {condition: service_healthy}
+
+  dashboard:
+    build:
+      context: ../../web/dashboard
+      dockerfile: Dockerfile
+      args:
+        # Vite inlines these at build time, so changing the origin means rebuilding this image.
+        # Both point at the merged origin: the gateway and auth-service are both behind it.
+        VITE_API_BASE: ${OPENPAY_PUBLIC_URL:?set OPENPAY_PUBLIC_URL in platform/docker/.env}
+        VITE_AUTH_BASE: ${OPENPAY_PUBLIC_URL:?set OPENPAY_PUBLIC_URL in platform/docker/.env}
+        VITE_ENVIRONMENT_LABEL: Demo
+
+  gateway-service:
+    environment:
+      # The edge proxy is in front now, so the gateway sees its address on every request. Without
+      # this, every visitor is bucketed as the proxy and the per-caller tokenisation limit added
+      # in f76af2b silently becomes a global one. Same reasoning as docs/DEPLOY.md step 3.
+      RATE_LIMIT_TRUST_FORWARDED_FOR: "true"
