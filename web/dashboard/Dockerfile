@@ -28,7 +28,7 @@ ENV VITE_ENVIRONMENT_LABEL=${VITE_ENVIRONMENT_LABEL}
 COPY . .
 RUN npm run build
 
-FROM nginx:1.27-alpine AS runtime
+FROM nginx:1.31-alpine AS runtime
 
 # Client-side routing: any path nginx doesn't recognise as a file falls back to index.html, so
 # refreshing the browser on a route the SPA owns doesn't 404.
