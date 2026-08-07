@@ -57,7 +57,7 @@ RUN mvn -B -DskipTests package
 # then died with ClassNotFoundException: jdk.net.Sockets the moment Tomcat configured a connector.
 # jdk.localedata is included for the same reason in advance — a platform that formats currency
 # should not discover at runtime that it only has the root locale.
-FROM eclipse-temurin:21-jdk-alpine AS jre
+FROM eclipse-temurin:25-jdk-alpine AS jre
 RUN jlink \
         --add-modules java.base,java.compiler,java.desktop,java.instrument,java.logging,java.management,java.management.rmi,java.naming,java.net.http,java.prefs,java.rmi,java.scripting,java.security.jgss,java.security.sasl,java.sql,java.sql.rowset,java.transaction.xa,java.xml,java.xml.crypto,jdk.crypto.ec,jdk.crypto.cryptoki,jdk.jfr,jdk.localedata,jdk.management,jdk.net,jdk.security.auth,jdk.unsupported,jdk.httpserver,jdk.naming.dns,jdk.zipfs \
         --strip-debug --no-man-pages --no-header-files --compress=zip-6 \
