@@ -24,6 +24,44 @@ Then open **http://localhost:8090**. Nothing to configure — credentials are ge
 and the demo merchant, its API keys and a dashboard login are minted at startup, with the shop
 printing the login on its own page.
 
+### Then break it on purpose
+
+A payment succeeding proves very little; almost anything succeeds on the happy path. The claim
+worth checking is what happens when the bank goes down *during* a payment, and that one cannot be
+shown by looking at a working system — a working system is exactly what it looks like. So break it:
+
+```bash
+./scripts/demo-failover.sh
+```
+
+It stops an acquirer, takes a real payment while it is down, and prints which bank refused and
+which one took it. Verbatim output from a run of the command above:
+
+```
+Stopping mock-bank-a...
+mock-bank-a is down. One acquirer left.
+
+Card tokenised: tok_77cmO8QwJ3MN...
+Payment created: c9e3cb07-d656-4dcf-97e7-a900ac995931
+
+Waiting for capture .........
+
+  STATUS: CAPTURED — with mock-bank-a down for the whole payment.
+
+  Attempts:
+    1   mock-bank-a    FAILED     -
+    2   mock-bank-b    ACCEPTED   mock-bank-b-17ba9c3f-6a0b-40d6-8d75-a895d238bbc1
+
+Restoring mock-bank-a...
+```
+
+The failed attempt is *kept*, not tidied away. A platform that forgets which acquirer refused
+cannot reconcile against that acquirer's settlement file, and cannot answer a merchant asking why
+a payment took nine seconds. The same two rows appear in the dashboard against the payment, with
+the timeline beside them.
+
+The acquirer is restored on the way out, including if the script fails or is interrupted.
+
 - [The problem this solves](#the-problem-this-solves) — the six ways taking a payment goes wrong
 - [Measured performance](#measured-performance) — real k6 runs, including the one that corrected an earlier claim
 - [Architecture](docs/ARCHITECTURE.md) — what every component is, and what breaks when one dies
