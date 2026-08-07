@@ -37,7 +37,14 @@ services:
     mem_limit: 64m
     profiles: ["shop"]
     ports:
-      - "8000:8000"
+      # Configurable because 8000 is a popular port and a clash here is not a graceful failure:
+      # every other container starts, the shop reports healthy, and only the one thing publishing
+      # the origin fails to bind. Found on a machine already running an unrelated stack on 8000.
+      #
+      # Only the host side moves. Caddy keeps listening on 8000 inside the network, so the
+      # Caddyfile does not become a second place to remember. Change OPENPAY_PUBLIC_URL to match,
+      # since the dashboard bakes it in and the shop hands it to the browser.
+      - "${OPENPAY_EDGE_PORT:-8000}:8000"
     volumes:
       - ./caddy/Caddyfile.codespaces:/etc/caddy/Caddyfile:ro
     depends_on:

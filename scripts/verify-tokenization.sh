@@ -39,10 +39,27 @@ if [ -z "$SECRET_KEY" ]; then
     echo "No merchant secret key found. Start the shop (--profile shop) or set STOREFRONT_API_KEY." >&2
     exit 1
 fi
-# From the database: the payments list view deliberately does not expose merchantId, because a
-# merchant reading its own payments already knows which merchant it is.
-MERCHANT_ID=$(docker exec openpay-postgres psql -U openpay -d openpay_payment -t -A   -c "SELECT merchant_id FROM payments ORDER BY created_at DESC LIMIT 1;" | tr -d '
-')
+# From the shop's own provisioned credentials, the same file the secret key came from, because
+# demo-provisioner writes the merchant id alongside the keys it minted for it.
+#
+# The database is the fallback rather than the source, and that ordering is the fix for a real
+# failure: the query below reads the merchant off the most recent payment, so on a stack that has
+# never taken one it returns empty, every subsequent step authenticates as nobody, and the script
+# reports seven failures against a platform that is working perfectly. Anyone running this straight
+# after `up` — which is when a reader is most likely to try it — got that, and the reason was that
+# the check needed the outcome it was there to verify.
+MERCHANT_ID=$(MSYS_NO_PATHCONV=1 docker exec openpay-demo-storefront \
+    cat /demo/demo.properties 2>/dev/null | sed -n 's/^storefront\.merchant-id=//p' | tr -d '\r')
+if [ -z "$MERCHANT_ID" ]; then
+    # For a shop configured by hand, where no provisioner ever wrote that file. Still needs a
+    # payment to exist, and says so rather than failing seven checks that all mean this one thing.
+    MERCHANT_ID=$(docker exec openpay-postgres psql -U openpay -d openpay_payment -t -A \
+        -c "SELECT merchant_id FROM payments ORDER BY created_at DESC LIMIT 1;" | tr -d '\r\n')
+fi
+if [ -z "$MERCHANT_ID" ]; then
+    echo "No merchant found: the shop has no provisioned credentials and no payment exists to infer one from." >&2
+    exit 1
+fi
 echo "merchant $MERCHANT_ID"
 
 echo

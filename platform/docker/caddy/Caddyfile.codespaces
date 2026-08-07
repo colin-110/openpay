@@ -36,7 +36,13 @@
 
 	# The merchant API, including /api/v1/tokens — which is the one the checkout page calls from
 	# the browser, and the whole reason for merging these origins.
-	handle /api/* {
+	#
+	# /api/v1/* specifically, not /api/*. The shop serves its own /api/checkout, and merging the
+	# two onto one origin means that path now has to be told apart from the platform's rather than
+	# living on a separate port where it could not collide. A broader matcher here sends the shop's
+	# own checkout call to the gateway, which answers 404 — the card tokenises, and then the
+	# payment that was supposed to follow it never happens.
+	handle /api/v1/* {
 		reverse_proxy gateway-service:8080
 	}
 

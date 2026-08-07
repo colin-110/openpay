@@ -88,3 +88,138 @@ jobs:
             -f platform/docker/docker-compose.yml \
             -f platform/docker/docker-compose.apps.yml \
             down -v
+
+  # The path a reader actually takes, which the job above does not cover: it starts the platform
+  # without --profile shop, so the storefront, the provisioner that mints the demo merchant, and
+  # the merged origin the Codespaces badge depends on are all untested by it.
+  #
+  # That gap is the expensive kind. Everything here is what someone sees in the first two minutes
+  # — the README's headline command and the one-click button on the badge — so a break in it is a
+  # break in the only part most readers will ever run, and nothing else in CI would notice.
+  demo:
+    name: The demo a reader runs
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    env:
+      OPENPAY_ADMIN_TOKEN: ci-admin-${{ github.run_id }}
+      OPENPAY_OPS_TOKEN: ci-ops-${{ github.run_id }}
+      OPENPAY_INTERNAL_TOKEN: ci-internal-${{ github.run_id }}
+      OPENPAY_JWT_SECRET: ci-jwt-secret-that-is-comfortably-over-32-bytes-${{ github.run_id }}
+      MOCK_BANK_A_SECRET: ci-bank-a-${{ github.run_id }}
+      MOCK_BANK_B_SECRET: ci-bank-b-${{ github.run_id }}
+      # Stands in for the Codespaces hostnames. The overlay's behaviour does not depend on what
+      # the origin is, only on the shop and the API sharing one — which localhost:8000 does here
+      # exactly as https://<codespace>-8000.app.github.dev does there.
+      OPENPAY_PUBLIC_URL: http://localhost:8000
+      STOREFRONT_GATEWAY_PUBLIC_URL: http://localhost:8000
+      OPENPAY_DASHBOARD_ORIGINS: http://localhost:5173
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # scripts/verify-tokenization.sh parses JSON with `python`, and the runner image provides
+      # python3 without guaranteeing that name resolves.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Start the platform, the shop, and the merged origin
+        run: |
+          docker compose \
+            -f platform/docker/docker-compose.yml \
+            -f platform/docker/docker-compose.apps.yml \
+            -f platform/docker/docker-compose.codespaces.yml \
+            --profile shop up -d --build
+
+      # Polled rather than `--wait`: demo-provisioner is a run-once container that exits 0 when it
+      # has minted the merchant, and --wait treats a container that is no longer running as a
+      # failure regardless of the code it exited with.
+      - name: Wait for the shop
+        run: |
+          for i in $(seq 1 90); do
+            if curl -fsS http://localhost:8000 >/dev/null 2>&1; then
+              echo "Shop answered after ${i}0s"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Shop never answered on the merged origin" >&2
+          exit 1
+
+      # The provisioner is what makes "nothing to configure" true, and it fails quietly: the shop
+      # still serves a healthy page, just one whose checkout cannot do anything.
+      #
+      # Asserted against /api/checkout/config rather than the page, because the page carries the
+      # "this shop has no credentials" copy either way — in a hidden div that unhides itself when
+      # the config below says configured:false. Grepping the HTML for that phrase looks like the
+      # obvious check and matches on a perfectly healthy shop.
+      - name: The shop has its provisioned credentials
+        run: |
+          CONFIG=$(curl -fsS http://localhost:8000/api/checkout/config)
+          echo "$CONFIG" | python -c "import json,sys; sys.exit(0 if json.load(sys.stdin).get('configured') else 1)" || {
+            echo "Shop is up but was never provisioned: $CONFIG" >&2
+            docker logs openpay-demo-provisioner >&2 || true
+            exit 1
+          }
+
+      # The whole point of the overlay: the shop and the gateway reachable through one hostname,
+      # which is what makes browser-side tokenisation same-origin in a Codespace.
+      #
+      # AUTH_URL is the exception and deliberately not the merged origin. This script bootstraps
+      # itself by minting a publishable key at /api/v1/api-keys, which is an admin path — and
+      # Caddyfile.codespaces publishes only login, refresh and logout to auth-service, exactly as
+      # the local Caddyfile's 8444 block does. Pointing it at the public origin would test that
+      # key-minting is reachable from the internet, which is the opposite of what should be true.
+      - name: Tokenisation works through the merged origin
+        env:
+          GATEWAY_URL: http://localhost:8000
+          SHOP_URL: http://localhost:8000
+          AUTH_URL: http://localhost:8081
+        run: bash scripts/verify-tokenization.sh
+
+      # The narrower half of the same claim, and worth asserting rather than assuming: the admin
+      # path really is refused on the origin a recruiter can open, not merely unused by the test
+      # above. Measured locally it answers 404 — the gateway has no route for /api/v1/api-keys, so
+      # the request stops there. The assertion is deliberately on "not success" rather than on that
+      # exact code: which refusal it is depends on where it stops, and any of them are correct as
+      # long as auth-service never sees an admin request from the public origin.
+      - name: Admin paths are not published on the public origin
+        run: |
+          CODE=$(curl -sS -o /dev/null -w "%{http_code}" -X POST http://localhost:8000/api/v1/api-keys \
+            -H "X-Admin-Token: $OPENPAY_ADMIN_TOKEN" -H "Content-Type: application/json" -d '{}')
+          if [ "$CODE" = "200" ] || [ "$CODE" = "201" ]; then
+            echo "Key minting answered $CODE on the public origin; it must not be reachable there" >&2
+            exit 1
+          fi
+          echo "Refused with $CODE, as intended"
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            -f platform/docker/docker-compose.yml \
+            -f platform/docker/docker-compose.apps.yml \
+            -f platform/docker/docker-compose.codespaces.yml \
+            --profile shop logs --no-color --tail 400 > demo-logs.txt
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-logs
+          path: demo-logs.txt
+
+      - name: Tear down
+        if: always()
+        run: |
+          docker compose \
+            -f platform/docker/docker-compose.yml \
+            -f platform/docker/docker-compose.apps.yml \
+            -f platform/docker/docker-compose.codespaces.yml \
+            --profile shop down -v
