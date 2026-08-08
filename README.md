@@ -25,15 +25,16 @@ and the demo merchant, its API keys and a dashboard login are minted at startup,
 printing the login on its own page.
 
 <p align="center">
-  <img src="docs/images/shop.png" alt="The demo storefront: a catalog, a card field, and a note that the card goes to the platform rather than to the shop" width="42%">
-  &nbsp;&nbsp;
-  <img src="docs/images/shop-captured.png" alt="The same payment after Pay: accepted, sent to the acquiring bank, authorised and captured, with the time each step took" width="42%">
+  <img src="docs/images/demo.gif" alt="A card is typed into the demo shop and paid; the payment then moves through accepted, sent to the acquiring bank, authorised and captured on its own, in 3.6 seconds" width="70%">
 </p>
 
-The card in that left-hand field never reaches the shop's server. It goes to the vault and comes
-back as a single-use token, which is the only thing the shop ever handles. The four steps on the
-right are the platform moving the payment along on its own — nothing is clicked after **Pay**, and
-the timings are real.
+The card typed there never reaches the shop's server. It goes to the vault and comes back as a
+single-use token, which is the only thing the shop ever handles — which is why the page says the
+card goes straight to the platform. After **Pay**, nothing is clicked: the four steps are the
+platform moving the payment along by itself, and the timings beside them are real.
+
+Recorded against a running stack with one acquirer stopped, so that payment reached captured by
+failing over to the second bank. The shop does not notice, which is the point.
 
 Then the merchant's side of the same payments:
 

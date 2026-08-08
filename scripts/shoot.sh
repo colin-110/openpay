@@ -19,6 +19,7 @@ cd "$(dirname "$0")/.."
 
 VICTIM="${ACQUIRER:-mock-bank-a}"
 IMAGE="mcr.microsoft.com/playwright:v1.49.0-noble"
+FFMPEG="jrottenberg/ffmpeg:6-alpine"
 OUT_DIR="docs/images"
 
 COMPOSE=(docker compose
@@ -56,17 +57,38 @@ trap restore EXIT INT TERM
 
 # The image ships the browsers but not the npm package, so playwright is installed into /tmp and
 # the browser download is skipped — they are already at /ms-playwright.
-MSYS_NO_PATHCONV=1 docker run --rm \
-    --network docker_default \
-    -e PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
-    -v "$HOST_PATH/scripts:/work:ro" \
-    -v "$HOST_PATH/$OUT_DIR:/out" \
-    "$IMAGE" \
-    sh -c 'cd /tmp \
-        && npm init -y >/dev/null 2>&1 \
-        && npm i playwright@1.49.0 --no-audit --no-fund >/dev/null 2>&1 \
-        && cp /work/capture-screenshots.mjs /tmp/ \
-        && node /tmp/capture-screenshots.mjs'
+run_in_browser() {
+    MSYS_NO_PATHCONV=1 docker run --rm \
+        --network docker_default \
+        -e PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+        -v "$HOST_PATH/scripts:/work:ro" \
+        -v "$HOST_PATH/$OUT_DIR:/out" \
+        "$IMAGE" \
+        sh -c "cd /tmp \
+            && npm init -y >/dev/null 2>&1 \
+            && npm i playwright@1.49.0 --no-audit --no-fund >/dev/null 2>&1 \
+            && cp /work/$1 /tmp/ \
+            && node /tmp/$1"
+}
+
+echo "Capturing screenshots..."
+run_in_browser capture-screenshots.mjs
+
+echo "Recording the demo..."
+rm -rf "$OUT_DIR/video"
+run_in_browser capture-video.mjs
+
+# Two-pass palette rather than a straight conversion: GIF is limited to 256 colours, and letting
+# ffmpeg pick them from this clip's own frames instead of a fixed web palette is the difference
+# between readable UI text and a banded mess. 12fps and 700px keep it a few megabytes — GitHub
+# serves it inline, and a README that takes ten seconds to paint is worse than no animation.
+echo "Converting to GIF..."
+MSYS_NO_PATHCONV=1 docker run --rm -v "$HOST_PATH/$OUT_DIR:/out" --entrypoint sh "$FFMPEG" -c \
+    'ffmpeg -y -i /out/video/*.webm -vf "fps=12,scale=700:-1:flags=lanczos,split[s0][s1];[s0]palettegen=max_colors=128[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3" -loop 0 /out/demo.gif' \
+    >/dev/null 2>&1
+
+rm -rf "$OUT_DIR/video"
 
 echo
-echo "Screenshots written to $OUT_DIR."
+echo "Written to $OUT_DIR:"
+ls -la "$OUT_DIR"

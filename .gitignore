@@ -7,3 +7,6 @@ target/
 Thumbs.db
 .env
 data/
+
+# Intermediate recording from scripts/capture-video.mjs; only the GIF it produces is committed.
+docs/images/video/
