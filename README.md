@@ -24,6 +24,21 @@ Then open **http://localhost:8090**. Nothing to configure — credentials are ge
 and the demo merchant, its API keys and a dashboard login are minted at startup, with the shop
 printing the login on its own page.
 
+<p align="center">
+  <img src="docs/images/shop.png" alt="The demo storefront: a catalog, a card field, and a note that the card goes to the platform rather than to the shop" width="42%">
+  &nbsp;&nbsp;
+  <img src="docs/images/shop-captured.png" alt="The same payment after Pay: accepted, sent to the acquiring bank, authorised and captured, with the time each step took" width="42%">
+</p>
+
+The card in that left-hand field never reaches the shop's server. It goes to the vault and comes
+back as a single-use token, which is the only thing the shop ever handles. The four steps on the
+right are the platform moving the payment along on its own — nothing is clicked after **Pay**, and
+the timings are real.
+
+Then the merchant's side of the same payments:
+
+![The merchant dashboard: captured volume, success rate, payment volume over time, and where payments end up](docs/images/dashboard-overview.png)
+
 ### Then break it on purpose
 
 A payment succeeding proves very little; almost anything succeeds on the happy path. The claim
@@ -57,8 +72,14 @@ Restoring mock-bank-a...
 
 The failed attempt is *kept*, not tidied away. A platform that forgets which acquirer refused
 cannot reconcile against that acquirer's settlement file, and cannot answer a merchant asking why
-a payment took nine seconds. The same two rows appear in the dashboard against the payment, with
-the timeline beside them.
+a payment took six seconds instead of one. So it is on the payment, where the merchant can see it:
+
+![The payment in the dashboard: status captured, and an acquirer attempts list showing mock-bank-a failed and mock-bank-b accepted, with the acquirer's own reference](docs/images/dashboard-payment-drawer.png)
+
+That screenshot is not staged. It was taken by a browser driving the real stack with `mock-bank-a`
+stopped, which is the only way to photograph this — a system that fails over correctly looks
+exactly like one that never had to. `scripts/capture-screenshots.mjs` regenerates every image on
+this page the same way.
 
 The acquirer is restored on the way out, including if the script fails or is interrupted.
 
