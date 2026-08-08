@@ -11,6 +11,10 @@
 # what lands on disk rather than what is stored. Run `git add --renormalize .` after adding it.
 *.sh text eol=lf
 
+# Mounted into a Linux container and run there too (scripts/shoot.sh copies it into the Playwright
+# image). Node tolerates CRLF where sh does not, so this is consistency rather than a live bug.
+*.mjs text eol=lf
+
 # Same reasoning: read inside containers, not by Windows tooling.
 Dockerfile text eol=lf
 *.yml text eol=lf
