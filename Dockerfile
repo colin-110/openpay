@@ -68,7 +68,7 @@ RUN jlink \
 # Temurin publishes these Alpine builds officially and this platform is pure JVM — no JNI, no
 # native agents — so nothing here can tell the difference. A service that later needed a
 # glibc-linked native library would have to move back, and that is worth knowing before adding one.
-FROM alpine:3.21 AS runtime
+FROM alpine:3.24 AS runtime
 
 COPY --from=jre /javaruntime /opt/java
 ENV JAVA_HOME=/opt/java
